@@ -1,0 +1,679 @@
+#ifdef MC10_AUTOPROFILE
+/* Platform-only, read-only renderer benchmark. No Minecraft tick, player
+ * movement, menu loop, save write or options write runs during measurement.
+ * Samples are buffered; CSV creation/write/readback happens after all views.
+ */
+#define MC_BENCH_SAMPLES 5
+#define MC_BENCH_CASES 4
+#ifdef MC10_GEOMETRY_PROFILE
+#ifdef MC10_CULL_PROFILE
+#define MC_BENCH_LOG_CAP 98304
+#else
+#define MC_BENCH_LOG_CAP 65536
+#endif
+#define MC_BENCH_COLUMNS 77
+int mc_geometry_mode;
+void mc_geometry_append_fields(int view,int sample);
+#elif defined(MC10_STAGE_PROFILE)
+#define MC_BENCH_LOG_CAP 65536
+#define MC_BENCH_COLUMNS 77
+int mc_stage_mode;
+void mc_stage_append_fields(int view,int sample);
+#elif defined(MC10_TILE_PROFILE)
+#define MC_BENCH_LOG_CAP 32768
+#define MC_BENCH_COLUMNS 51
+int mc_tile_mode;
+void mc_tile_append_fields(int view,int sample);
+#elif defined(MC10_SAMPLER_PROFILE)
+#define MC_BENCH_LOG_CAP 32768
+#define MC_BENCH_COLUMNS 41
+int mc_sampler_mode;
+void mc_sampler_append_fields(int view,int sample);
+#else
+#define MC_BENCH_LOG_CAP 32768
+#define MC_BENCH_COLUMNS 27
+#endif
+struct MCBenchmarkSample {
+    struct MCFrameProfile frame;
+    int visited;int skipped;uint yaw_bits;uint pitch_bits;
+};
+struct MCBenchmarkSample mc_bench_samples[MC_BENCH_CASES*MC_BENCH_SAMPLES];
+char mc_bench_log[MC_BENCH_LOG_CAP];
+char mc_bench_verify[1024];
+char mc_bench_path[64];
+char mc_bench_folder[MC_WORLD_FOLDER_CAP];
+char mc_bench_value[192];
+char mc_bench_key[64];
+uint mc_bench_length;
+int mc_bench_full;
+int mc_bench_cancelled;
+int mc_bench_completed;
+int mc_bench_override;
+uint mc_bench_saved_yaw,mc_bench_saved_pitch;
+uint mc_bench_run_started_ms;
+struct MCWorldInfo mc_bench_world;
+
+void mc_bench_message(char *title)
+{
+    narm_half_clear(MC_COLOR_BLACK);
+#ifdef MC10_CULL_PROFILE
+    mc_menu_draw_centered_string("BUILD 26 VISIBILITY CULLING",160,48,0xffff55);
+    mc_world_copy(mc_bench_value,192,"Samples: ");
+    mc_world_append_uint(mc_bench_value,192,(uint)mc_bench_completed);
+    mc_world_append(mc_bench_value,192,"/60  (72 frames, 3 modes)");
+    mc_menu_draw_centered_string(mc_bench_value,160,70,0xa0a0a0);
+#elif defined(MC10_PREPARATION_PROFILE)
+    mc_menu_draw_centered_string("BUILD 24 PREPARATION FIXES",160,48,0xffff55);
+#elif defined(MC10_GEOMETRY_PROFILE)
+    mc_menu_draw_centered_string("BUILD 23 GEOMETRY A/B PROFILE",160,48,0xffff55);
+#elif defined(MC10_STAGE_PROFILE)
+    mc_menu_draw_centered_string("BUILD 22 DRAW STAGE PROFILE",160,48,0xffff55);
+#elif defined(MC10_TILE_PROFILE)
+    mc_menu_draw_centered_string("BUILD 21 TEXTURED TILE A/B",160,48,0xffff55);
+#elif defined(MC10_SAMPLER_PROFILE)
+    mc_menu_draw_centered_string("BUILD 20 SAMPLER A/B PROFILE",160,48,0xffff55);
+#elif defined(MC10_STARTUP_DIAGNOSTIC)
+    mc_menu_draw_centered_string("BUILD 16 STARTUP ISOLATION",160,48,0xffff55);
+#elif defined(MC10_LEGACY_FONT)
+    mc_menu_draw_centered_string("BUILD 17 LEGACY FONT PROFILE",160,48,0xffff55);
+#else
+    mc_menu_draw_centered_string("BUILD 15 HUD A/B PROFILE",160,48,0xffff55);
+#endif
+    mc_menu_draw_centered_string(title,160,90,0xffffff);
+    narm_half_present();
+}
+void mc_bench_char(char value)
+{
+    if(mc_bench_length+1>=MC_BENCH_LOG_CAP){mc_bench_full=1;return;}
+    mc_bench_log[mc_bench_length++]=value;mc_bench_log[mc_bench_length]=0;
+}
+void mc_bench_text(char *value)
+{int i=0;while(value[i]){mc_bench_char(value[i]);i=i+1;}}
+void mc_bench_uint(uint value)
+{
+    char digits[11];int n=0;
+    if(!value){mc_bench_char('0');return;}
+    while(value){digits[n++]=(char)('0'+value%10);value=value/10;}
+    while(n)mc_bench_char(digits[--n]);
+}
+void mc_bench_hex(uint value)
+{int i;char *hex="0123456789abcdef";for(i=28;i>=0;i=i-4)mc_bench_char(hex[(value>>i)&15]);}
+void mc_bench_quote(char *text)
+{
+    int i=0;mc_bench_char('"');
+    while(text[i]){if(text[i]=='"')mc_bench_char('"');mc_bench_char(text[i++]);}
+    mc_bench_char('"');
+}
+void mc_bench_meta(char *key,char *value)
+{
+    int i;mc_bench_text("meta");
+    for(i=1;i<MC_BENCH_COLUMNS-1;i=i+1)mc_bench_char(',');
+    mc_bench_quote(key);mc_bench_char(',');mc_bench_quote(value);mc_bench_char('\n');
+}
+void mc_bench_meta_uint(char *key,uint value)
+{mc_bench_value[0]=0;mc_world_append_uint(mc_bench_value,192,value);mc_bench_meta(key,mc_bench_value);}
+void mc_bench_meta_int(char *key,int value)
+{mc_bench_value[0]=0;mc_world_append_int(mc_bench_value,192,value);mc_bench_meta(key,mc_bench_value);}
+void mc_bench_meta_bits(char *key,uint hi,uint lo)
+{
+    mc_bench_value[0]=0;mc_world_append_hex8(mc_bench_value,192,hi);
+    mc_world_append_hex8(mc_bench_value,192,lo);mc_bench_meta(key,mc_bench_value);
+}
+int mc_bench_poll(void)
+{
+    unsigned key,action,mods,character;int event;
+    while(narm_next_key_event(&key,&action,&mods,&character)>0)
+        if(key==NARM_KEY_ESCAPE&&action==NARM_KEY_ACTION_PRESS)mc_bench_cancelled=1;
+    event=narm_poll_system_event();
+    if(event==NARM_EVENT_CLOSE_REQUESTED||event==NARM_EVENT_FOCUS_LOST)mc_bench_cancelled=1;
+    return !mc_bench_cancelled;
+}
+int mc_bench_measure_frame(void)
+{
+    uint started;int result;
+    mc_render_benchmark_running=1;
+    mc_profile_cancel();mc_profile_begin();mc_render_begin_frame();
+    for(;;)
+    {
+        started=narm_micros();
+        if(!mc_bench_poll()){mc_render_benchmark_running=0;mc_profile_cancel();return 0;}
+        mc_profile_pump_us=mc_profile_pump_us+(uint)(narm_micros()-started);
+        result=mc_render_step_frame();
+        if(result<0){mc_render_benchmark_running=0;mc_profile_cancel();return 0;}
+        if(result){mc_render_benchmark_running=0;return 1;}
+        mc_profile_yield();
+    }
+}
+int mc_bench_collect(void)
+{
+    int view,i,j,index,saved_hud=mc_render_show_hud;uint *out,*in;
+    mc_bench_cancelled=0;mc_bench_completed=0;
+    mc_bench_run_started_ms=narm_millis();
+    mc_bench_saved_yaw=mc_runtime_player.yaw_bits;mc_bench_saved_pitch=mc_runtime_player.pitch_bits;
+    for(view=0;view<MC_BENCH_CASES;view=view+1)
+    {
+        mc_runtime_player.yaw_bits=mc_bench_saved_yaw;
+        mc_runtime_player.pitch_bits=view>=2?0xc2b40000:mc_bench_saved_pitch; /* -90.0f */
+        mc_render_show_hud=(view&1)==0;
+        mc_profile_valid=0;
+        if(!mc_bench_measure_frame())break; /* One discarded warm-up per view. */
+        for(i=0;i<MC_BENCH_SAMPLES;i=i+1)
+        {
+            if(!mc_bench_measure_frame())break;
+            index=view*MC_BENCH_SAMPLES+i;
+            out=(uint *)&mc_bench_samples[index].frame;in=(uint *)&mc_profile_last;
+            for(j=0;j<(int)sizeof(struct MCFrameProfile)/4;j=j+1)out[j]=in[j];
+            mc_bench_samples[index].visited=mc_render_last_visited;
+            mc_bench_samples[index].skipped=mc_render_last_skipped;
+            mc_bench_samples[index].yaw_bits=mc_runtime_player.yaw_bits;
+            mc_bench_samples[index].pitch_bits=mc_runtime_player.pitch_bits;
+            mc_bench_completed=mc_bench_completed+1;
+        }
+        if(mc_bench_cancelled)break;
+    }
+    mc_runtime_player.yaw_bits=mc_bench_saved_yaw;mc_runtime_player.pitch_bits=mc_bench_saved_pitch;
+    mc_render_show_hud=saved_hud;
+    mc_profile_cancel();
+    return mc_bench_completed==MC_BENCH_CASES*MC_BENCH_SAMPLES&&!mc_bench_cancelled;
+}
+char *mc_bench_view_name(int view)
+{
+#ifdef MC10_CULL_PROFILE
+    if(mc_geometry_mode==0)
+    {
+        if(view==0)return "saved_hud_on_baseline";if(view==1)return "saved_hud_off_baseline";
+        if(view==2)return "sky_hud_on_baseline";return "sky_hud_off_baseline";
+    }
+    if(mc_geometry_mode==1)
+    {
+        if(view==0)return "saved_hud_on_backface";if(view==1)return "saved_hud_off_backface";
+        if(view==2)return "sky_hud_on_backface";return "sky_hud_off_backface";
+    }
+    if(view==0)return "saved_hud_on_combined";if(view==1)return "saved_hud_off_combined";
+    if(view==2)return "sky_hud_on_combined";return "sky_hud_off_combined";
+#elif defined(MC10_GEOMETRY_PROFILE)
+    if(mc_geometry_mode==0)
+    {
+        if(view==0)return "saved_hud_on_baseline";if(view==1)return "saved_hud_off_baseline";
+        if(view==2)return "sky_hud_on_baseline";return "sky_hud_off_baseline";
+    }
+    if(view==0)return "saved_hud_on_optimized";if(view==1)return "saved_hud_off_optimized";
+    if(view==2)return "sky_hud_on_optimized";return "sky_hud_off_optimized";
+#elif defined(MC10_STAGE_PROFILE)
+    if(mc_stage_mode==0)
+    {
+        if(view==0)return "saved_hud_on_baseline";if(view==1)return "saved_hud_off_baseline";
+        if(view==2)return "sky_hud_on_baseline";return "sky_hud_off_baseline";
+    }
+    if(view==0)return "saved_hud_on_instrumented";if(view==1)return "saved_hud_off_instrumented";
+    if(view==2)return "sky_hud_on_instrumented";return "sky_hud_off_instrumented";
+#elif defined(MC10_TILE_PROFILE)
+    if(mc_tile_mode==0)
+    {
+        if(view==0)return "saved_hud_on_immediate";if(view==1)return "saved_hud_off_immediate";
+        if(view==2)return "sky_hud_on_immediate";return "sky_hud_off_immediate";
+    }
+    if(view==0)return "saved_hud_on_tiles";if(view==1)return "saved_hud_off_tiles";
+    if(view==2)return "sky_hud_on_tiles";return "sky_hud_off_tiles";
+#elif defined(MC10_SAMPLER_PROFILE)
+    if(mc_sampler_mode==0)
+    {
+        if(view==0)return "saved_hud_on_general";if(view==1)return "saved_hud_off_general";
+        if(view==2)return "sky_hud_on_general";return "sky_hud_off_general";
+    }
+    if(view==0)return "saved_hud_on_clamped";if(view==1)return "saved_hud_off_clamped";
+    if(view==2)return "sky_hud_on_clamped";return "sky_hud_off_clamped";
+#else
+    if(view==0)return "saved_hud_on";if(view==1)return "saved_hud_off";
+    if(view==2)return "sky_hud_on";return "sky_hud_off";
+#endif
+}
+uint mc_bench_stat(int view,int field,int statistic)
+{
+    uint values[MC_BENCH_SAMPLES],swap;int i,j;struct MCBenchmarkSample *s;
+    for(i=0;i<MC_BENCH_SAMPLES;i=i+1)
+    {
+        s=&mc_bench_samples[view*MC_BENCH_SAMPLES+i];
+        values[i]=field<15?((uint *)&s->frame)[field]:(uint)(field==15?s->visited:s->skipped);
+    }
+    for(i=0;i<MC_BENCH_SAMPLES;i=i+1)for(j=i+1;j<MC_BENCH_SAMPLES;j=j+1)
+        if(values[j]<values[i]){swap=values[i];values[i]=values[j];values[j]=swap;}
+    return values[statistic==0?0:(statistic==1?MC_BENCH_SAMPLES/2:MC_BENCH_SAMPLES-1)];
+}
+void mc_bench_row(char *kind,int view,int sample,int statistic)
+{
+    int field;uint value;struct MCBenchmarkSample *s=&mc_bench_samples[view*MC_BENCH_SAMPLES+(sample<0?0:sample)];
+    mc_bench_text(kind);mc_bench_char(',');mc_bench_text(mc_bench_view_name(view));mc_bench_char(',');
+    if(sample>=0)mc_bench_uint((uint)sample+1);
+    for(field=0;field<17;field=field+1)
+    {
+        value=sample<0?mc_bench_stat(view,field,statistic):
+            (field<15?((uint *)&s->frame)[field]:(uint)(field==15?s->visited:s->skipped));
+        mc_bench_char(',');mc_bench_uint(value);
+    }
+    mc_bench_char(',');mc_bench_uint((uint)mc_render_cache_group_count);
+    mc_bench_char(',');mc_bench_uint((uint)mc_render_geometry_count);
+    mc_bench_char(',');mc_bench_uint((uint)mc_render_geometry_blocks);
+    mc_bench_char(',');mc_bench_hex(s->yaw_bits);mc_bench_char(',');mc_bench_hex(s->pitch_bits);
+#ifdef MC10_GEOMETRY_PROFILE
+    mc_geometry_append_fields(view,sample);
+#elif defined(MC10_STAGE_PROFILE)
+    mc_stage_append_fields(view,sample);
+#elif defined(MC10_TILE_PROFILE)
+    mc_tile_append_fields(view,sample);
+#elif defined(MC10_SAMPLER_PROFILE)
+    mc_sampler_append_fields(view,sample);
+#endif
+    mc_bench_text(",,\n");
+}
+uint mc_bench_fnv(char *data,int length)
+{
+    uint hash=0x811c9dc5;int i;
+    for(i=0;i<length;i=i+1)hash=(hash^((uint)data[i]&255))*0x01000193;
+    return hash;
+}
+void mc_bench_chunk_key(int index,char *field)
+{
+    mc_world_copy(mc_bench_key,64,"chunk_");mc_world_append_int(mc_bench_key,64,index);
+    mc_world_append(mc_bench_key,64,field);
+}
+void mc_bench_format_metadata(void)
+{
+    int i;
+    mc_bench_length=0;mc_bench_full=0;
+    mc_bench_text("record,view,sample,total_us,gen_us,draw_us,input_us,tick_us,yield_us,setup_us,ui_us,other_us,hud_us,present_us,faces,batches,pending,physical_ticks,visited,skipped,surface_entries,geometry_quads,cached_blocks,yaw_bits_hex,pitch_bits_hex");
+#if defined(MC10_SAMPLER_PROFILE) || defined(MC10_TILE_PROFILE)
+    mc_bench_text(",general_spans,clamped_spans,wrap16_spans,masked_spans,general_candidates,clamped_candidates,wrap16_candidates,masked_candidates,clamped_eligible_spans,clamped_eligible_candidates,sampler_flags,sys_hz,peri_hz,pair_order");
+#endif
+#ifdef MC10_TILE_PROFILE
+    mc_bench_text(",tile_mode,tile_jobs,queued_triangles,depth_tests,depth_rejects,mask_tests,pixel_writes,scratch_bytes,color_fnv,depth_fnv");
+#endif
+#ifdef MC10_STAGE_PROFILE
+    mc_bench_text(",stage_mode,service_us,validation_us,triangle_setup_us,tile_flush_us,join_wait_us,core0_load_us,core0_raster_us,core0_commit_us,core0_active_us,core1_load_us,core1_raster_us,core1_commit_us,core1_active_us,list_calls,occupied_strips,triangle_bin_memberships,command_bytes,staged_pixels,valid_depth_loads,dirty_depth_stores,dirty_words,bin_read_bytes,bin_reset_bytes,core0_strips,core1_strips");
+#endif
+    mc_bench_text(",key,value\n");
+#ifdef MC10_GEOMETRY_PROFILE
+#ifdef MC10_CULL_PROFILE
+    mc_bench_meta("schema","mc10_culling_abc_v1");
+    mc_bench_meta("build","26_VISIBILITY_CULLING_LEGACY_FONT");
+    mc_bench_meta("preparation_protocol","50500001");
+    mc_bench_meta("culling_protocol","43550001");
+    mc_bench_meta("comparison_scope","same Build 26 image based on Build 24: optimized submission/native preparation in all three;culling off,backface only,backface+occlusion;NOT Build 24 release vs Build 26 release");
+#else
+    mc_bench_meta("schema","mc10_geometry_ab_v1");
+#ifdef MC10_PREPARATION_PROFILE
+    mc_bench_meta("build","24_PREPARATION_FIXES_LEGACY_FONT");
+    mc_bench_meta("preparation_protocol","50500001");
+    mc_bench_meta("common_fixes","inline native argument marshalling and cached-mask legacy pixel font in both modes");
+    mc_bench_meta("comparison_scope","same Build 24 image: legacy geometry vs optimized geometry; NOT Build 23 release vs Build 24 release");
+#else
+    mc_bench_meta("build","23_GEOMETRY_AB_LEGACY_FONT");
+#endif
+#endif
+#elif defined(MC10_STAGE_PROFILE)
+    mc_bench_meta("schema","mc10_draw_stages_ab_v1");
+    mc_bench_meta("build","22_DRAW_STAGES_LEGACY_FONT");
+#elif defined(MC10_TILE_PROFILE)
+    mc_bench_meta("schema","mc10_textured_tiles_ab_v1");
+    mc_bench_meta("build","21_TEXTURED_TILES_LEGACY_FONT");
+#elif defined(MC10_SAMPLER_PROFILE)
+    mc_bench_meta("schema","mc10_sampler_ab_v1");
+    mc_bench_meta("build","20_SAMPLER_AB_LEGACY_FONT");
+#else
+    mc_bench_meta("schema","mc10_autoprofile_v2");
+#ifdef MC10_LEGACY_FONT
+    mc_bench_meta("build","17_LEGACY_FONT_HUD_AB");
+#else
+    mc_bench_meta("build","15_BUFFERED_GLYPHS_HUD_AB");
+#endif
+#endif
+    mc_bench_meta("mode","render_only_fixed_player_no_physics_or_world_ticks");
+#ifdef MC10_GEOMETRY_PROFILE
+    mc_bench_meta("units","microseconds; raw paired samples; summaries calculated from raw samples");
+    mc_bench_meta("tile_protocol","54420001");mc_bench_meta("stage_protocol","44530001");
+    mc_bench_meta("geometry_protocol","47500001");
+#ifdef MC10_CULL_PROFILE
+    mc_bench_meta("culling_comparison","stage_mode0=off/cull0/worker2,1=backface/cull1/worker2,2=combined/cull3/worker258;optimized submission/native preparation and renderStats(1025) in all timed modes");
+    mc_bench_meta("culling_order","pair_order is permutation ID (view*5+sample)%6 with zero-based view/sample;0..5=012/120/201/021/210/102;one discarded warm-up per mode per view");
+    mc_bench_meta("culling_counters","game/native counters only in discarded backface and combined warm-ups;backface-only native occlusion counters must be zero;not timed samples;submitted/raster work and batch boundaries may decrease or vary");
+    mc_bench_meta_uint("culling_modes",3);mc_bench_meta_uint("culling_rendered_frames",72);
+    mc_bench_meta_uint("culling_measured_samples",60);mc_bench_meta_uint("culling_warmup_frames",12);
+#else
+    mc_bench_meta("geometry_comparison","both ordered synchronous tiled lists mode2;baseline=original game submission and native geometry renderStats(3073);optimized=optimized game submission and native geometry renderStats(1025)");
+    mc_bench_meta("geometry_order","paired alternation by view and sample;one discarded warm-up per mode per view");
+#endif
+    mc_bench_meta("stage_accounting","service contains validation+exclusive triangle setup+tile flush+unattributed;core0/core1 stage times overlap and must NOT be added to service;join_wait is nested in flush");
+#ifdef MC10_CULL_PROFILE
+    mc_bench_meta("stage_counters","all three timed modes enable identical stage timers;structural tile traffic/depth/dirty counters only in discarded backface and combined warm-ups renderStats(1537)");
+#else
+    mc_bench_meta("stage_counters","both timed modes enable identical stage timers;structural tile traffic/depth/dirty counters only in discarded optimized warm-ups renderStats(1537)");
+#endif
+    mc_bench_meta("tile_hashes","outside timed frame;depth+valid compare all views;color compare HUD off only;HUD timing text varies");
+    mc_bench_meta("clock_source","SDK clock_get_hz;configured sys/peri frequencies;not independent physical measurement");
+#elif defined(MC10_STAGE_PROFILE)
+    mc_bench_meta("units","microseconds; raw paired samples; summaries calculated from raw samples");
+    mc_bench_meta("tile_protocol","54420001");mc_bench_meta("stage_protocol","44530001");
+    mc_bench_meta("stage_comparison","both ordered synchronous tiled lists mode2;baseline=renderStats(1);instrumented=renderStats(1025)");
+    mc_bench_meta("stage_order","paired alternation by view and sample;one discarded warm-up per mode per view");
+    mc_bench_meta("stage_accounting","service contains validation+exclusive triangle setup+tile flush+unattributed;core0/core1 stage times overlap and must NOT be added to service;join_wait is nested in flush");
+    mc_bench_meta("stage_counters","timed frames use stage timers/list call counts only;structural tile traffic/depth/dirty counters only in discarded instrumented warm-ups renderStats(1537)");
+    mc_bench_meta("tile_hashes","outside timed frame;depth+valid compare all views;color compare HUD off only;HUD timing text varies");
+    mc_bench_meta("clock_source","SDK clock_get_hz;configured sys/peri frequencies;not independent physical measurement");
+#elif defined(MC10_TILE_PROFILE)
+    mc_bench_meta("units","microseconds; raw paired samples; summaries calculated from raw samples");
+    mc_bench_meta("tile_protocol","54420001");
+    mc_bench_meta("tile_comparison","immediate=original quad calls;tiles=ordered synchronous lists mode2;renderStats(1) in both");
+    mc_bench_meta("tile_order","paired alternation by view and sample;one warm-up per mode per view");
+    mc_bench_meta("tile_hashes","outside timed frame;depth+valid compare all views;color compare HUD off only;HUD timing text varies");
+    mc_bench_meta("tile_counters","measured frames count spans and candidates only;detailed depth/mask/write counters disabled;untimed tile warm-up metadata carries pixel counters");
+    mc_bench_meta("clock_source","SDK clock_get_hz;configured sys/peri frequencies;not independent physical measurement");
+#elif defined(MC10_SAMPLER_PROFILE)
+    mc_bench_meta("units","microseconds; raw paired samples; summaries calculated from raw samples");
+    mc_bench_meta("sampler_protocol","53500001");
+    mc_bench_meta("sampler_comparison","general=renderStats(257);clamped=renderStats(1);same firmware and NARM image;both count spans");
+    mc_bench_meta("sampler_order","paired alternation by view and sample;one warm-up per mode per view");
+    mc_bench_meta("sampler_counters","covered candidates before depth/mask rejection;NOT actual texture samples;no per-pixel hooks");
+    mc_bench_meta("clock_source","SDK clock_get_hz;configured sys/peri frequencies;not independent physical measurement");
+#else
+    mc_bench_meta("units","microseconds; raw samples and independent per-column min/median/max");
+#endif
+    mc_bench_meta("interval","clear/setup through HUD/present; batch yields included; inter-frame/logging time excluded");
+    mc_bench_meta("preemption","implicit preemption is charged to the measured call, not Yield");
+#ifdef MC10_CULL_PROFILE
+    mc_bench_meta("cases","saved_hud_on_baseline;saved_hud_off_baseline;sky_hud_on_baseline;sky_hud_off_baseline;saved_hud_on_backface;saved_hud_off_backface;sky_hud_on_backface;sky_hud_off_backface;saved_hud_on_combined;saved_hud_off_combined;sky_hud_on_combined;sky_hud_off_combined");
+#elif defined(MC10_GEOMETRY_PROFILE)
+    mc_bench_meta("cases","saved_hud_on_baseline;saved_hud_off_baseline;sky_hud_on_baseline;sky_hud_off_baseline;saved_hud_on_optimized;saved_hud_off_optimized;sky_hud_on_optimized;sky_hud_off_optimized");
+#elif defined(MC10_STAGE_PROFILE)
+    mc_bench_meta("cases","saved_hud_on_baseline;saved_hud_off_baseline;sky_hud_on_baseline;sky_hud_off_baseline;saved_hud_on_instrumented;saved_hud_off_instrumented;sky_hud_on_instrumented;sky_hud_off_instrumented");
+#elif defined(MC10_TILE_PROFILE)
+    mc_bench_meta("cases","saved_hud_on_immediate;saved_hud_off_immediate;sky_hud_on_immediate;sky_hud_off_immediate;saved_hud_on_tiles;saved_hud_off_tiles;sky_hud_on_tiles;sky_hud_off_tiles");
+#elif defined(MC10_SAMPLER_PROFILE)
+    mc_bench_meta("cases","saved_hud_on_general;saved_hud_off_general;sky_hud_on_general;sky_hud_off_general;saved_hud_on_clamped;saved_hud_off_clamped;sky_hud_on_clamped;sky_hud_off_clamped");
+#else
+    mc_bench_meta("cases","saved_hud_on;saved_hud_off;sky_hud_on;sky_hud_off");
+#endif
+    mc_bench_meta("hud_off","no diagnostic text, footer or crosshair; present and CSV profiling remain active");
+#if defined(MC10_PREPARATION_PROFILE) && defined(MC10_LEGACY_FONT)
+    mc_bench_meta("font_backend","cached exact 8x8 mask traversal; per-pixel native submission; zero native glyph calls; cold-cache original fallback");
+#elif defined(MC10_LEGACY_FONT)
+    mc_bench_meta("font_backend","original per-pixel path; no native glyph submission; startup cache preparation retained");
+#else
+    mc_bench_meta("font_backend","cached exact 8x8 masks via narm_half_glyph; pixel fallback on service error");
+#endif
+    mc_bench_meta_uint("glyph_fallback_calls",mc_menu_glyph_fallbacks);
+#if defined(MC10_SAMPLER_PROFILE) || defined(MC10_TILE_PROFILE)
+    mc_bench_meta("external_load","other native processes/OS activity uncontrolled;paired order alternates;SDK clocks logged per sample");
+#else
+    mc_bench_meta("external_load","other native processes/OS activity uncontrolled; firmware CPU clock not measured");
+#endif
+    mc_bench_meta_uint("run_started_uptime_ms",mc_bench_run_started_ms);
+    mc_bench_meta("world_selection",mc_bench_override?"profile_world.txt":"most_recent_LastPlayed_then_folder");
+    mc_bench_meta("world_folder",mc_bench_world.folder);mc_bench_meta("level_name",mc_bench_world.level_name);
+    mc_bench_meta_bits("world_seed_hex",mc_bench_world.random_seed_hi,mc_bench_world.random_seed_lo);
+    mc_bench_meta_bits("world_time_hex",mc_bench_world.world_time_hi,mc_bench_world.world_time_lo);
+    mc_bench_meta_bits("last_played_hex",mc_bench_world.last_played_hi,mc_bench_world.last_played_lo);
+    mc_bench_meta_bits("eye_x_binary64_hex",mc_runtime_player.pos_x.hi,mc_runtime_player.pos_x.lo);
+    mc_bench_meta_bits("eye_y_binary64_hex",mc_runtime_player.pos_y.hi,mc_runtime_player.pos_y.lo);
+    mc_bench_meta_bits("eye_z_binary64_hex",mc_runtime_player.pos_z.hi,mc_runtime_player.pos_z.lo);
+    mc_bench_meta_int("player_from_NBT",mc_runtime_player.present);
+    mc_bench_meta_int("resident_loaded",mc_runtime_loaded);mc_bench_meta_int("resident_missing",mc_runtime_missing);
+    mc_bench_meta_int("resident_invalid",mc_runtime_invalid);
+    mc_bench_meta_uint("asset_source_crc32",mc_asset_source_crc32);
+    mc_bench_meta_uint("cache_build_ms",mc_render_cache_build_ms);
+    mc_bench_meta("effective_resolution","320x240 RGB332");
+    mc_bench_meta("effective_projection_scale","171.375 horizontal and vertical");
+    mc_bench_meta("effective_far_plane_blocks","48");
+    mc_bench_meta("effective_smooth_lighting","off; flat per-face saved light and directional shading");
+    mc_bench_meta_int("effective_fancy_grass",mc_options.fancy_graphics);
+    mc_bench_meta_uint("effective_gamma_milli",(uint)(mc_options.gamma_setting*1000.0f+0.5f));
+    mc_bench_meta("inactive_options","FOV; render distance; smooth lighting; clouds; particles; bobbing; anaglyph; Advanced OpenGL; FPS limit; GUI scale");
+    mc_bench_meta_int("stored_render_distance",mc_options.render_distance);
+    mc_bench_meta_uint("stored_fov_milli",(uint)(mc_options.fov_setting*1000.0f+0.5f));
+    mc_bench_meta_int("stored_smooth_lighting",mc_options.ambient_occlusion);
+    mc_bench_meta_uint("warmup_frames_per_view",1);mc_bench_meta_uint("samples_per_view",MC_BENCH_SAMPLES);
+    /* Fingerprint the frozen input AFTER measurement, not inside a frame. */
+    for(i=0;i<9;i=i+1)
+    {
+        mc_bench_chunk_key(i,"_x");mc_bench_meta_int(mc_bench_key,mc_runtime_chunks[i].chunk.x_position);
+        mc_bench_chunk_key(i,"_z");mc_bench_meta_int(mc_bench_key,mc_runtime_chunks[i].chunk.z_position);
+        mc_bench_chunk_key(i,"_timestamp");mc_bench_meta_uint(mc_bench_key,mc_runtime_chunks[i].timestamp);
+        mc_bench_chunk_key(i,"_blocks_fnv");mc_bench_meta_uint(mc_bench_key,mc_bench_fnv(&mc_runtime_blocks[i*MC_CHUNK_BLOCK_COUNT],MC_CHUNK_BLOCK_COUNT));
+        mc_bench_chunk_key(i,"_metadata_fnv");mc_bench_meta_uint(mc_bench_key,mc_bench_fnv(&mc_runtime_metadata[i*MC_CHUNK_NIBBLE_BYTES],MC_CHUNK_NIBBLE_BYTES));
+        mc_bench_chunk_key(i,"_skylight_fnv");mc_bench_meta_uint(mc_bench_key,mc_bench_fnv(&mc_runtime_skylight[i*MC_CHUNK_NIBBLE_BYTES],MC_CHUNK_NIBBLE_BYTES));
+        mc_bench_chunk_key(i,"_blocklight_fnv");mc_bench_meta_uint(mc_bench_key,mc_bench_fnv(&mc_runtime_blocklight[i*MC_CHUNK_NIBBLE_BYTES],MC_CHUNK_NIBBLE_BYTES));
+    }
+}
+void mc_bench_format_log(void)
+{
+    int view,i;mc_bench_format_metadata();
+    for(view=0;view<MC_BENCH_CASES;view=view+1)
+    {
+        for(i=0;i<MC_BENCH_SAMPLES;i=i+1)mc_bench_row("sample",view,i,0);
+        mc_bench_row("min",view,-1,0);mc_bench_row("median",view,-1,1);mc_bench_row("max",view,-1,2);
+    }
+    mc_bench_meta("complete","1");
+}
+int mc_bench_choose_world(void)
+{
+    uint size;int length,i;
+    mc_bench_override=narm_file_exists("/MC10/profile_world.txt",NARM_STORAGE_SD)>0;
+    if(!mc_bench_override)
+    {
+        if(!mc_world_count)return 0;
+        return mc_world_read_info(mc_world_list[0].folder,&mc_bench_world);
+    }
+    if(narm_file_size("/MC10/profile_world.txt",NARM_STORAGE_SD,&size)<0||!size||size>=MC_WORLD_FOLDER_CAP)return 0;
+    length=narm_file_read("/MC10/profile_world.txt",mc_bench_folder,0,size,NARM_STORAGE_SD);
+    if(length!=(int)size)return 0;
+    while(length>0&&(mc_bench_folder[length-1]=='\r'||mc_bench_folder[length-1]=='\n'))length=length-1;
+    mc_bench_folder[length]=0;
+    if(!length||mc_menu_text_equals(mc_bench_folder,".")||mc_menu_text_equals(mc_bench_folder,".."))return 0;
+    for(i=0;i<length;i=i+1)
+        if(mc_bench_folder[i]=='/'||mc_bench_folder[i]=='\\'||mc_bench_folder[i]==':'||mc_bench_folder[i]==0||mc_bench_folder[i]=='\r'||mc_bench_folder[i]=='\n')return 0;
+    return mc_world_read_info(mc_bench_folder,&mc_bench_world);
+}
+int mc_bench_write_log(void)
+{
+    int run,i,count;uint offset,size,amount;
+    if(mc_bench_full||!mc_bench_length)return 0;
+    if(narm_dir_make("/MC10/profiles",NARM_STORAGE_SD)<=0&&!narm_file_exists("/MC10/profiles",NARM_STORAGE_SD))return 0;
+    for(run=1;run<=9999;run=run+1)
+    {
+#ifdef MC10_CULL_PROFILE
+        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b26_");
+#elif defined(MC10_PREPARATION_PROFILE)
+        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b24_");
+#elif defined(MC10_GEOMETRY_PROFILE)
+        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b23_");
+#elif defined(MC10_STAGE_PROFILE)
+        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b22_");
+#elif defined(MC10_TILE_PROFILE)
+        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b21_");
+#elif defined(MC10_SAMPLER_PROFILE)
+        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b20_");
+#elif defined(MC10_LEGACY_FONT)
+        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b17_");
+#else
+        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b15_");
+#endif
+        mc_world_append_char(mc_bench_path,64,(char)('0'+run/1000));
+        mc_world_append_char(mc_bench_path,64,(char)('0'+(run/100)%10));
+        mc_world_append_char(mc_bench_path,64,(char)('0'+(run/10)%10));
+        mc_world_append_char(mc_bench_path,64,(char)('0'+run%10));mc_world_append(mc_bench_path,64,".csv");
+        count=narm_file_size(mc_bench_path,NARM_STORAGE_SD,&size);
+        if(count==0||narm_file_exists(mc_bench_path,NARM_STORAGE_SD)>0)continue;
+        /* FILE_IO_ERR_NOT_FOUND is -3. Do not treat a storage/I/O failure
+         * as permission to truncate an existing report. */
+        if(count!=-3)return 0;
+        break;
+    }
+    if(run>9999||narm_file_create(mc_bench_path,NARM_STORAGE_SD)<=0)return 0;
+    offset=0;
+    while(offset<mc_bench_length)
+    {
+        count=narm_file_write(mc_bench_path,&mc_bench_log[offset],offset,mc_bench_length-offset,NARM_STORAGE_SD);
+        if(count<=0||(uint)count>mc_bench_length-offset)return 0;
+        offset=offset+(uint)count;
+    }
+    if(narm_file_size(mc_bench_path,NARM_STORAGE_SD,&size)<0||size!=mc_bench_length)return 0;
+    for(offset=0;offset<mc_bench_length;offset=offset+amount)
+    {
+        amount=mc_bench_length-offset;if(amount>1024)amount=1024;
+        count=narm_file_read(mc_bench_path,mc_bench_verify,offset,amount,NARM_STORAGE_SD);
+        if(count!=(int)amount)return 0;
+        for(i=0;i<count;i=i+1)if(mc_bench_verify[i]!=mc_bench_log[offset+(uint)i])return 0;
+    }
+    return 1;
+}
+int mc_bench_wait_result(int success)
+{
+    unsigned key,action,mods,character;int event;
+    mc_bench_message(success?"PROFILE SAVED AND VERIFIED":"PROFILE FAILED");
+    if(mc_bench_path[0])mc_menu_draw_centered_string(mc_bench_path,160,116,success?0x55ff55:0xff5555);
+    mc_menu_draw_centered_string(success?"Enter: play   Escape: exit":"Escape or Enter: exit",160,160,0xa0a0a0);
+    narm_half_present();
+    for(;;)
+    {
+        while(narm_next_key_event(&key,&action,&mods,&character)>0)
+            if(action==NARM_KEY_ACTION_PRESS)
+            {if(key==NARM_KEY_ESCAPE)return 0;if(key==NARM_KEY_ENTER)return success;}
+        event=narm_poll_system_event();if(event==NARM_EVENT_CLOSE_REQUESTED)return 0;
+        narm_sleep_ms(16);
+    }
+}
+#ifdef MC10_SAMPLER_PROFILE
+#include "mc10_sampler_profile.tc"
+#endif
+#ifdef MC10_GEOMETRY_PROFILE
+#include "mc10_geometry_profile.tc"
+#elif defined(MC10_STAGE_PROFILE)
+#include "mc10_stage_profile.tc"
+#elif defined(MC10_TILE_PROFILE)
+#include "mc10_tile_profile.tc"
+#endif
+int mc_benchmark_main(void)
+{
+    int success;
+#ifndef MC10_CULL_PROFILE
+    /* Keep older automated schemas/workloads on their historical path. The
+     * archived releases are untouched; normal post-profile play uses culling. */
+    mc_render_cull_mode=0;mc_render_cull_diagnostics=0;
+#endif
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_trace_begin())return 3;
+    if(!mc_startup_checkpoint("startup_begin",0))return 3;
+    mc_blocks_init();
+    if(!mc_startup_checkpoint("blocks_initialized",0))return 3;
+    success=mc_asset_open();
+    if(!mc_startup_checkpoint("asset_open_return",success)||!success)return 3;
+    success=mc_menu_init();
+    if(!mc_startup_checkpoint("menu_init_return",success)||!success)return 3;
+    mc_startup_screen_ready=1;
+    success=mc_options_init();
+    if(!mc_startup_checkpoint("options_init_return",success)||!success)return 3;
+    success=mc_world_init();
+    if(!mc_startup_checkpoint("world_scan_return",success)||!success)return 3;
+#else
+    mc_blocks_init();
+    if(!mc_asset_open()||!mc_menu_init()||!mc_options_init()||!mc_world_init())
+    {mc_bench_message("ASSET / OPTIONS INITIALIZATION FAILED");mc_wait_for_return();return 1;}
+#endif
+#ifdef MC10_SAMPLER_PROFILE
+    if(renderStat(19)!=0x53500001)
+    {mc_bench_message("SAMPLER FIRMWARE REQUIRED");mc_wait_for_return();return 1;}
+#endif
+#ifdef MC10_TILE_PROFILE
+    if(renderStat(24)!=0x54420001)
+    {mc_bench_message("TEXTURED TILE FIRMWARE REQUIRED");mc_wait_for_return();return 1;}
+#endif
+#ifdef MC10_STAGE_PROFILE
+    if(renderStat(34)!=0x44530001)
+    {mc_bench_message("DRAW STAGE FIRMWARE REQUIRED");mc_wait_for_return();return 1;}
+#endif
+#ifdef MC10_GEOMETRY_PROFILE
+    if(renderStat(65)!=0x47500001)
+    {mc_bench_message("GEOMETRY A/B FIRMWARE REQUIRED");mc_wait_for_return();return 1;}
+#endif
+#ifdef MC10_PREPARATION_PROFILE
+    if(renderStat(66)!=0x50500001)
+    {mc_bench_message("PREPARATION FIX FIRMWARE REQUIRED");mc_wait_for_return();return 1;}
+#endif
+#ifdef MC10_CULL_PROFILE
+    if(renderStat(70)!=0x43550001)
+    {mc_bench_message("VISIBILITY CULL FIRMWARE REQUIRED");mc_wait_for_return();return 1;}
+#endif
+    mc_bench_message("Loading benchmark world");
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("world_choose_begin",0))return 3;
+#endif
+    if(!mc_bench_choose_world())
+    {mc_bench_message("NO VALID BENCHMARK WORLD");mc_wait_for_return();return 1;}
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    mc_world_copy(mc_startup_line,192,"world_folder=");
+    mc_world_append(mc_startup_line,192,mc_bench_world.folder);
+    mc_world_append_char(mc_startup_line,192,'\n');
+    if(!mc_startup_write_line()||!mc_startup_checkpoint("world_chosen",0))return 3;
+#endif
+    mc_runtime_status=mc_runtime_bootstrap(&mc_bench_world);
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(mc_startup_isolation_only)
+    {
+        success=!mc_startup_error&&mc_runtime_status==MC_RUNTIME_OK&&
+                mc_runtime_access_ok&&mc_runtime_loaded==9&&
+                !mc_runtime_missing&&!mc_runtime_invalid;
+        if(!mc_startup_error)
+            if(!mc_startup_checkpoint(success?"startup_complete_9_valid_chunks":"startup_failed",mc_runtime_status))success=0;
+        mc_bench_message(success?"STARTUP COMPLETE - NO 3D RENDER":"STARTUP / TRACE FAILED");
+        mc_menu_draw_centered_string(mc_startup_path,160,116,success?0x55ff55:0xff5555);
+        mc_menu_draw_centered_string("Enter / Escape: exit",160,150,0xa0a0a0);
+        narm_half_present();mc_wait_for_return();return success?0:3;
+    }
+#endif
+    if(mc_runtime_status!=MC_RUNTIME_OK||!mc_runtime_access_ok||mc_runtime_loaded!=9||mc_runtime_missing||mc_runtime_invalid)
+    {mc_bench_message("BENCHMARK NEEDS NINE VALID CHUNKS");mc_wait_for_return();return 1;}
+    if(!mc_math_init())
+    {mc_bench_message("MATH TABLE FAILED");mc_wait_for_return();return 1;}
+    mc_player_init();
+    if(mc_player_status||!mc_render_prepare_assets())
+    {mc_bench_message("PLAYER / TERRAIN INITIALIZATION FAILED");mc_wait_for_return();return 1;}
+    mc_profile_cancel();mc_render_build_cache();
+#ifdef MC10_GEOMETRY_PROFILE
+    if(!mc_geometry_collect())
+    {mc_bench_message(mc_render_list_error?"TEXTURED LIST SERVICE FAILED":"PROFILE CANCELLED - NO LOG WRITTEN");mc_wait_for_return();return 2;}
+#elif defined(MC10_STAGE_PROFILE)
+    if(!mc_stage_collect())
+    {mc_bench_message(mc_render_list_error?"TEXTURED LIST SERVICE FAILED":"PROFILE CANCELLED - NO LOG WRITTEN");mc_wait_for_return();return 2;}
+#elif defined(MC10_TILE_PROFILE)
+    if(!mc_tile_collect())
+    {mc_bench_message(mc_render_list_error?"TEXTURED LIST SERVICE FAILED":"PROFILE CANCELLED - NO LOG WRITTEN");mc_wait_for_return();return 2;}
+#elif defined(MC10_SAMPLER_PROFILE)
+    if(!mc_sampler_collect())
+#else
+    if(!mc_bench_collect())
+#endif
+#ifndef MC10_TILE_PROFILE
+    {mc_bench_message("PROFILE CANCELLED - NO LOG WRITTEN");mc_wait_for_return();return 2;}
+#endif
+#ifdef MC10_GEOMETRY_PROFILE
+    mc_geometry_format_log();
+#elif defined(MC10_STAGE_PROFILE)
+    mc_stage_format_log();
+#elif defined(MC10_TILE_PROFILE)
+    mc_tile_format_log();
+#elif defined(MC10_SAMPLER_PROFILE)
+    mc_sampler_format_log();
+#else
+    mc_bench_format_log();
+#endif
+    mc_bench_message("Saving benchmark CSV");success=mc_bench_write_log();
+    if(mc_bench_wait_result(success))
+    {
+#ifdef MC10_GEOMETRY_PROFILE
+        mc_render_submit_optimized=1;mc_render_list_enabled=1;renderStats(0);
+#endif
+        mc_render_cull_mode=3;mc_render_cull_diagnostics=0;
+        mc_game_run(&mc_bench_world);
+    }
+    return success?0:1;
+}
+#endif

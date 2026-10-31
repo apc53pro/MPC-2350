@@ -1,0 +1,1671 @@
+void linkRenderEditIndexToChunk(int idx)
+{
+    if (idx < 0) return;
+    if (idx >= 512) return;
+    edit_next_in_render_chunk[idx] = -1;
+    if (render_cache_valid == 0) return;
+    if (edit_y[idx] < 0) return;
+    if (edit_y[idx] >= 64) return;
+
+    edit_lookup_col_x = edit_x[idx] - render_cache_origin_x;
+    edit_lookup_col_z = edit_z[idx] - render_cache_origin_z;
+    if (edit_lookup_col_x < 0) return;
+    if (edit_lookup_col_z < 0) return;
+    if (edit_lookup_col_x >= render_cache_width) return;
+    if (edit_lookup_col_z >= render_cache_width) return;
+
+    edit_lookup_chunk_x = edit_lookup_col_x / 8;
+    edit_lookup_chunk_z = edit_lookup_col_z / 8;
+    edit_lookup_section = edit_y[idx] / 8;
+    if (edit_lookup_chunk_x < 0) return;
+    if (edit_lookup_chunk_x > 15) return;
+    if (edit_lookup_chunk_z < 0) return;
+    if (edit_lookup_chunk_z > 15) return;
+    if (edit_lookup_section < 0) return;
+    if (edit_lookup_section > 7) return;
+
+    edit_lookup_chunk_id = (edit_lookup_section * 256) + (edit_lookup_chunk_z * 16) + edit_lookup_chunk_x;
+    edit_next_in_render_chunk[idx] = render_chunk_edit_head[edit_lookup_chunk_id];
+    render_chunk_edit_head[edit_lookup_chunk_id] = idx;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Procedural active world-window generation                                  */
+/* ------------------------------------------------------------------------- */
+
+int inWorld(int x, int y, int z)
+{
+    if (x < 0) return 0;
+    if (z < 0) return 0;
+    if (y < 0) return 0;
+    if (x >= 16) return 0;
+    if (z >= 16) return 0;
+    if (y >= 64) return 0;
+    return 1;
+}
+
+int floorFloatToInt(float v)
+{
+    floor_tmp_i = (int)v;
+    if (((float)floor_tmp_i) > v) floor_tmp_i = floor_tmp_i - 1;
+    return floor_tmp_i;
+}
+
+uint terrainHash(int x, int z, int salt)
+{
+    gen_hash = (uint)(x * 374761393 + z * 668265263 + salt * 19997 + world_seed * 1103);
+    gen_hash = gen_hash ^ (gen_hash << 13);
+    gen_hash = gen_hash ^ (gen_hash >> 17);
+    gen_hash = gen_hash ^ (gen_hash << 5);
+    return gen_hash;
+}
+
+int floorDivInt(int v, int d)
+{
+    fd_q = v / d;
+    fd_r = v - (fd_q * d);
+    if (fd_r < 0) fd_q = fd_q - 1;
+    return fd_q;
+}
+
+int smoothNoiseAbs(int wx, int wz, int scale, int salt)
+{
+    /* Integer value noise with smoothstep interpolation. Returns 0..255.
+       This avoids the old blocky wx/4 hash sampling that produced huge
+       square holes/walls and harsh one-block height cliffs. */
+    tn_gx0 = floorDivInt(wx, scale);
+    tn_gz0 = floorDivInt(wz, scale);
+    tn_fx = wx - (tn_gx0 * scale);
+    tn_fz = wz - (tn_gz0 * scale);
+
+    tn_sx = (tn_fx * tn_fx * ((scale * 3) - (tn_fx * 2))) / (scale * scale);
+    tn_sz = (tn_fz * tn_fz * ((scale * 3) - (tn_fz * 2))) / (scale * scale);
+
+    tn_n00 = (int)(terrainHash(tn_gx0,     tn_gz0,     salt) & (uint)255);
+    tn_n10 = (int)(terrainHash(tn_gx0 + 1, tn_gz0,     salt) & (uint)255);
+    tn_n01 = (int)(terrainHash(tn_gx0,     tn_gz0 + 1, salt) & (uint)255);
+    tn_n11 = (int)(terrainHash(tn_gx0 + 1, tn_gz0 + 1, salt) & (uint)255);
+
+    tn_ix0 = (tn_n00 * (scale - tn_sx)) + (tn_n10 * tn_sx);
+    tn_ix1 = (tn_n01 * (scale - tn_sx)) + (tn_n11 * tn_sx);
+    tn_val = ((tn_ix0 * (scale - tn_sz)) + (tn_ix1 * tn_sz)) / (scale * scale);
+    return tn_val;
+}
+
+int absSmallInt(int v)
+{
+    if (v < 0) return 0 - v;
+    return v;
+}
+
+int terrainHeightAbs(int wx, int wz)
+{
+    /* Natural terrain v36:
+       - wide low-frequency noise chooses broad geography;
+       - mid/fine noise adds rolling detail;
+       - ridge strength creates hills without hard biome cliffs;
+       - spawn now uses the same natural terrain as the rest of the world. */
+    tn_low = smoothNoiseAbs(wx, wz, 64, 1);
+    tn_mid = smoothNoiseAbs(wx, wz, 28, 2);
+    tn_small = smoothNoiseAbs(wx, wz, 14, 3);
+    tn_fine = smoothNoiseAbs(wx, wz, 7, 4);
+
+    tn_ridge = absSmallInt(tn_low - 128);
+
+    if (tn_ridge < 28)
+    {
+        /* Plains: mostly flat with tiny rolling variation. */
+        gen_h = 12;
+        gen_h = gen_h + ((tn_mid - 128) / 52);
+        gen_h = gen_h + ((tn_small - 128) / 96);
+    }
+    else
+    {
+        if (tn_ridge < 72)
+        {
+            /* Rolling hills. */
+            gen_h = 13;
+            gen_h = gen_h + ((tn_ridge - 28) / 11);
+            gen_h = gen_h + ((tn_mid - 128) / 34);
+            gen_h = gen_h + ((tn_small - 128) / 70);
+        }
+        else
+        {
+            /* Larger hills/ridges, still clamped to avoid ugly vertical walls. */
+            gen_h = 17;
+            gen_h = gen_h + ((tn_ridge - 72) / 7);
+            gen_h = gen_h + ((tn_mid - 128) / 24);
+            gen_h = gen_h + ((tn_small - 128) / 60);
+        }
+    }
+
+    gen_h = gen_h + ((tn_fine - 128) / 128);
+
+    /* No special spawn plateau: the player is snapped to the naturally generated
+       surface by syncPlayerToGround() after the world window is generated. */
+
+    if (gen_h < 7) gen_h = 7;
+    if (gen_h > 32) gen_h = 32;
+    return gen_h;
+}
+
+int isSpawnFlatAreaAbs(int wx, int wz)
+{
+    /* v36: disabled. Spawn is no longer a protected artificial platform/clearing. */
+    return 0;
+}
+
+int surfaceStoneAtAbs(int wx, int wz, int h)
+{
+    if (isSpawnFlatAreaAbs(wx, wz) != 0) return 0;
+
+    /* Small natural boulders: test nearby possible centers so a boulder becomes
+       a little cluster instead of isolated single pixels. */
+    stone_bz = wz - 1;
+    while (stone_bz <= (wz + 1))
+    {
+        stone_bx = wx - 1;
+        while (stone_bx <= (wx + 1))
+        {
+            if ((terrainHash(stone_bx, stone_bz, 91) & (uint)127) == (uint)0)
+            {
+                stone_dx = wx - stone_bx;
+                stone_dz = wz - stone_bz;
+                stone_adx = absSmallInt(stone_dx);
+                stone_adz = absSmallInt(stone_dz);
+                if ((stone_adx + stone_adz) <= 1) return 1;
+            }
+            stone_bx = stone_bx + 1;
+        }
+        stone_bz = stone_bz + 1;
+    }
+
+    /* Higher rough terrain occasionally has exposed stone at the surface. */
+    if (h >= 22)
+    {
+        if (smoothNoiseAbs(wx, wz, 10, 92) > 150) return 1;
+    }
+
+    return 0;
+}
+
+int treeBaseAtAbs(int wx, int wz)
+{
+    if (isSpawnFlatAreaAbs(wx, wz) != 0) return 0;
+
+    /* Check the cheap sparse tree hash before computing terrain height. */
+    if ((terrainHash(wx, wz, 77) & (uint)63) != (uint)0) return 0;
+
+    tree_h = terrainHeightAbs(wx, wz);
+    if (tree_h > 30) return 0;
+
+    /* Avoid trees on exposed stone/boulders. */
+    if (surfaceStoneAtAbs(wx, wz, tree_h) != 0) return 0;
+
+    return 1;
+}
+
+int treeTrunkHeightAtAbs(int wx, int wz)
+{
+    /* Small deterministic oak-height variation: 3..4 trunk blocks. */
+    return 3 + (int)(terrainHash(wx, wz, 123) & (uint)1);
+}
+
+uint naturalColumnInfoAtAbs(int wx, int wz)
+{
+    /* Packed natural-column layout:
+         bits 0..5  terrain height
+         bit  6     stone surface
+         bit  7     soil depth is 4 instead of 3
+         bit  8     tree base
+         bit  9     tree trunk height is 4 instead of 3
+       Mesh generation asks for the same x/z column many times across vertical
+       sections and neighbor checks. Cache those procedural decisions once. */
+    render_column_cache_x = wx - render_cache_origin_x;
+    render_column_cache_z = wz - render_cache_origin_z;
+    render_column_cache_i = -1;
+    if (render_cache_valid != 0)
+    {
+        if ((render_column_cache_x >= 0) && (render_column_cache_x < render_cache_width))
+        {
+            if ((render_column_cache_z >= 0) && (render_column_cache_z < render_cache_width))
+            {
+                render_column_cache_i = (render_column_cache_z * 128) + render_column_cache_x;
+                render_column_info_word = render_natural_column_info[render_column_cache_i];
+                if (render_column_info_word != render_natural_column_invalid)
+                {
+                    render_column_cache_hits = render_column_cache_hits + 1;
+                    return render_column_info_word;
+                }
+            }
+        }
+    }
+
+    render_column_cache_misses = render_column_cache_misses + 1;
+    gen_h = terrainHeightAbs(wx, wz);
+    render_column_info_word = (uint)gen_h;
+    if (surfaceStoneAtAbs(wx, wz, gen_h) != 0) render_column_info_word = render_column_info_word | ((uint)1 << 6);
+    if ((terrainHash(floorDivInt(wx, 4), floorDivInt(wz, 4), 9) & (uint)1) != (uint)0)
+        render_column_info_word = render_column_info_word | ((uint)1 << 7);
+
+    if (isSpawnFlatAreaAbs(wx, wz) == 0)
+    {
+        if ((terrainHash(wx, wz, 77) & (uint)63) == (uint)0)
+        {
+            if ((gen_h <= 30) && ((render_column_info_word & ((uint)1 << 6)) == (uint)0))
+            {
+                render_column_info_word = render_column_info_word | ((uint)1 << 8);
+                if ((terrainHash(wx, wz, 123) & (uint)1) != (uint)0)
+                    render_column_info_word = render_column_info_word | ((uint)1 << 9);
+            }
+        }
+    }
+
+    if (render_column_cache_i >= 0) render_natural_column_info[render_column_cache_i] = render_column_info_word;
+    return render_column_info_word;
+}
+
+int treeLeafAtAbs(int wx, int y, int wz)
+{
+    if (y < 4) return 0;
+    if (y > 40) return 0;
+
+    tree_bx = wx - 2;
+    while (tree_bx <= (wx + 2))
+    {
+        tree_bz = wz - 2;
+        while (tree_bz <= (wz + 2))
+        {
+            if (treeBaseAtAbs(tree_bx, tree_bz) != 0)
+            {
+                tree_trunk_h = treeTrunkHeightAtAbs(tree_bx, tree_bz);
+                tree_leaf_y = y - (tree_h + tree_trunk_h);
+                tree_dx = wx - tree_bx;
+                tree_dz = wz - tree_bz;
+                tree_adx = absSmallInt(tree_dx);
+                tree_adz = absSmallInt(tree_dz);
+
+                /* Solid, non-transparent leaves: lower 5x5 layer plus smaller top. */
+                if (tree_leaf_y == 0)
+                {
+                    if (tree_adx <= 2)
+                    {
+                        if (tree_adz <= 2)
+                        {
+                            if ((tree_adx + tree_adz) < 4) return 1;
+                        }
+                    }
+                }
+                if (tree_leaf_y == 1)
+                {
+                    if (tree_adx <= 1)
+                    {
+                        if (tree_adz <= 1) return 1;
+                    }
+                }
+            }
+            tree_bz = tree_bz + 1;
+        }
+        tree_bx = tree_bx + 1;
+    }
+    return 0;
+}
+
+uint baseBlockAtAbs(int wx, int y, int wz)
+{
+    if (y < 0) return (uint)0;
+    if (y >= 64) return (uint)0;
+
+    render_column_info_word = naturalColumnInfoAtAbs(wx, wz);
+    gen_h = (int)(render_column_info_word & (uint)63);
+
+    if (y <= gen_h)
+    {
+        if (y == gen_h)
+        {
+            if ((render_column_info_word & ((uint)1 << 6)) != (uint)0) return (uint)3;
+            return (uint)1;
+        }
+
+        tn_soil = 3;
+        if ((render_column_info_word & ((uint)1 << 7)) != (uint)0) tn_soil = 4;
+        if ((y + tn_soil) >= gen_h) return (uint)2;
+        return (uint)3;
+    }
+
+    if (y > 40) return (uint)0;
+
+    if ((render_column_info_word & ((uint)1 << 8)) != (uint)0)
+    {
+        tree_trunk_h = 3;
+        if ((render_column_info_word & ((uint)1 << 9)) != (uint)0) tree_trunk_h = 4;
+        if (y <= (gen_h + tree_trunk_h)) return (uint)4;
+    }
+
+    tree_bx = wx - 2;
+    while (tree_bx <= (wx + 2))
+    {
+        tree_bz = wz - 2;
+        while (tree_bz <= (wz + 2))
+        {
+            render_column_tree_word = naturalColumnInfoAtAbs(tree_bx, tree_bz);
+            if ((render_column_tree_word & ((uint)1 << 8)) != (uint)0)
+            {
+                tree_h = (int)(render_column_tree_word & (uint)63);
+                tree_trunk_h = 3;
+                if ((render_column_tree_word & ((uint)1 << 9)) != (uint)0) tree_trunk_h = 4;
+                tree_leaf_y = y - (tree_h + tree_trunk_h);
+                tree_dx = wx - tree_bx;
+                tree_dz = wz - tree_bz;
+                tree_adx = absSmallInt(tree_dx);
+                tree_adz = absSmallInt(tree_dz);
+                if (tree_leaf_y == 0)
+                {
+                    if ((tree_adx <= 2) && (tree_adz <= 2) && ((tree_adx + tree_adz) < 4)) return (uint)5;
+                }
+                if (tree_leaf_y == 1)
+                {
+                    if ((tree_adx <= 1) && (tree_adz <= 1)) return (uint)5;
+                }
+            }
+            tree_bz = tree_bz + 1;
+        }
+        tree_bx = tree_bx + 1;
+    }
+
+    return (uint)0;
+}
+
+
+
+int findEditAbs(int wx, int y, int wz)
+{
+    edit_lookup_i = 0;
+    while (edit_lookup_i < edit_count)
+    {
+        if (edit_x[edit_lookup_i] == wx)
+        {
+            if (edit_y[edit_lookup_i] == y)
+            {
+                if (edit_z[edit_lookup_i] == wz) return edit_lookup_i;
+            }
+        }
+        edit_lookup_i = edit_lookup_i + 1;
+    }
+    return -1;
+}
+
+int findEditAbsCached(int wx, int y, int wz)
+{
+    /* Fast path for render/lighting work after the render cache exists.
+       Saved edits are linked by 8x8x8 render chunk, so mesh building no longer
+       pays a full 0..edit_count scan for every block and neighbor lookup. */
+    if (render_cache_valid == 0) return findEditAbs(wx, y, wz);
+    if (y < 0) return -1;
+    if (y >= 64) return -1;
+
+    edit_lookup_col_x = wx - render_cache_origin_x;
+    edit_lookup_col_z = wz - render_cache_origin_z;
+    if (edit_lookup_col_x < 0) return findEditAbs(wx, y, wz);
+    if (edit_lookup_col_z < 0) return findEditAbs(wx, y, wz);
+    if (edit_lookup_col_x >= render_cache_width) return findEditAbs(wx, y, wz);
+    if (edit_lookup_col_z >= render_cache_width) return findEditAbs(wx, y, wz);
+
+    edit_lookup_chunk_x = edit_lookup_col_x / 8;
+    edit_lookup_chunk_z = edit_lookup_col_z / 8;
+    edit_lookup_section = y / 8;
+    edit_lookup_chunk_id = (edit_lookup_section * 256) + (edit_lookup_chunk_z * 16) + edit_lookup_chunk_x;
+
+    edit_lookup_i = render_chunk_edit_head[edit_lookup_chunk_id];
+    while (edit_lookup_i >= 0)
+    {
+        if (edit_x[edit_lookup_i] == wx)
+        {
+            if (edit_y[edit_lookup_i] == y)
+            {
+                if (edit_z[edit_lookup_i] == wz) return edit_lookup_i;
+            }
+        }
+        edit_lookup_i = edit_next_in_render_chunk[edit_lookup_i];
+    }
+    return -1;
+}
+
+uint blockAtAbs(int wx, int y, int wz)
+{
+    if (y < 0) return (uint)0;
+    if (y >= 64) return (uint)0;
+
+    edit_lookup_i = findEditAbsCached(wx, y, wz);
+    if (edit_lookup_i >= 0) return edit_block[edit_lookup_i];
+
+    return baseBlockAtAbs(wx, y, wz);
+}
+
+int blockStopsSkyLight(uint b)
+{
+    if (b == BLOCK_AIR) return 0;
+    return blockRegistryStopsSky(b);
+}
+
+int skyDarkeningValueForTime()
+{
+    /* Minecraft-style gameplay sky darkening. The stored/technical skylight in
+       an open column can still be 15 at night, but gameplay sees it through a
+       time-of-day darkening value:
+           day      0..11999      darkening 0  -> open sky 15
+           sunset   12000..12999  darkening 1..11 -> open sky 14..4
+           night    13000..22999  darkening 11 -> open sky 4
+           sunrise  23000..23999  darkening 11..0 -> open sky 4..15
+       Weather is not implemented, so only the clock contributes. */
+    if (day_time_tick < (uint)12000) return 0;
+
+    if (day_time_tick < (uint)13000)
+    {
+        light_level_darkening = 1 + (int)(((day_time_tick - (uint)12000) * (uint)10) / (uint)999);
+        if (light_level_darkening < 1) light_level_darkening = 1;
+        if (light_level_darkening > 11) light_level_darkening = 11;
+        return light_level_darkening;
+    }
+
+    if (day_time_tick < (uint)23000) return 11;
+
+    light_level_darkening = 11 - (int)(((day_time_tick - (uint)23000) * (uint)11) / (uint)999);
+    if (light_level_darkening < 0) light_level_darkening = 0;
+    if (light_level_darkening > 11) light_level_darkening = 11;
+    return light_level_darkening;
+}
+
+int directRawSkyLightAtAbs(int wx, int y, int wz)
+{
+    /* Direct vertical skylight column only. Open sky stays 15 all the way down
+       until an opaque block blocks the column. Transparent leaves pass skylight
+       but dim the direct column by one each. This value is still the stored /
+       technical sky light and does not change at night. */
+    if (y < 0) y = 0;
+    if (y >= 64) return 15;
+
+    light_block_id = blockAtAbs(wx, y, wz);
+    if (blockStopsSkyLight(light_block_id) != 0) return 0;
+
+    light_level_raw_sky = 15;
+    light_y = y + 1;
+    while (light_y < 64)
+    {
+        light_block_id = blockAtAbs(wx, light_y, wz);
+        if (light_block_id != BLOCK_AIR)
+        {
+            if (blockStopsSkyLight(light_block_id) != 0) return 0;
+            light_level_raw_sky = light_level_raw_sky - 1;
+            if (light_level_raw_sky <= 0) return 0;
+        }
+        light_y = light_y + 1;
+    }
+    return light_level_raw_sky;
+}
+
+int skyBleedPathClearXThenZ(int wx, int y, int wz, int dx, int dz)
+{
+    /* Cheap 2D same-height flood-fill approximation for horizontal sky bleed.
+       It checks one Manhattan path: first X, then Z. The second helper checks
+       the opposite order, so light can still sneak around a one-axis obstacle. */
+    light_px = wx;
+    light_pz = wz;
+
+    light_step_x = 0;
+    if (dx > 0) light_step_x = 1;
+    if (dx < 0) light_step_x = -1;
+
+    light_path_len = absSmallInt(dx);
+    light_path_i = 0;
+    while (light_path_i < light_path_len)
+    {
+        light_px = light_px + light_step_x;
+        light_block_id = blockAtAbs(light_px, y, light_pz);
+        if (blockStopsSkyLight(light_block_id) != 0) return 0;
+        light_path_i = light_path_i + 1;
+    }
+
+    light_step_z = 0;
+    if (dz > 0) light_step_z = 1;
+    if (dz < 0) light_step_z = -1;
+
+    light_path_len = absSmallInt(dz);
+    light_path_i = 0;
+    while (light_path_i < light_path_len)
+    {
+        light_pz = light_pz + light_step_z;
+        light_block_id = blockAtAbs(light_px, y, light_pz);
+        if (blockStopsSkyLight(light_block_id) != 0) return 0;
+        light_path_i = light_path_i + 1;
+    }
+
+    return 1;
+}
+
+int skyBleedPathClearZThenX(int wx, int y, int wz, int dx, int dz)
+{
+    light_px = wx;
+    light_pz = wz;
+
+    light_step_z = 0;
+    if (dz > 0) light_step_z = 1;
+    if (dz < 0) light_step_z = -1;
+
+    light_path_len = absSmallInt(dz);
+    light_path_i = 0;
+    while (light_path_i < light_path_len)
+    {
+        light_pz = light_pz + light_step_z;
+        light_block_id = blockAtAbs(light_px, y, light_pz);
+        if (blockStopsSkyLight(light_block_id) != 0) return 0;
+        light_path_i = light_path_i + 1;
+    }
+
+    light_step_x = 0;
+    if (dx > 0) light_step_x = 1;
+    if (dx < 0) light_step_x = -1;
+
+    light_path_len = absSmallInt(dx);
+    light_path_i = 0;
+    while (light_path_i < light_path_len)
+    {
+        light_px = light_px + light_step_x;
+        light_block_id = blockAtAbs(light_px, y, light_pz);
+        if (blockStopsSkyLight(light_block_id) != 0) return 0;
+        light_path_i = light_path_i + 1;
+    }
+
+    return 1;
+}
+
+int skyBleedCandidateAllowed(int wx, int y, int wz, int dx, int dz)
+{
+    if (skyBleedPathClearXThenZ(wx, y, wz, dx, dz) != 0) return 1;
+    if (skyBleedPathClearZThenX(wx, y, wz, dx, dz) != 0) return 1;
+    return 0;
+}
+
+int rawSkyLightAtAbs(int wx, int y, int wz)
+{
+    /* Stored/technical sky light with horizontal bleed. Direct open-sky columns
+       keep level 15 vertically. If a small roof/overhang blocks the direct
+       column, nearby open-sky cells at the same height can flood light sideways
+       using taxicab falloff: source_light - (abs(dx)+abs(dz)).
+
+       This is math-only; rendering is intentionally unchanged. */
+    if (y < 0) y = 0;
+    if (y >= 64) return 15;
+
+    light_block_id = blockAtAbs(wx, y, wz);
+    if (blockStopsSkyLight(light_block_id) != 0) return 0;
+
+    light_best = directRawSkyLightAtAbs(wx, y, wz);
+    if (light_best >= 15) return 15;
+
+    light_scan_dist = 1;
+    while (light_scan_dist < 16)
+    {
+        light_dx = 0 - light_scan_dist;
+        while (light_dx <= light_scan_dist)
+        {
+            light_adx = absSmallInt(light_dx);
+            light_adz = light_scan_dist - light_adx;
+
+            light_dz = light_adz;
+            light_source = directRawSkyLightAtAbs(wx + light_dx, y, wz + light_dz);
+            if (light_source > light_scan_dist)
+            {
+                if (skyBleedCandidateAllowed(wx, y, wz, light_dx, light_dz) != 0)
+                {
+                    light_candidate = light_source - light_scan_dist;
+                    if (light_candidate > light_best) light_best = light_candidate;
+                }
+            }
+
+            if (light_adz != 0)
+            {
+                light_dz = 0 - light_adz;
+                light_source = directRawSkyLightAtAbs(wx + light_dx, y, wz + light_dz);
+                if (light_source > light_scan_dist)
+                {
+                    if (skyBleedCandidateAllowed(wx, y, wz, light_dx, light_dz) != 0)
+                    {
+                        light_candidate = light_source - light_scan_dist;
+                        if (light_candidate > light_best) light_best = light_candidate;
+                    }
+                }
+            }
+
+            light_dx = light_dx + 1;
+        }
+
+        /* If we already have the best value any farther source could possibly
+           beat, stop early. For example a neighboring open column gives 14,
+           and distance 2+ can only give 13 or less. */
+        if (light_best >= (15 - light_scan_dist)) return light_best;
+
+        light_scan_dist = light_scan_dist + 1;
+    }
+
+    return light_best;
+}
+
+int skyLightAtAbs(int wx, int y, int wz)
+{
+    /* Effective gameplay sky light: technical sky light minus the current
+       darkening filter. Rendering intentionally does not use this. */
+    light_level_raw_sky = rawSkyLightAtAbs(wx, y, wz);
+    light_level_darkening = skyDarkeningValueForTime();
+    light_level_effective_sky = light_level_raw_sky - light_level_darkening;
+    if (light_level_effective_sky < 0) light_level_effective_sky = 0;
+    return light_level_effective_sky;
+}
+
+int blockLightEmission(uint b)
+{
+    return blockRegistryLightEmission(b);
+}
+
+int blockLightAtAbs(int wx, int y, int wz)
+{
+    /* Block-light uses Minecraft's taxicab/diamond falloff: a source with level
+       N contributes N - (abs(dx)+abs(dy)+abs(dz)). There are no emitting blocks
+       in the current block set, so this returns 0 without scanning a 31^3 area. */
+    return 0;
+}
+
+int lightLevelAtAbs(int wx, int y, int wz)
+{
+    light_level_sky = skyLightAtAbs(wx, y, wz);
+    light_level_block = blockLightAtAbs(wx, y, wz);
+    light_level_total = light_level_sky;
+    if (light_level_block > light_level_total) light_level_total = light_level_block;
+    return light_level_total;
+}
+
+int hostileMobNightSkyIgnoredNow()
+{
+    /* Future hostile-mob rule from the reference behavior: during real night,
+       surface skylight/moonlight is ignored for the darkness spawn check. */
+    if (day_time_tick >= (uint)13000)
+    {
+        if (day_time_tick < (uint)23000) return 1;
+    }
+    return 0;
+}
+
+int hostileSpawnLightAllowedAtAbs(int wx, int y, int wz)
+{
+    /* Future hostile mob helper. Hostile overworld mobs require block light
+       exactly 0. At night the sky-light part is ignored, so open surfaces with
+       no artificial light can pass. During daytime/twilight, effective sky
+       light still blocks exposed positions, while caves with no sky/block light
+       can pass. */
+    hostile_light_check = blockLightAtAbs(wx, y, wz);
+    if (hostile_light_check != 0) return 0;
+
+    if (hostileMobNightSkyIgnoredNow() != 0) return 1;
+
+    hostile_light_check = skyLightAtAbs(wx, y, wz);
+    if (hostile_light_check == 0) return 1;
+    return 0;
+}
+
+void setEditAbs(int wx, int y, int wz, uint b)
+{
+    edit_i = findEditAbs(wx, y, wz);
+    if (edit_i >= 0)
+    {
+        edit_block[edit_i] = b;
+        world_dirty = 1;
+        world_last_dirty_edit_ms = millis();
+        autosave_step_active = 0;
+        return;
+    }
+
+    if (edit_count < 512)
+    {
+        edit_x[edit_count] = wx;
+        edit_y[edit_count] = y;
+        edit_z[edit_count] = wz;
+        edit_block[edit_count] = b;
+        linkRenderEditIndexToChunk(edit_count);
+        edit_count = edit_count + 1;
+        world_dirty = 1;
+        world_last_dirty_edit_ms = millis();
+        autosave_step_active = 0;
+    }
+}
+
+void setBlock(int x, int y, int z, uint b)
+{
+    if (x < 0) return;
+    if (z < 0) return;
+    if (y < 0) return;
+    if (x >= 16) return;
+    if (z >= 16) return;
+    if (y >= 64) return;
+
+    edit_patch_old_block = blockAtAbs(world_origin_x + x, y, world_origin_z + z);
+    if (edit_patch_old_block == b) return;
+
+    world[(y * 256) + (z * 16) + x] = b;
+    setEditAbs(world_origin_x + x, y, world_origin_z + z, b);
+    patchEditedBlockMeshDirect(world_origin_x + x, y, world_origin_z + z, edit_patch_old_block, b);
+}
+
+void clearWorldIO()
+{
+    int i;
+    i = 0;
+    while (i < 256)
+    {
+        world_io[i] = 0;
+        i = i + 1;
+    }
+}
+
+void writeU32ToIO(int off, uint v)
+{
+    world_io[off] = (char)((v >> 24) & (uint)255);
+    world_io[off + 1] = (char)((v >> 16) & (uint)255);
+    world_io[off + 2] = (char)((v >> 8) & (uint)255);
+    world_io[off + 3] = (char)(v & (uint)255);
+}
+
+uint readU32FromIO(int off)
+{
+    return (((uint)world_io[off] & (uint)255) << 24) |
+           (((uint)world_io[off + 1] & (uint)255) << 16) |
+           (((uint)world_io[off + 2] & (uint)255) << 8) |
+           ((uint)world_io[off + 3] & (uint)255);
+}
+
+void clampPendingConfigValues()
+{
+    if (pending_camera_sensitivity_percent < 40) pending_camera_sensitivity_percent = 40;
+    if (pending_camera_sensitivity_percent > 200) pending_camera_sensitivity_percent = 200;
+    if (pending_cursor_sensitivity_percent < 40) pending_cursor_sensitivity_percent = 40;
+    if (pending_cursor_sensitivity_percent > 200) pending_cursor_sensitivity_percent = 200;
+    if (pending_render_chunks < render_chunks_min) pending_render_chunks = render_chunks_min;
+    if (pending_render_chunks > render_chunks_max) pending_render_chunks = render_chunks_max;
+    if (pending_cloud_area_blocks < 64) pending_cloud_area_blocks = 64;
+    if (pending_cloud_area_blocks > 160) pending_cloud_area_blocks = 160;
+    if (pending_clouds_enabled == 0) pending_clouds_enabled = 0; else pending_clouds_enabled = 1;
+    if (pending_autosave_enabled == 0) pending_autosave_enabled = 0; else pending_autosave_enabled = 1;
+    if (pending_stars_enabled == 0) pending_stars_enabled = 0; else pending_stars_enabled = 1;
+    if (pending_aimed_outline_enabled == 0) pending_aimed_outline_enabled = 0; else pending_aimed_outline_enabled = 1;
+    if (pending_day_cycle_speed_percent < 25) pending_day_cycle_speed_percent = 25;
+    if (pending_day_cycle_speed_percent > 800) pending_day_cycle_speed_percent = 800;
+}
+
+void syncPendingConfigFromActive()
+{
+    pending_camera_sensitivity_percent = camera_sensitivity_percent;
+    pending_cursor_sensitivity_percent = cursor_sensitivity_percent;
+    pending_render_chunks = render_chunks;
+    pending_clouds_enabled = clouds_enabled;
+    pending_cloud_area_blocks = cloud_area_blocks;
+    pending_autosave_enabled = autosave_enabled;
+    pending_stars_enabled = stars_enabled;
+    pending_aimed_outline_enabled = aimed_outline_enabled;
+    pending_day_cycle_speed_percent = day_cycle_speed_percent;
+    clampPendingConfigValues();
+    config_dirty = 0;
+}
+
+void applyPendingConfigValues()
+{
+    clampPendingConfigValues();
+    camera_sensitivity_percent = pending_camera_sensitivity_percent;
+    cursor_sensitivity_percent = pending_cursor_sensitivity_percent;
+    render_chunks = pending_render_chunks;
+    clouds_enabled = pending_clouds_enabled;
+    cloud_area_blocks = pending_cloud_area_blocks;
+    autosave_enabled = pending_autosave_enabled;
+    stars_enabled = pending_stars_enabled;
+    aimed_outline_enabled = pending_aimed_outline_enabled;
+    day_cycle_speed_percent = pending_day_cycle_speed_percent;
+    applyConfigValues();
+    config_dirty = 0;
+}
+
+void applyConfigValues()
+{
+    if (camera_sensitivity_percent < 40) camera_sensitivity_percent = 40;
+    if (camera_sensitivity_percent > 200) camera_sensitivity_percent = 200;
+    if (cursor_sensitivity_percent < 40) cursor_sensitivity_percent = 40;
+    if (cursor_sensitivity_percent > 200) cursor_sensitivity_percent = 200;
+    if (render_chunks < render_chunks_min) render_chunks = render_chunks_min;
+    if (render_chunks > render_chunks_max) render_chunks = render_chunks_max;
+    if (cloud_area_blocks < 64) cloud_area_blocks = 64;
+    if (cloud_area_blocks > 160) cloud_area_blocks = 160;
+    if (clouds_enabled == 0) clouds_enabled = 0; else clouds_enabled = 1;
+    if (autosave_enabled == 0) autosave_enabled = 0; else autosave_enabled = 1;
+    if (stars_enabled == 0) stars_enabled = 0; else stars_enabled = 1;
+    if (aimed_outline_enabled == 0) aimed_outline_enabled = 0; else aimed_outline_enabled = 1;
+    if (day_cycle_speed_percent < 25) day_cycle_speed_percent = 25;
+    if (day_cycle_speed_percent > 800) day_cycle_speed_percent = 800;
+    camera_sensitivity = (float)camera_sensitivity_percent * 0.01f;
+    cursor_sensitivity = (float)cursor_sensitivity_percent * 0.01f;
+}
+
+void configPutChar(int ch)
+{
+    if (world_io_offset >= 255) return;
+    world_io[world_io_offset] = (char)ch;
+    world_io_offset = world_io_offset + 1;
+}
+
+void configPutDec(int v)
+{
+    if (v < 0)
+    {
+        configPutChar(45);
+        v = 0 - v;
+    }
+    if (v >= 100) configPutChar(48 + (v / 100));
+    if (v >= 10) configPutChar(48 + ((v / 10) % 10));
+    configPutChar(48 + (v % 10));
+}
+
+void configPutHeader()
+{
+    configPutChar('#'); configPutChar(' '); configPutChar('T'); configPutChar('i'); configPutChar('n'); configPutChar('y'); configPutChar('C'); configPutChar('r'); configPutChar('a'); configPutChar('f'); configPutChar('t'); configPutChar(' '); configPutChar('c'); configPutChar('o'); configPutChar('n'); configPutChar('f'); configPutChar('i'); configPutChar('g'); configPutChar('\n');
+    configPutChar('#'); configPutChar(' '); configPutChar('E'); configPutChar('d'); configPutChar('i'); configPutChar('t'); configPutChar(' '); configPutChar('v'); configPutChar('a'); configPutChar('l'); configPutChar('u'); configPutChar('e'); configPutChar('s'); configPutChar(' '); configPutChar('a'); configPutChar('f'); configPutChar('t'); configPutChar('e'); configPutChar('r'); configPutChar(' '); configPutChar('='); configPutChar('\n');
+}
+
+void configPutKeyCamera()
+{
+    configPutChar('c'); configPutChar('a'); configPutChar('m'); configPutChar('e'); configPutChar('r'); configPutChar('a'); configPutChar('_'); configPutChar('s'); configPutChar('e'); configPutChar('n'); configPutChar('s'); configPutChar('i'); configPutChar('t'); configPutChar('i'); configPutChar('v'); configPutChar('i'); configPutChar('t'); configPutChar('y'); configPutChar('=');
+}
+
+void configPutKeyCursor()
+{
+    configPutChar('c'); configPutChar('u'); configPutChar('r'); configPutChar('s'); configPutChar('o'); configPutChar('r'); configPutChar('_'); configPutChar('s'); configPutChar('e'); configPutChar('n'); configPutChar('s'); configPutChar('i'); configPutChar('t'); configPutChar('i'); configPutChar('v'); configPutChar('i'); configPutChar('t'); configPutChar('y'); configPutChar('=');
+}
+
+void configPutKeyRenderChunks()
+{
+    configPutChar('r'); configPutChar('e'); configPutChar('n'); configPutChar('d'); configPutChar('e'); configPutChar('r'); configPutChar('_'); configPutChar('c'); configPutChar('h'); configPutChar('u'); configPutChar('n'); configPutChar('k'); configPutChar('s'); configPutChar('=');
+}
+
+void configPutKeyClouds()
+{
+    configPutChar('c'); configPutChar('l'); configPutChar('o'); configPutChar('u'); configPutChar('d'); configPutChar('s'); configPutChar('=');
+}
+
+void configPutKeyCloudArea()
+{
+    configPutChar('c'); configPutChar('l'); configPutChar('o'); configPutChar('u'); configPutChar('d'); configPutChar('_'); configPutChar('a'); configPutChar('r'); configPutChar('e'); configPutChar('a'); configPutChar('=');
+}
+
+void configPutKeyAutosave()
+{
+    configPutChar('a'); configPutChar('u'); configPutChar('t'); configPutChar('o'); configPutChar('s'); configPutChar('a'); configPutChar('v'); configPutChar('e'); configPutChar('=');
+}
+
+void configPutKeyStars()
+{
+    configPutChar('s'); configPutChar('t'); configPutChar('a'); configPutChar('r'); configPutChar('s'); configPutChar('=');
+}
+
+void configPutKeyOutline()
+{
+    configPutChar('o'); configPutChar('u'); configPutChar('t'); configPutChar('l'); configPutChar('i'); configPutChar('n'); configPutChar('e'); configPutChar('=');
+}
+
+void configPutKeyDaySpeed()
+{
+    configPutChar('d'); configPutChar('a'); configPutChar('y'); configPutChar('_'); configPutChar('s'); configPutChar('p'); configPutChar('e'); configPutChar('e'); configPutChar('d'); configPutChar('=');
+}
+
+void configPutLineCamera() { configPutKeyCamera(); configPutDec(camera_sensitivity_percent); configPutChar('\n'); }
+void configPutLineCursor() { configPutKeyCursor(); configPutDec(cursor_sensitivity_percent); configPutChar('\n'); }
+void configPutLineRenderChunks() { configPutKeyRenderChunks(); configPutDec(render_chunks); configPutChar('\n'); }
+void configPutLineClouds() { configPutKeyClouds(); configPutDec(clouds_enabled); configPutChar('\n'); }
+void configPutLineCloudArea() { configPutKeyCloudArea(); configPutDec(cloud_area_blocks); configPutChar('\n'); }
+void configPutLineAutosave() { configPutKeyAutosave(); configPutDec(autosave_enabled); configPutChar('\n'); }
+void configPutLineStars() { configPutKeyStars(); configPutDec(stars_enabled); configPutChar('\n'); }
+void configPutLineOutline() { configPutKeyOutline(); configPutDec(aimed_outline_enabled); configPutChar('\n'); }
+void configPutLineDaySpeed() { configPutKeyDaySpeed(); configPutDec(day_cycle_speed_percent); configPutChar('\n'); }
+
+int readDec3FromIO(int off)
+{
+    return (((int)world_io[off] - 48) * 100) + (((int)world_io[off + 1] - 48) * 10) + ((int)world_io[off + 2] - 48);
+}
+
+int readConfigLineValue(int off)
+{
+    config_value = 0;
+    config_digit_seen = 0;
+    config_sign = 1;
+
+    while ((off < config_tmp) && (off < 256) && (world_io[off] != '\n') && (world_io[off] != '\r') && (world_io[off] != '='))
+    {
+        off = off + 1;
+    }
+    if ((off >= config_tmp) || (off >= 256)) return -999999;
+    if (world_io[off] != '=') return -999999;
+    off = off + 1;
+
+    while ((off < config_tmp) && (off < 256) && ((world_io[off] == ' ') || (world_io[off] == '\t')))
+    {
+        off = off + 1;
+    }
+    if ((off < config_tmp) && (off < 256) && (world_io[off] == '-'))
+    {
+        config_sign = -1;
+        off = off + 1;
+    }
+    while ((off < config_tmp) && (off < 256) && (world_io[off] >= '0') && (world_io[off] <= '9'))
+    {
+        config_value = config_value * 10 + ((int)world_io[off] - 48);
+        config_digit_seen = 1;
+        off = off + 1;
+    }
+    if (config_digit_seen == 0) return -999999;
+    return config_value * config_sign;
+}
+
+int configLineIsOldMagic()
+{
+    if (config_tmp < 42) return 0;
+    if ((world_io[0] == 'T') && (world_io[1] == 'C') && (world_io[2] == 'C') && (world_io[3] == '1')) return 1;
+    return 0;
+}
+
+void loadOldFixedConfigFile()
+{
+    camera_sensitivity_percent = readDec3FromIO(9);
+    cursor_sensitivity_percent = readDec3FromIO(17);
+    render_chunks = (int)world_io[25] - 48;
+    clouds_enabled = (int)world_io[33] - 48;
+    if ((config_tmp >= 51) && (world_io[35] == 'A') && (world_io[36] == 'R') && (world_io[37] == 'E') && (world_io[38] == 'A'))
+    {
+        cloud_area_blocks = readDec3FromIO(40);
+        autosave_enabled = (int)world_io[49] - 48;
+        stars_enabled = 1;
+        aimed_outline_enabled = 0;
+        if ((config_tmp >= 65) && (world_io[51] == 'S') && (world_io[52] == 'T') && (world_io[53] == 'A') && (world_io[54] == 'R'))
+        {
+            stars_enabled = (int)world_io[56] - 48;
+            aimed_outline_enabled = (int)world_io[63] - 48;
+        }
+    }
+    else
+    {
+        cloud_area_blocks = 64;
+        autosave_enabled = (int)world_io[40] - 48;
+        stars_enabled = 1;
+        aimed_outline_enabled = 0;
+    }
+}
+
+void saveConfigFile()
+{
+    if (!sdFileExists(config_path)) sdFileMake(config_path);
+    clearWorldIO();
+    world_io_offset = 0;
+
+    configPutHeader();
+    configPutLineCamera();
+    configPutLineCursor();
+    configPutLineRenderChunks();
+    configPutLineClouds();
+    configPutLineCloudArea();
+    configPutLineAutosave();
+    configPutLineStars();
+    configPutLineOutline();
+    configPutLineDaySpeed();
+
+    sdFileWrite(config_path, world_io, 0);
+    config_dirty = 0;
+    config_icon_until_ms = millis() + (uint)1600;
+}
+
+void loadConfigFile()
+{
+    if (!sdFileExists(config_path))
+    {
+        applyConfigValues();
+        syncPendingConfigFromActive();
+        saveConfigFile();
+        return;
+    }
+    clearWorldIO();
+    config_tmp = sdFileRead(config_path, world_io, 0);
+    if (config_tmp <= 0)
+    {
+        applyConfigValues();
+        syncPendingConfigFromActive();
+        return;
+    }
+
+    if (configLineIsOldMagic() != 0)
+    {
+        loadOldFixedConfigFile();
+        applyConfigValues();
+        syncPendingConfigFromActive();
+        return;
+    }
+
+    config_scan_i = 0;
+    while ((config_scan_i < config_tmp) && (config_scan_i < 232))
+    {
+        config_value = readConfigLineValue(config_scan_i);
+        if (config_value != -999999)
+        {
+            if ((world_io[config_scan_i] == 'c') && (world_io[config_scan_i + 1] == 'a') && (world_io[config_scan_i + 2] == 'm') && (world_io[config_scan_i + 3] == 'e') && (world_io[config_scan_i + 4] == 'r'))
+            {
+                camera_sensitivity_percent = config_value;
+            }
+            else if ((world_io[config_scan_i] == 'c') && (world_io[config_scan_i + 1] == 'u') && (world_io[config_scan_i + 2] == 'r') && (world_io[config_scan_i + 3] == 's') && (world_io[config_scan_i + 4] == 'o'))
+            {
+                cursor_sensitivity_percent = config_value;
+            }
+            else if ((world_io[config_scan_i] == 'r') && (world_io[config_scan_i + 1] == 'e') && (world_io[config_scan_i + 2] == 'n') && (world_io[config_scan_i + 3] == 'd') && (world_io[config_scan_i + 4] == 'e'))
+            {
+                render_chunks = config_value;
+            }
+            else if ((world_io[config_scan_i] == 'c') && (world_io[config_scan_i + 1] == 'l') && (world_io[config_scan_i + 2] == 'o') && (world_io[config_scan_i + 3] == 'u') && (world_io[config_scan_i + 4] == 'd') && (world_io[config_scan_i + 5] == 's'))
+            {
+                clouds_enabled = config_value;
+            }
+            else if ((world_io[config_scan_i] == 'c') && (world_io[config_scan_i + 1] == 'l') && (world_io[config_scan_i + 2] == 'o') && (world_io[config_scan_i + 3] == 'u') && (world_io[config_scan_i + 4] == 'd') && (world_io[config_scan_i + 5] == '_'))
+            {
+                cloud_area_blocks = config_value;
+            }
+            else if ((world_io[config_scan_i] == 'a') && (world_io[config_scan_i + 1] == 'u') && (world_io[config_scan_i + 2] == 't') && (world_io[config_scan_i + 3] == 'o'))
+            {
+                autosave_enabled = config_value;
+            }
+            else if ((world_io[config_scan_i] == 's') && (world_io[config_scan_i + 1] == 't') && (world_io[config_scan_i + 2] == 'a') && (world_io[config_scan_i + 3] == 'r'))
+            {
+                stars_enabled = config_value;
+            }
+            else if ((world_io[config_scan_i] == 'o') && (world_io[config_scan_i + 1] == 'u') && (world_io[config_scan_i + 2] == 't') && (world_io[config_scan_i + 3] == 'l'))
+            {
+                aimed_outline_enabled = config_value;
+            }
+            else if ((world_io[config_scan_i] == 'd') && (world_io[config_scan_i + 1] == 'a') && (world_io[config_scan_i + 2] == 'y'))
+            {
+                day_cycle_speed_percent = config_value;
+            }
+        }
+
+        while ((config_scan_i < config_tmp) && (config_scan_i < 256) && (world_io[config_scan_i] != '\n'))
+        {
+            config_scan_i = config_scan_i + 1;
+        }
+        config_scan_i = config_scan_i + 1;
+    }
+
+    applyConfigValues();
+    syncPendingConfigFromActive();
+}
+
+void clearWorldPath()
+{
+    int i;
+    i = 0;
+    while (i < 64)
+    {
+        world_path[i] = 0;
+        i = i + 1;
+    }
+}
+
+void buildWorldPathFromCurrentName()
+{
+    clearWorldPath();
+
+    world_tmp_i = 0;
+    world_tmp_j = 0;
+    while (tinycraft_dir[world_tmp_i] != 0)
+    {
+        world_path[world_tmp_j] = tinycraft_dir[world_tmp_i];
+        world_tmp_i = world_tmp_i + 1;
+        world_tmp_j = world_tmp_j + 1;
+    }
+    world_path[world_tmp_j] = '/';
+    world_tmp_j = world_tmp_j + 1;
+
+    world_tmp_i = 0;
+    while ((world_tmp_i < 15) && (current_world_name[world_tmp_i] != 0))
+    {
+        world_path[world_tmp_j] = current_world_name[world_tmp_i];
+        world_tmp_i = world_tmp_i + 1;
+        world_tmp_j = world_tmp_j + 1;
+    }
+    world_path[world_tmp_j] = '.';
+    world_path[world_tmp_j + 1] = 't';
+    world_path[world_tmp_j + 2] = 'c';
+    world_path[world_tmp_j + 3] = 'w';
+    world_path[world_tmp_j + 4] = 0;
+}
+
+void copyNewNameToCurrent()
+{
+    world_tmp_i = 0;
+    while (world_tmp_i < 16)
+    {
+        current_world_name[world_tmp_i] = new_world_name[world_tmp_i];
+        world_tmp_i = world_tmp_i + 1;
+    }
+}
+
+void copySelectedNameToCurrent()
+{
+    if (world_selected < 0) world_selected = 0;
+    if (world_selected >= world_list_count) world_selected = world_list_count - 1;
+    world_tmp_base = world_selected * 16;
+    world_tmp_i = 0;
+    while (world_tmp_i < 16)
+    {
+        current_world_name[world_tmp_i] = world_names[world_tmp_base + world_tmp_i];
+        world_tmp_i = world_tmp_i + 1;
+    }
+}
+
+int worldEntryIsTCW()
+{
+    if (world_entry_type != 0) return 0;
+    if (world_entry_len < 5) return 0;
+    world_tmp_i = world_entry_len - 4;
+    if (world_entry[world_tmp_i] != '.') return 0;
+    if (!((world_entry[world_tmp_i + 1] == 't') || (world_entry[world_tmp_i + 1] == 'T'))) return 0;
+    if (!((world_entry[world_tmp_i + 2] == 'c') || (world_entry[world_tmp_i + 2] == 'C'))) return 0;
+    if (!((world_entry[world_tmp_i + 3] == 'w') || (world_entry[world_tmp_i + 3] == 'W'))) return 0;
+    return 1;
+}
+
+void refreshWorldList()
+{
+    world_list_count = 0;
+    world_scan_index = 0;
+    while ((world_scan_index < 64) && (world_list_count < 10))
+    {
+        world_tmp_i = 0;
+        while (world_tmp_i < 48)
+        {
+            world_entry[world_tmp_i] = 0;
+            world_tmp_i = world_tmp_i + 1;
+        }
+        world_entry_status = sdDirEntry(tinycraft_dir, (uint)world_scan_index, world_entry, world_entry_len, world_entry_type);
+        if (world_entry_status != 0)
+        {
+            if (worldEntryIsTCW() != 0)
+            {
+                world_tmp_base = world_list_count * 16;
+                world_tmp_len = world_entry_len - 4;
+                if (world_tmp_len > 15) world_tmp_len = 15;
+                world_tmp_i = 0;
+                while (world_tmp_i < 16)
+                {
+                    world_names[world_tmp_base + world_tmp_i] = 0;
+                    world_tmp_i = world_tmp_i + 1;
+                }
+                world_tmp_i = 0;
+                while (world_tmp_i < world_tmp_len)
+                {
+                    world_names[world_tmp_base + world_tmp_i] = world_entry[world_tmp_i];
+                    world_tmp_i = world_tmp_i + 1;
+                }
+                world_name_len[world_list_count] = world_tmp_len;
+                world_list_count = world_list_count + 1;
+            }
+        }
+        world_scan_index = world_scan_index + 1;
+    }
+    if (world_selected >= world_list_count) world_selected = world_list_count - 1;
+    if (world_selected < 0) world_selected = 0;
+    world_list_loaded = 1;
+}
+
+void saveCurrentWorld()
+{
+    autosave_step_active = 0;
+    if (current_world_loaded == 0) return;
+    buildWorldPathFromCurrentName();
+    if (!sdFileExists(world_path)) sdFileMake(world_path);
+
+    clearWorldIO();
+    writeU32ToIO(0, world_magic);
+    writeU32ToIO(4, (uint)world_seed);
+    writeU32ToIO(8, (uint)world_origin_x);
+    writeU32ToIO(12, (uint)world_origin_z);
+    save_bits.f = player_x; writeU32ToIO(16, save_bits.u);
+    save_bits.f = player_y; writeU32ToIO(20, save_bits.u);
+    save_bits.f = player_z; writeU32ToIO(24, save_bits.u);
+    save_bits.f = player_foot_y; writeU32ToIO(28, save_bits.u);
+    save_bits.f = yaw_angle; writeU32ToIO(32, save_bits.u);
+    save_bits.f = pitch_angle; writeU32ToIO(36, save_bits.u);
+    writeU32ToIO(40, (uint)selected_slot);
+    writeU32ToIO(44, (uint)render_chunks);
+    writeU32ToIO(48, (uint)edit_count);
+    writeU32ToIO(52, (uint)camera_sensitivity_percent);
+    writeU32ToIO(56, (uint)cursor_sensitivity_percent);
+    writeU32ToIO(60, held_id);
+    writeU32ToIO(64, (uint)held_count);
+    writeU32ToIO(68, (uint)64);
+    writeU32ToIO(72, (uint)player_health);
+    writeU32ToIO(76, day_time_tick);
+    writeU32ToIO(80, day_tick_units);
+    writeU32ToIO(84, (uint)entity_file_offset);
+    writeU32ToIO(88, (uint)entity_max_slots);
+    writeU32ToIO(92, (uint)2);
+    sdFileWrite(world_path, world_io, 0);
+
+    world_file_offset = 256;
+    world_tmp_i = 0;
+    while (world_tmp_i < 36)
+    {
+        clearWorldIO();
+        world_tmp_j = 0;
+        world_io_offset = 0;
+        while ((world_tmp_j < 32) && (world_tmp_i < 36))
+        {
+            writeU32ToIO(world_io_offset, inv_id[world_tmp_i]);
+            writeU32ToIO(world_io_offset + 4, (uint)inv_count[world_tmp_i]);
+            world_io_offset = world_io_offset + 8;
+            world_tmp_j = world_tmp_j + 1;
+            world_tmp_i = world_tmp_i + 1;
+        }
+        sdFileWrite(world_path, world_io, world_file_offset);
+        world_file_offset = world_file_offset + 256;
+    }
+
+    world_file_offset = 768;
+    world_tmp_i = 0;
+    while (world_tmp_i < edit_count)
+    {
+        clearWorldIO();
+        world_tmp_j = 0;
+        world_io_offset = 0;
+        while ((world_tmp_j < 16) && (world_tmp_i < edit_count))
+        {
+            writeU32ToIO(world_io_offset, (uint)edit_x[world_tmp_i]);
+            writeU32ToIO(world_io_offset + 4, (uint)edit_y[world_tmp_i]);
+            writeU32ToIO(world_io_offset + 8, (uint)edit_z[world_tmp_i]);
+            writeU32ToIO(world_io_offset + 12, edit_block[world_tmp_i]);
+            world_io_offset = world_io_offset + 16;
+            world_tmp_j = world_tmp_j + 1;
+            world_tmp_i = world_tmp_i + 1;
+        }
+        sdFileWrite(world_path, world_io, world_file_offset);
+        world_file_offset = world_file_offset + 256;
+    }
+
+    flushActiveEntitiesToWorldFile();
+    world_dirty = 0;
+    world_last_dirty_edit_ms = (uint)0;
+    world_last_autosave_ms = millis();
+    world_player_autosave_ms = world_last_autosave_ms;
+}
+
+void startSteppedWorldAutosave()
+{
+    if (current_world_loaded == 0) return;
+    buildWorldPathFromCurrentName();
+    if (!sdFileExists(world_path)) sdFileMake(world_path);
+    autosave_step_active = 1;
+    autosave_step_phase = 0;
+    autosave_step_i = 0;
+    autosave_step_file_offset = 0;
+}
+
+void processSteppedWorldAutosave()
+{
+    if (autosave_step_active == 0) return;
+    if (current_world_loaded == 0)
+    {
+        autosave_step_active = 0;
+        return;
+    }
+
+    if (autosave_step_phase == 0)
+    {
+        clearWorldIO();
+        writeU32ToIO(0, world_magic);
+        writeU32ToIO(4, (uint)world_seed);
+        writeU32ToIO(8, (uint)world_origin_x);
+        writeU32ToIO(12, (uint)world_origin_z);
+        save_bits.f = player_x; writeU32ToIO(16, save_bits.u);
+        save_bits.f = player_y; writeU32ToIO(20, save_bits.u);
+        save_bits.f = player_z; writeU32ToIO(24, save_bits.u);
+        save_bits.f = player_foot_y; writeU32ToIO(28, save_bits.u);
+        save_bits.f = yaw_angle; writeU32ToIO(32, save_bits.u);
+        save_bits.f = pitch_angle; writeU32ToIO(36, save_bits.u);
+        writeU32ToIO(40, (uint)selected_slot);
+        writeU32ToIO(44, (uint)render_chunks);
+        writeU32ToIO(48, (uint)edit_count);
+        writeU32ToIO(52, (uint)camera_sensitivity_percent);
+        writeU32ToIO(56, (uint)cursor_sensitivity_percent);
+        writeU32ToIO(60, held_id);
+        writeU32ToIO(64, (uint)held_count);
+        writeU32ToIO(68, (uint)64);
+        writeU32ToIO(72, (uint)player_health);
+        writeU32ToIO(76, day_time_tick);
+        writeU32ToIO(80, day_tick_units);
+        writeU32ToIO(84, (uint)entity_file_offset);
+        writeU32ToIO(88, (uint)entity_max_slots);
+        writeU32ToIO(92, (uint)2);
+        sdFileWrite(world_path, world_io, 0);
+        autosave_step_phase = 1;
+        autosave_step_i = 0;
+        autosave_step_file_offset = 256;
+        return;
+    }
+
+    if (autosave_step_phase == 1)
+    {
+        clearWorldIO();
+        world_tmp_j = 0;
+        world_io_offset = 0;
+        while ((world_tmp_j < 32) && (autosave_step_i < 36))
+        {
+            writeU32ToIO(world_io_offset, inv_id[autosave_step_i]);
+            writeU32ToIO(world_io_offset + 4, (uint)inv_count[autosave_step_i]);
+            world_io_offset = world_io_offset + 8;
+            world_tmp_j = world_tmp_j + 1;
+            autosave_step_i = autosave_step_i + 1;
+        }
+        sdFileWrite(world_path, world_io, autosave_step_file_offset);
+        autosave_step_file_offset = autosave_step_file_offset + 256;
+        if (autosave_step_i >= 36)
+        {
+            autosave_step_phase = 2;
+            autosave_step_i = 0;
+            autosave_step_file_offset = 768;
+        }
+        return;
+    }
+
+    if (autosave_step_phase == 2)
+    {
+        if (autosave_step_i < edit_count)
+        {
+            clearWorldIO();
+            world_tmp_j = 0;
+            world_io_offset = 0;
+            while ((world_tmp_j < 16) && (autosave_step_i < edit_count))
+            {
+                writeU32ToIO(world_io_offset, (uint)edit_x[autosave_step_i]);
+                writeU32ToIO(world_io_offset + 4, (uint)edit_y[autosave_step_i]);
+                writeU32ToIO(world_io_offset + 8, (uint)edit_z[autosave_step_i]);
+                writeU32ToIO(world_io_offset + 12, edit_block[autosave_step_i]);
+                world_io_offset = world_io_offset + 16;
+                world_tmp_j = world_tmp_j + 1;
+                autosave_step_i = autosave_step_i + 1;
+            }
+            sdFileWrite(world_path, world_io, autosave_step_file_offset);
+            autosave_step_file_offset = autosave_step_file_offset + 256;
+            return;
+        }
+
+        flushActiveEntitiesToWorldFile();
+        world_dirty = 0;
+        world_last_dirty_edit_ms = (uint)0;
+        world_last_autosave_ms = millis();
+        world_player_autosave_ms = world_last_autosave_ms;
+        autosave_step_active = 0;
+        autosave_icon_until_ms = millis() + (uint)3000;
+    }
+}
+
+void processWorldAutosave()
+{
+    if (autosave_enabled == 0) return;
+    if (current_world_loaded == 0) return;
+    if (app_state != 5) return;
+
+    world_autosave_now = millis();
+    if (world_last_autosave_ms == (uint)0) world_last_autosave_ms = world_autosave_now;
+    if (world_player_autosave_ms == (uint)0) world_player_autosave_ms = world_autosave_now;
+
+    if (autosave_step_active != 0)
+    {
+        /* Do not combine SD writes with mesh rebuilds. */
+        if (render_dirty_chunk_count > 0) return;
+        processSteppedWorldAutosave();
+        return;
+    }
+
+    if (world_dirty != 0)
+    {
+        if (render_dirty_chunk_count > 0) return;
+        if (world_last_dirty_edit_ms != (uint)0)
+        {
+            /* Wait until the player has stopped editing; this removes the
+               save spike that used to happen immediately after a block change. */
+            if ((world_autosave_now - world_last_dirty_edit_ms) < (uint)15000) return;
+        }
+        if ((world_autosave_now - world_last_autosave_ms) >= (uint)45000)
+        {
+            startSteppedWorldAutosave();
+        }
+        return;
+    }
+
+    if (render_dirty_chunk_count > 0) return;
+    if ((world_autosave_now - world_player_autosave_ms) >= (uint)120000)
+    {
+        startSteppedWorldAutosave();
+    }
+}
+
+int loadCurrentWorld()
+{
+    buildWorldPathFromCurrentName();
+    if (!sdFileExists(world_path)) return 0;
+    clearWorldIO();
+    if (sdFileRead(world_path, world_io, 0) < 64) return 0;
+    if (readU32FromIO(0) != world_magic) return 0;
+
+    world_seed = (int)readU32FromIO(4);
+    world_origin_x = (int)readU32FromIO(8);
+    world_origin_z = (int)readU32FromIO(12);
+    save_bits.u = readU32FromIO(16); world_load_player_x = save_bits.f;
+    save_bits.u = readU32FromIO(20); world_load_player_y = save_bits.f;
+    save_bits.u = readU32FromIO(24); world_load_player_z = save_bits.f;
+    save_bits.u = readU32FromIO(28); world_load_player_foot_y = save_bits.f;
+    save_bits.u = readU32FromIO(32); world_load_yaw = save_bits.f;
+    save_bits.u = readU32FromIO(36); world_load_pitch = save_bits.f;
+    world_load_selected_slot = (int)readU32FromIO(40);
+    world_load_render_chunks = (int)readU32FromIO(44);
+    edit_count = (int)readU32FromIO(48);
+    if (edit_count < 0) edit_count = 0;
+    if (edit_count > 512) edit_count = 512;
+    world_load_camera_sensitivity_percent = (int)readU32FromIO(52);
+    world_load_cursor_sensitivity_percent = (int)readU32FromIO(56);
+    world_load_held_id = readU32FromIO(60);
+    world_load_held_count = (int)readU32FromIO(64);
+    world_load_height = (int)readU32FromIO(68);
+    player_health = (int)readU32FromIO(72);
+    world_load_day_time_tick = readU32FromIO(76);
+    world_load_day_tick_units = readU32FromIO(80);
+    world_load_entity_slots = 0;
+    world_load_entity_version = 0;
+    if ((int)readU32FromIO(84) == entity_file_offset)
+    {
+        world_load_entity_slots = (int)readU32FromIO(88);
+        if (world_load_entity_slots < 0) world_load_entity_slots = 0;
+        if (world_load_entity_slots > entity_max_slots) world_load_entity_slots = entity_max_slots;
+        world_load_entity_version = (int)readU32FromIO(92);
+    }
+    if (world_load_day_time_tick >= (uint)24000) world_load_day_time_tick = (uint)0;
+    if (world_load_day_tick_units >= (uint)5000) world_load_day_tick_units = (uint)0;
+    if (player_health <= 0) player_health = 20;
+    if (player_health > 20) player_health = 20;
+    player_dead = 0;
+    render_cache_valid = 0;
+
+    world_file_offset = 768;
+    world_tmp_i = 0;
+    while (world_tmp_i < edit_count)
+    {
+        clearWorldIO();
+        sdFileRead(world_path, world_io, world_file_offset);
+        world_tmp_j = 0;
+        world_io_offset = 0;
+        while ((world_tmp_j < 16) && (world_tmp_i < edit_count))
+        {
+            edit_x[world_tmp_i] = (int)readU32FromIO(world_io_offset);
+            edit_y[world_tmp_i] = (int)readU32FromIO(world_io_offset + 4);
+            edit_z[world_tmp_i] = (int)readU32FromIO(world_io_offset + 8);
+            edit_block[world_tmp_i] = readU32FromIO(world_io_offset + 12);
+            world_io_offset = world_io_offset + 16;
+            world_tmp_j = world_tmp_j + 1;
+            world_tmp_i = world_tmp_i + 1;
+        }
+        world_file_offset = world_file_offset + 256;
+    }
+
+    generateWorld();
+    initPlayer();
+
+    world_file_offset = 256;
+    world_tmp_i = 0;
+    while (world_tmp_i < 36)
+    {
+        clearWorldIO();
+        sdFileRead(world_path, world_io, world_file_offset);
+        world_tmp_j = 0;
+        world_io_offset = 0;
+        while ((world_tmp_j < 32) && (world_tmp_i < 36))
+        {
+            inv_id[world_tmp_i] = readU32FromIO(world_io_offset);
+            inv_count[world_tmp_i] = (int)readU32FromIO(world_io_offset + 4);
+            world_io_offset = world_io_offset + 8;
+            world_tmp_j = world_tmp_j + 1;
+            world_tmp_i = world_tmp_i + 1;
+        }
+        world_file_offset = world_file_offset + 256;
+    }
+
+    player_x = world_load_player_x;
+    player_y = world_load_player_y;
+    player_z = world_load_player_z;
+    player_foot_y = world_load_player_foot_y;
+    yaw_angle = world_load_yaw;
+    pitch_angle = world_load_pitch;
+    selected_slot = world_load_selected_slot;
+    render_chunks = world_load_render_chunks;
+    if (render_chunks < render_chunks_min) render_chunks = render_chunks_min;
+    if (render_chunks > render_chunks_max) render_chunks = render_chunks_max;
+    camera_sensitivity_percent = world_load_camera_sensitivity_percent;
+    cursor_sensitivity_percent = world_load_cursor_sensitivity_percent;
+    if (camera_sensitivity_percent < 40) camera_sensitivity_percent = 40;
+    if (camera_sensitivity_percent > 200) camera_sensitivity_percent = 200;
+    if (cursor_sensitivity_percent < 40) cursor_sensitivity_percent = 40;
+    if (cursor_sensitivity_percent > 200) cursor_sensitivity_percent = 200;
+    held_id = world_load_held_id;
+    held_count = world_load_held_count;
+    if (held_count < 0) held_count = 0;
+    if (held_count == 0) held_id = (uint)0;
+    day_time_tick = world_load_day_time_tick;
+    day_tick_units = world_load_day_tick_units;
+    camera_sensitivity = (float)camera_sensitivity_percent * 0.01f;
+    cursor_sensitivity = (float)cursor_sensitivity_percent * 0.01f;
+    /* Global config file overrides old per-world settings. */
+    loadConfigFile();
+    world_tmp_ok = 0;
+    updateSelectedBlock();
+    updateViewVectors();
+    if (world_load_height < 64)
+    {
+        syncPlayerToGround();
+        world_tmp_ok = 1;
+    }
+    else
+    {
+        if (playerBodyClear(player_x, player_foot_y, player_z) == 0)
+        {
+            syncPlayerToGround();
+            world_tmp_ok = 1;
+        }
+        else syncEyeToFoot();
+    }
+    render_cache_valid = 0;
+    current_world_loaded = 1;
+    if (world_load_entity_slots > 0)
+    {
+        clearPigsOnly();
+        entity_stream_skip_flush = 1;
+        streamEntitiesForCurrentPosition();
+        entity_stream_skip_flush = 0;
+        if ((pig_count <= 0) && (entity_stream_loaded_any == 0))
+        {
+            initPigs();
+            flushActiveEntitiesToWorldFile();
+            world_tmp_ok = 1;
+        }
+    }
+    else
+    {
+        initPigs();
+        flushActiveEntitiesToWorldFile();
+        world_tmp_ok = 1;
+    }
+    world_dirty = world_tmp_ok;
+    world_last_autosave_ms = millis();
+    world_player_autosave_ms = world_last_autosave_ms;
+    return 1;
+}
+
+void startNewWorldFromName()
+{
+    int keep_camera_percent;
+    int keep_cursor_percent;
+    current_world_loaded = 0;
+    if (new_world_name_len <= 0) return;
+    keep_camera_percent = camera_sensitivity_percent;
+    keep_cursor_percent = cursor_sensitivity_percent;
+    copyNewNameToCurrent();
+    world_seed = (int)(rand32() & (uint)32767);
+    world_origin_x = -8;
+    world_origin_z = -8;
+    edit_count = 0;
+    render_cache_valid = 0;
+    generateWorld();
+    initPlayer();
+    camera_sensitivity_percent = keep_camera_percent;
+    cursor_sensitivity_percent = keep_cursor_percent;
+    camera_sensitivity = (float)camera_sensitivity_percent * 0.01f;
+    cursor_sensitivity = (float)cursor_sensitivity_percent * 0.01f;
+    current_world_loaded = 1;
+    initPigs();
+    saveCurrentWorld();
+    world_dirty = 0;
+    world_name_editing = 0;
+    menu_open = 0;
+    last_ms = millis();
+}
+
+void beginWorldLoading(int mode)
+{
+    loading_mode = mode;
+    loading_phase = 0;
+    loading_ok = 0;
+    loading_progress = 0;
+    loading_total = 1;
+    loading_chunk_x = 0;
+    loading_chunk_z = 0;
+    loading_section = 0;
+    app_state = 6;
+    menu_open = 0;
+    inventory_open = 0;
+    crafting_table_mode = 0;
+    resetMining();
+    last_ms = millis();
+}
+
+void startSelectedWorld()
+{
+    if (world_list_count <= 0) return;
+    copySelectedNameToCurrent();
+    beginWorldLoading(1);
+}
+

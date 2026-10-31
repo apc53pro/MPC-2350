@@ -1,0 +1,17 @@
+{
+  "format_version": "1.10.0",
+  "minecraft:client_entity": {
+    "description": {
+      "identifier": "tinycraft:pig",
+      "materials": { "default": "entity_alphatest" },
+      "textures": { "default": "textures/entity/pig/pig" },
+      "geometry": { "default": "geometry.tinycraft.pig" },
+      "render_controllers": ["controller.render.tinycraft.pig"],
+      "tinycraft:runtime": {
+        "texture_id": 11,
+        "texture_name": "entity/pig",
+        "render_kind": "pig_cuboids"
+      }
+    }
+  }
+}

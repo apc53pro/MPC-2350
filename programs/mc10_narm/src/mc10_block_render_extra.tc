@@ -1,0 +1,201 @@
+/* Owned RenderBlocks static mesh decoder. Include after blocks/blocks_extra,
+ * before renderer. Only source-derived templates are accepted; no cube/air
+ * substitution. Source geometry cache remains the primary per-frame path. */
+#ifdef MC10_WORLD_SYSTEMS
+#define MC_BLOCK_MESH_SLOTS 8
+#define MC_BLOCK_MESH_QUADS 48
+#define MC_BLOCK_TINT_SLOTS 63
+char mc_block_mesh_path[19]="/MC10/blocks10.dat";
+char mc_block_tint_path[22]="/MC10/blocktint10.dat";
+uint mc_block_mesh_cache[MC_BLOCK_MESH_SLOTS*MC_BLOCK_MESH_QUADS*24];
+uint mc_block_mesh_keys[MC_BLOCK_MESH_SLOTS];
+uint mc_block_mesh_ages[MC_BLOCK_MESH_SLOTS];
+uint mc_block_mesh_counts[MC_BLOCK_MESH_SLOTS];
+uint mc_block_tint_pixels[MC_BLOCK_TINT_SLOTS*16*64];
+uint mc_block_tint_masks[MC_BLOCK_TINT_SLOTS*8];
+uint mc_block_mesh_count,mc_block_mesh_size,mc_block_mesh_age,mc_block_tint_count;
+int mc_block_mesh_ready,mc_block_mesh_error;
+int mc_render_source_tint_slot;
+uint mc_block_mesh_disk_reads,mc_block_mesh_hits;
+uint mc_asset_read_u32(char *data,int offset);
+int mc_runtime_try_get_metadata(int x,int y,int z,uint *value);
+void mc_render_source_quad(uint id,int x,int y,int z,float *vertices,uint descriptor);
+
+int mc_block_mesh_has(uint id)
+{return id==26||id==27||id==28||id==29||id==33||id==34||id==51||id==55||id==66||id==69||id==75||id==76||id==81||id==85||id==93||id==94||id==101||id==102||id==104||id==105||id==106||id==107||id==111||id==113||id==117||id==118||id==120||id==122;}
+int mc_block_normal_at(int x,int y,int z)
+{uint id=0;mc_runtime_try_get_block(x,y,z,&id);return id!=0&&id<256&&mc_blocks[id].present&&mc_blocks[id].normal_block&&mc_material_is_opaque(mc_blocks[id].material);}
+int mc_block_air_at(int x,int y,int z)
+{uint id=0;return mc_runtime_try_get_block(x,y,z,&id)&&id==0;}
+int mc_block_fire_catches(uint id)
+{return id==5||id==85||id==53||id==17||id==18||id==47||id==46||id==31||id==35||id==106;}
+int mc_block_fire_at(int x,int y,int z)
+{uint id=0;mc_runtime_try_get_block(x,y,z,&id);return mc_block_fire_catches(id);}
+int mc_block_wire_connection(int x,int y,int z,int direction)
+{
+    uint id=0,metadata=0;int opposite;
+    mc_runtime_try_get_block(x,y,z,&id);
+    if(id==55)return 1;
+    if(direction!=-1&&(id==28||id==69||id==70||id==72||id==75||id==76||id==77))return 1;
+    if(id!=93&&id!=94)return 0;
+    mc_runtime_try_get_metadata(x,y,z,&metadata);metadata=metadata&3;
+    opposite=metadata==0?2:(metadata==1?3:(metadata==2?0:1));
+    return direction==(int)metadata||direction==opposite;
+}
+uint mc_block_lily_rotation(int x,int y,int z)
+{
+    struct MCU64 h,a,b,c;
+    mc_u64_from_i32(&h,(int)((uint)x*3129871));
+    mc_u64_from_i32(&a,z);mc_u64_set(&b,116129781,0);
+    mc_u64_multiply(&a,&a,&b);mc_u64_xor(&h,&h,&a);
+    mc_u64_from_i32(&a,y);mc_u64_xor(&h,&h,&a);
+    mc_u64_set(&b,42317861,0);mc_u64_multiply(&a,&h,&h);
+    mc_u64_multiply(&a,&a,&b);mc_u64_set(&b,11,0);
+    mc_u64_multiply(&c,&h,&b);mc_u64_add(&h,&a,&c);
+    return (h.lo>>16)&3;
+}
+uint mc_block_mesh_key(uint id,uint metadata,int x,int y,int z)
+{
+    int type=mc_blocks[id].render_type;uint variant=0,n=0;
+    int d,xx,zz,connection,vertical,upper;
+    int dx[4]={-1,1,0,0};int dz[4]={0,0,-1,1};int dir[4]={1,3,2,0};
+    if(type==11||type==18)
+    {
+        metadata=0;
+        for(d=0;d<4;d=d+1)
+        {xx=x+dx[d];zz=z+dz[d];if(mc_block_neighbor(id,xx,y,zz))variant=variant|((uint)1<<d);
+         if(type==18){if(y<127&&mc_block_air_at(xx,y+1,zz))variant=variant|((uint)1<<(6+d));if(y>1&&mc_block_air_at(xx,y-1,zz))variant=variant|((uint)1<<(10+d));}}
+        if(type==18){mc_runtime_try_get_block(x,y+1,z,&n);if(n!=id&&!mc_block_is_opaque(n))variant=variant|16;mc_runtime_try_get_block(x,y-1,z,&n);if(n!=id&&!mc_block_is_opaque(n))variant=variant|32;}
+    }
+    else if(type==20)variant=(uint)mc_block_normal_at(x,y+1,z);
+    else if(type==19&&metadata>=7)
+    {for(d=0;d<4;d=d+1){mc_runtime_try_get_block(x+dx[d],y,z+dz[d],&n);if(n==(id==104?86:103)){variant=(uint)(d+1);break;}}}
+    else if(type==23){metadata=0;variant=mc_block_lily_rotation(x,y,z);}
+    else if(type==27)metadata=0;
+    else if(type==3)
+    {
+        metadata=0;
+        if(mc_block_normal_at(x,y-1,z)||mc_block_fire_at(x,y-1,z))variant=1;
+        for(d=0;d<4;d=d+1)if(mc_block_fire_at(x+dx[d],y,z+dz[d]))variant=variant|((uint)1<<(d+1));
+        if(mc_block_fire_at(x,y+1,z))variant=variant|32;
+        variant=variant|(((uint)(x+y+z)&1)<<6)|(((uint)(x/2+y/2+z/2)&1)<<7);
+    }
+    else if(type==5)
+    {
+        upper=mc_block_normal_at(x,y+1,z);
+        for(d=0;d<4;d=d+1)
+        {
+            xx=x+dx[d];zz=z+dz[d];
+            connection=mc_block_wire_connection(xx,y,zz,dir[d])||(!mc_block_normal_at(xx,y,zz)&&mc_block_wire_connection(xx,y-1,zz,-1));
+            if(!upper&&mc_block_normal_at(xx,y,zz)&&mc_block_wire_connection(xx,y+1,zz,-1))connection=1;
+            mc_runtime_try_get_block(xx,y+1,zz,&n);
+            vertical=!upper&&mc_block_normal_at(xx,y,zz)&&n==55;
+            if(connection)variant=variant|((uint)1<<d);
+            if(vertical)variant=variant|((uint)1<<(d+4));
+        }
+    }
+    return(id<<24)|(metadata<<20)|variant;
+}
+
+/* Source side predicates, including 1.0's unconditional slab top and its
+ * same-ID horizontal slab suppression (there are no upside-down slabs). */
+int mc_block_side_visible(uint id,int x,int y,int z,int side,
+                          float x0,float y0,float z0,float x1,float y1,float z1)
+{
+    uint neighbor=0,a=0,b=0;int inset,along_x,along_z;
+    if(id==93||id==94)return side!=0&&side!=1;
+    if((id==43||id==44||id==78)&&side==1)return 1;
+    inset=side==0?y0>0:(side==1?y1<1:(side==2?z0>0:(side==3?z1<1:(side==4?x0>0:x1<1))));
+    if(side==0)y=y-1;else if(side==1)y=y+1;else if(side==2)z=z-1;else if(side==3)z=z+1;else if(side==4)x=x-1;else x=x+1;
+    if(!mc_runtime_try_get_block(x,y,z,&neighbor))return 0;
+    if(id==90)
+    {
+        if(neighbor==id)return 0;
+        mc_runtime_try_get_block(x-1,y,z,&a);mc_runtime_try_get_block(x-2,y,z,&b);along_x=a==90&&b!=90;
+        mc_runtime_try_get_block(x+1,y,z,&a);mc_runtime_try_get_block(x+2,y,z,&b);along_x=along_x||(a==90&&b!=90);
+        mc_runtime_try_get_block(x,y,z-1,&a);mc_runtime_try_get_block(x,y,z-2,&b);along_z=a==90&&b!=90;
+        mc_runtime_try_get_block(x,y,z+1,&a);mc_runtime_try_get_block(x,y,z+2,&b);along_z=along_z||(a==90&&b!=90);
+        return along_x&&(side==4||side==5)||along_z&&(side==2||side==3);
+    }
+    if((id==20||id==79||id==90||id==101||id==102)&&neighbor==id)return 0;
+    if(id==18&&mc_blocks[18].opaque_cube&&neighbor==18)return 0;
+    if(!inset&&mc_block_is_opaque(neighbor))return 0;
+    if((id==43||id==44)&&side>=2&&neighbor==id)return 0;
+    return 1;
+}
+int mc_block_mesh_face_visible(uint id,int x,int y,int z,uint descriptor)
+{
+    int side=(int)((descriptor>>13)&7)-1;
+    if(side<0)return 1;
+    if(id==93||id==94)return side!=0&&side!=1;
+    if(descriptor&65536)return 1;
+    return mc_block_side_visible(id,x,y,z,side,0,0,0,1,1,1);
+}
+
+int mc_block_mesh_open(void)
+{
+    char header[32];uint tint_size,payload,masks;int i;
+    mc_block_mesh_ready=0;mc_block_mesh_error=0;mc_render_source_tint_slot=0;
+    for(i=0;i<MC_BLOCK_MESH_SLOTS;i=i+1){mc_block_mesh_keys[i]=0;mc_block_mesh_ages[i]=0;mc_block_mesh_counts[i]=0;}
+    if(narm_file_size(mc_block_mesh_path,NARM_STORAGE_SD,&mc_block_mesh_size)<0)return 0;
+    if(narm_file_read(mc_block_mesh_path,header,0,32,NARM_STORAGE_SD)!=32)return 0;
+    if(header[0]!='M'||header[1]!='C'||header[2]!='B'||header[3]!='M'||header[4]!='1'||header[5]!='0'||header[6]||header[7])return 0;
+    if(mc_asset_read_u32(header,8)!=1||mc_asset_read_u32(header,16)!=32||mc_asset_read_u32(header,24)!=96)return 0;
+    mc_block_mesh_count=mc_asset_read_u32(header,12);payload=mc_asset_read_u32(header,20);
+    if(mc_block_mesh_count==0||mc_block_mesh_count>100000||payload!=32+mc_block_mesh_count*12||payload>mc_block_mesh_size)return 0;
+    if(narm_file_size(mc_block_tint_path,NARM_STORAGE_SD,&tint_size)<0)return 0;
+    if(narm_file_read(mc_block_tint_path,header,0,32,NARM_STORAGE_SD)!=32)return 0;
+    if(header[0]!='M'||header[1]!='C'||header[2]!='B'||header[3]!='T'||header[4]!='1'||header[5]!='0'||header[6]||header[7])return 0;
+    mc_block_tint_count=mc_asset_read_u32(header,12);masks=mc_asset_read_u32(header,28);
+    if(mc_asset_read_u32(header,8)!=1||mc_block_tint_count>MC_BLOCK_TINT_SLOTS||mc_asset_read_u32(header,16)!=256||mc_asset_read_u32(header,20)!=16||mc_asset_read_u32(header,24)!=32||masks!=32+mc_block_tint_count*4096||tint_size!=masks+mc_block_tint_count*32)return 0;
+    if(narm_file_read(mc_block_tint_path,&mc_block_tint_pixels[0],32,mc_block_tint_count*4096,NARM_STORAGE_SD)!=(int)(mc_block_tint_count*4096))return 0;
+    if(narm_file_read(mc_block_tint_path,&mc_block_tint_masks[0],masks,mc_block_tint_count*32,NARM_STORAGE_SD)!=(int)(mc_block_tint_count*32))return 0;
+    mc_block_mesh_ready=1;return 1;
+}
+
+int mc_block_mesh_load(uint key)
+{
+    char entry[12];uint low=0,high=mc_block_mesh_count,mid,found,offset,count;
+    int i,slot=0;uint oldest=0xffffffff;
+    if(!mc_block_mesh_ready){mc_block_mesh_error=1;return -1;}
+    mc_block_mesh_age=mc_block_mesh_age+1;
+    for(i=0;i<MC_BLOCK_MESH_SLOTS;i=i+1)
+    {if(mc_block_mesh_keys[i]==key){mc_block_mesh_ages[i]=mc_block_mesh_age;mc_block_mesh_hits=mc_block_mesh_hits+1;return i;}if(mc_block_mesh_ages[i]<oldest){oldest=mc_block_mesh_ages[i];slot=i;}}
+    while(low<high)
+    {
+        mid=low+(high-low)/2;
+        if(narm_file_read(mc_block_mesh_path,entry,32+mid*12,12,NARM_STORAGE_SD)!=12){mc_block_mesh_error=2;return -1;}
+        found=mc_asset_read_u32(entry,0);
+        if(found<key)low=mid+1;else high=mid;
+    }
+    if(low>=mc_block_mesh_count){mc_block_mesh_error=3;return -1;}
+    if(narm_file_read(mc_block_mesh_path,entry,32+low*12,12,NARM_STORAGE_SD)!=12){mc_block_mesh_error=2;return -1;}
+    found=mc_asset_read_u32(entry,0);offset=mc_asset_read_u32(entry,4);count=mc_asset_read_u32(entry,8)&65535;
+    if(found!=key||count>MC_BLOCK_MESH_QUADS||offset>mc_block_mesh_size||count*96>mc_block_mesh_size-offset){mc_block_mesh_error=3;return -1;}
+    if(count&&narm_file_read(mc_block_mesh_path,&mc_block_mesh_cache[slot*MC_BLOCK_MESH_QUADS*24],offset,count*96,NARM_STORAGE_SD)!=(int)(count*96)){mc_block_mesh_error=2;return -1;}
+    mc_block_mesh_keys[slot]=key;mc_block_mesh_ages[slot]=mc_block_mesh_age;mc_block_mesh_counts[slot]=count;mc_block_mesh_disk_reads=mc_block_mesh_disk_reads+1;return slot;
+}
+int mc_block_mesh_render(uint id,uint metadata,int x,int y,int z)
+{
+    int slot,q;uint *record,descriptor,last_brightness=0;
+    if(!mc_block_mesh_has(id))return 0;
+    slot=mc_block_mesh_load(mc_block_mesh_key(id,metadata,x,y,z));if(slot<0)return -1;
+    for(q=0;q<(int)mc_block_mesh_counts[slot];q=q+1)
+    {
+        record=&mc_block_mesh_cache[(slot*MC_BLOCK_MESH_QUADS+q)*24];descriptor=record[23];
+        if(((descriptor>>18)&63)>mc_block_tint_count){mc_block_mesh_error=4;return -1;}
+        if(mc_block_mesh_face_visible(id,x,y,z,descriptor))
+        {
+            if(descriptor&131072)descriptor=(descriptor&0xffffe000)|last_brightness;
+            else last_brightness=descriptor&8191;
+            mc_render_source_quad(id,x,y,z,(float *)record,descriptor);
+        }
+    }
+    return 1;
+}
+uint *mc_block_mesh_tint_pixels(int slot,int variant)
+{return &mc_block_tint_pixels[(slot-1)*1024+variant*64];}
+uint *mc_block_mesh_tint_mask(int slot)
+{return &mc_block_tint_masks[(slot-1)*8];}
+#endif
+

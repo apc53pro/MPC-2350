@@ -1,0 +1,2576 @@
+void drawViewCuboid()
+{
+    /* Front, right, top, left, bottom faces. Used by first-person/debug cuboids. */
+    fillQuad3DZ(vm_x0, vm_y0, vm_z0,
+                vm_x1, vm_y0, vm_z0,
+                vm_x1, vm_y1, vm_z0,
+                vm_x0, vm_y1, vm_z0,
+                hand_col_a, &hand_cam[0]);
+
+    fillQuad3DZ(vm_x1, vm_y0, vm_z0,
+                vm_x1, vm_y0, vm_z1,
+                vm_x1, vm_y1, vm_z1,
+                vm_x1, vm_y1, vm_z0,
+                hand_col_b, &hand_cam[0]);
+
+    fillQuad3DZ(vm_x0, vm_y1, vm_z0,
+                vm_x1, vm_y1, vm_z0,
+                vm_x1, vm_y1, vm_z1,
+                vm_x0, vm_y1, vm_z1,
+                hand_col_c, &hand_cam[0]);
+
+    fillQuad3DZ(vm_x0, vm_y0, vm_z1,
+                vm_x0, vm_y0, vm_z0,
+                vm_x0, vm_y1, vm_z0,
+                vm_x0, vm_y1, vm_z1,
+                hand_col_b, &hand_cam[0]);
+
+    fillQuad3DZ(vm_x0, vm_y0, vm_z1,
+                vm_x1, vm_y0, vm_z1,
+                vm_x1, vm_y0, vm_z0,
+                vm_x0, vm_y0, vm_z0,
+                hand_col_b, &hand_cam[0]);
+}
+
+void drawViewCuboidTextured()
+{
+    fillQuad3DTexZ(
+        vm_x0, vm_y0, vm_z0, 0.0f, texel_max,
+        vm_x1, vm_y0, vm_z0, texel_max, texel_max,
+        vm_x1, vm_y1, vm_z0, texel_max, 0.0f,
+        vm_x0, vm_y1, vm_z0, 0.0f, 0.0f,
+        item_side_tex, 16, 16, 0, &hand_cam[0]
+    );
+
+    fillQuad3DTexZ(
+        vm_x1, vm_y0, vm_z0, 0.0f, texel_max,
+        vm_x1, vm_y0, vm_z1, texel_max, texel_max,
+        vm_x1, vm_y1, vm_z1, texel_max, 0.0f,
+        vm_x1, vm_y1, vm_z0, 0.0f, 0.0f,
+        item_side_tex, 16, 16, 0, &hand_cam[0]
+    );
+
+    fillQuad3DTexZ(
+        vm_x0, vm_y1, vm_z0, 0.0f, 0.0f,
+        vm_x1, vm_y1, vm_z0, texel_max, 0.0f,
+        vm_x1, vm_y1, vm_z1, texel_max, texel_max,
+        vm_x0, vm_y1, vm_z1, 0.0f, texel_max,
+        item_top_tex, 16, 16, 0, &hand_cam[0]
+    );
+
+    fillQuad3DTexZ(
+        vm_x0, vm_y0, vm_z1, 0.0f, texel_max,
+        vm_x0, vm_y0, vm_z0, texel_max, texel_max,
+        vm_x0, vm_y1, vm_z0, texel_max, 0.0f,
+        vm_x0, vm_y1, vm_z1, 0.0f, 0.0f,
+        item_side_tex, 16, 16, 0, &hand_cam[0]
+    );
+
+    fillQuad3DTexZ(
+        vm_x0, vm_y0, vm_z1, 0.0f, 0.0f,
+        vm_x1, vm_y0, vm_z1, texel_max, 0.0f,
+        vm_x1, vm_y0, vm_z0, texel_max, texel_max,
+        vm_x0, vm_y0, vm_z0, 0.0f, texel_max,
+        item_bottom_tex, 16, 16, 0, &hand_cam[0]
+    );
+
+    fillQuad3DTexZ(
+        vm_x1, vm_y0, vm_z1, 0.0f, texel_max,
+        vm_x0, vm_y0, vm_z1, texel_max, texel_max,
+        vm_x0, vm_y1, vm_z1, texel_max, 0.0f,
+        vm_x1, vm_y1, vm_z1, 0.0f, 0.0f,
+        item_side_tex, 16, 16, 0, &hand_cam[0]
+    );
+}
+
+
+float pigTX(float lx, float lz)
+{
+    return pig_draw_x + lx * pig_draw_c - lz * pig_draw_s;
+}
+
+float pigTZ(float lx, float lz)
+{
+    return pig_draw_z + lx * pig_draw_s + lz * pig_draw_c;
+}
+
+float pigRollX(float lx, float ly)
+{
+    return lx * pig_death_roll_c - ly * pig_death_roll_s;
+}
+
+float pigRollY(float lx, float ly)
+{
+    return lx * pig_death_roll_s + ly * pig_death_roll_c;
+}
+
+float pigTX3(float lx, float ly, float lz)
+{
+    pig_roll_x = pigRollX(lx, ly);
+    return pig_draw_x + pig_roll_x * pig_draw_c - lz * pig_draw_s;
+}
+
+float pigTY3(float lx, float ly, float lz)
+{
+    return (pig_draw_y + pigRollY(lx, ly)) * block_world_size;
+}
+
+float pigTZ3(float lx, float ly, float lz)
+{
+    pig_roll_x = pigRollX(lx, ly);
+    return pig_draw_z + pig_roll_x * pig_draw_s + lz * pig_draw_c;
+}
+
+float pigLegRY(float ly, float lz)
+{
+    pig_leg_rel_y = ly - pig_leg_piv_y;
+    pig_leg_rel_z = lz - pig_leg_piv_z;
+    return pig_leg_piv_y + pig_leg_rel_y * pig_leg_rot_c - pig_leg_rel_z * pig_leg_rot_s;
+}
+
+float pigLegRZ(float ly, float lz)
+{
+    pig_leg_rel_y = ly - pig_leg_piv_y;
+    pig_leg_rel_z = lz - pig_leg_piv_z;
+    return pig_leg_piv_z + pig_leg_rel_y * pig_leg_rot_s + pig_leg_rel_z * pig_leg_rot_c;
+}
+
+float pigLegTX(float lx, float ly, float lz)
+{
+    return pigTX3(lx, pigLegRY(ly, lz), pigLegRZ(ly, lz));
+}
+
+float pigLegTY(float lx, float ly, float lz)
+{
+    return pigTY3(lx, pigLegRY(ly, lz), pigLegRZ(ly, lz));
+}
+
+float pigLegTZ(float lx, float ly, float lz)
+{
+    return pigTZ3(lx, pigLegRY(ly, lz), pigLegRZ(ly, lz));
+}
+
+float pigHeadLocalX(float lx, float ly, float lz)
+{
+    pig_head_rel_x = lx - pig_head_piv_x;
+    pig_head_rel_y = ly - pig_head_piv_y;
+    pig_head_rel_z = lz - pig_head_piv_z;
+    pig_head_pitch_y = pig_head_rel_y * pig_head_pitch_c - pig_head_rel_z * pig_head_pitch_s;
+    pig_head_pitch_z = pig_head_rel_y * pig_head_pitch_s + pig_head_rel_z * pig_head_pitch_c;
+    pig_head_yaw_x = pig_head_rel_x * pig_head_rot_c - pig_head_pitch_z * pig_head_rot_s;
+    return pig_head_piv_x + pig_head_yaw_x;
+}
+
+float pigHeadLocalY(float lx, float ly, float lz)
+{
+    pig_head_rel_y = ly - pig_head_piv_y;
+    pig_head_rel_z = lz - pig_head_piv_z;
+    pig_head_pitch_y = pig_head_rel_y * pig_head_pitch_c - pig_head_rel_z * pig_head_pitch_s;
+    return pig_head_piv_y + pig_head_pitch_y;
+}
+
+float pigHeadLocalZ(float lx, float ly, float lz)
+{
+    pig_head_rel_x = lx - pig_head_piv_x;
+    pig_head_rel_y = ly - pig_head_piv_y;
+    pig_head_rel_z = lz - pig_head_piv_z;
+    pig_head_pitch_y = pig_head_rel_y * pig_head_pitch_c - pig_head_rel_z * pig_head_pitch_s;
+    pig_head_pitch_z = pig_head_rel_y * pig_head_pitch_s + pig_head_rel_z * pig_head_pitch_c;
+    pig_head_yaw_z = pig_head_rel_x * pig_head_rot_s + pig_head_pitch_z * pig_head_rot_c;
+    return pig_head_piv_z + pig_head_yaw_z;
+}
+
+float pigHeadTX(float lx, float ly, float lz)
+{
+    return pigTX3(pigHeadLocalX(lx, ly, lz), pigHeadLocalY(lx, ly, lz), pigHeadLocalZ(lx, ly, lz));
+}
+
+float pigHeadTY(float lx, float ly, float lz)
+{
+    return pigTY3(pigHeadLocalX(lx, ly, lz), pigHeadLocalY(lx, ly, lz), pigHeadLocalZ(lx, ly, lz));
+}
+
+float pigHeadTZ(float lx, float ly, float lz)
+{
+    return pigTZ3(pigHeadLocalX(lx, ly, lz), pigHeadLocalY(lx, ly, lz), pigHeadLocalZ(lx, ly, lz));
+}
+
+void drawPigBox(float lx0, float ly0, float lz0, float lx1, float ly1, float lz1, int uvx, int uvy, int sx, int sy, int sz)
+{
+    pig_box_lx0 = lx0;
+    pig_box_lx1 = lx1;
+    pig_box_ly0 = ly0;
+    pig_box_ly1 = ly1;
+    pig_box_lz0 = lz0;
+    pig_box_lz1 = lz1;
+    pig_uvx = uvx;
+    pig_uvy = uvy;
+    pig_sx = sx;
+    pig_sy = sy;
+    pig_sz = sz;
+
+    pig_y0 = (pig_draw_y + pig_box_ly0) * block_world_size;
+    pig_y1 = (pig_draw_y + pig_box_ly1) * block_world_size;
+
+
+    /* Entity face culling: convert camera into this cuboid's local space.
+       A closed cuboid only needs the faces whose outward side can see the camera. */
+    pig_cam_dx = player_x - pig_draw_x;
+    pig_cam_dz = player_z - pig_draw_z;
+    pig_cam_base_lx = pig_cam_dx * pig_draw_c + pig_cam_dz * pig_draw_s;
+    pig_cam_base_lz = (0.0f - pig_cam_dx) * pig_draw_s + pig_cam_dz * pig_draw_c;
+    pig_cam_base_ly = player_y - pig_draw_y;
+    pig_cam_local_x = pig_cam_base_lx;
+    pig_cam_local_y = pig_cam_base_ly;
+    pig_cam_local_z = pig_cam_base_lz;
+
+    pig_draw_face_front = 0;
+    pig_draw_face_right = 0;
+    pig_draw_face_back = 0;
+    pig_draw_face_left = 0;
+    pig_draw_face_top = 0;
+    pig_draw_face_bottom = 0;
+    if (pig_cam_local_z < pig_box_lz0) pig_draw_face_front = 1;
+    if (pig_cam_local_x > pig_box_lx1) pig_draw_face_right = 1;
+    if (pig_cam_local_z > pig_box_lz1) pig_draw_face_back = 1;
+    if (pig_cam_local_x < pig_box_lx0) pig_draw_face_left = 1;
+    if (pig_cam_local_y > pig_box_ly1) pig_draw_face_top = 1;
+    if (pig_cam_local_y < pig_box_ly0) pig_draw_face_bottom = 1;
+    if (pig_cam_local_x > pig_box_lx0 && pig_cam_local_x < pig_box_lx1 &&
+        pig_cam_local_y > pig_box_ly0 && pig_cam_local_y < pig_box_ly1 &&
+        pig_cam_local_z > pig_box_lz0 && pig_cam_local_z < pig_box_lz1) {
+        pig_draw_face_front = 1;
+        pig_draw_face_right = 1;
+        pig_draw_face_back = 1;
+        pig_draw_face_left = 1;
+        pig_draw_face_top = 1;
+        pig_draw_face_bottom = 1;
+    }
+    if (pig_death_roll_angle > 0.001f) {
+        pig_draw_face_front = 1;
+        pig_draw_face_right = 1;
+        pig_draw_face_back = 1;
+        pig_draw_face_left = 1;
+        pig_draw_face_top = 1;
+        pig_draw_face_bottom = 1;
+    }
+
+    /* front/north face: atlas [u+depth, v+depth, width, height] */
+    pig_fu0 = (float)(pig_uvx + pig_sz);
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_front != 0)
+    {
+    fillQuad3DTexZ(
+        pigTX3(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly0, pig_box_lz0), pigTZ3(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu0, pig_fv1,
+        pigTX3(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly0, pig_box_lz0), pigTZ3(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu1, pig_fv1,
+        pigTX3(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly1, pig_box_lz0), pigTZ3(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pigTX3(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly1, pig_box_lz0), pigTZ3(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    /* right/east face: [u+depth+width, v+depth, depth, height] */
+    pig_fu0 = (float)(pig_uvx + pig_sz + pig_sx);
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx + pig_sz) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_right != 0)
+    {
+    fillQuad3DTexZ(
+        pigTX3(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly0, pig_box_lz0), pigTZ3(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu0, pig_fv1,
+        pigTX3(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly0, pig_box_lz1), pigTZ3(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pigTX3(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly1, pig_box_lz1), pigTZ3(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu1, pig_fv0,
+        pigTX3(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly1, pig_box_lz0), pigTZ3(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    /* back/south face: [u+depth+width+depth, v+depth, width, height] */
+    pig_fu0 = (float)(pig_uvx + pig_sz + pig_sx + pig_sz);
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx + pig_sz + pig_sx) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_back != 0)
+    {
+    fillQuad3DTexZ(
+        pigTX3(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly0, pig_box_lz1), pigTZ3(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pigTX3(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly0, pig_box_lz1), pigTZ3(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pigTX3(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly1, pig_box_lz1), pigTZ3(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu1, pig_fv0,
+        pigTX3(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly1, pig_box_lz1), pigTZ3(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    /* left/west face: [u, v+depth, depth, height] */
+    pig_fu0 = (float)pig_uvx;
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_left != 0)
+    {
+    fillQuad3DTexZ(
+        pigTX3(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly0, pig_box_lz1), pigTZ3(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pigTX3(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly0, pig_box_lz0), pigTZ3(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu1, pig_fv1,
+        pigTX3(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly1, pig_box_lz0), pigTZ3(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pigTX3(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly1, pig_box_lz1), pigTZ3(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    /* top face: [u+depth, v, width, depth] */
+    pig_fu0 = (float)(pig_uvx + pig_sz);
+    pig_fv0 = (float)pig_uvy;
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz) - 0.001f);
+    if (pig_draw_face_top != 0)
+    {
+    fillQuad3DTexZ(
+        pigTX3(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly1, pig_box_lz0), pigTZ3(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pigTX3(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly1, pig_box_lz0), pigTZ3(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pigTX3(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly1, pig_box_lz1), pigTZ3(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pigTX3(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly1, pig_box_lz1), pigTZ3(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    /* bottom face: [u+depth+width, v, width, depth] */
+    pig_fu0 = (float)(pig_uvx + pig_sz + pig_sx);
+    pig_fv0 = (float)pig_uvy;
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx + pig_sx) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz) - 0.001f);
+    if (pig_draw_face_bottom != 0)
+    {
+    fillQuad3DTexZ(
+        pigTX3(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly0, pig_box_lz1), pigTZ3(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu0, pig_fv0,
+        pigTX3(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly0, pig_box_lz1), pigTZ3(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu1, pig_fv0,
+        pigTX3(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly0, pig_box_lz0), pigTZ3(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu1, pig_fv1,
+        pigTX3(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly0, pig_box_lz0), pigTZ3(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu0, pig_fv1,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+}
+
+void drawPigHeadBox(float lx0, float ly0, float lz0, float lx1, float ly1, float lz1, int uvx, int uvy, int sx, int sy, int sz)
+{
+    pig_box_lx0 = lx0;
+    pig_box_lx1 = lx1;
+    pig_box_ly0 = ly0;
+    pig_box_ly1 = ly1;
+    pig_box_lz0 = lz0;
+    pig_box_lz1 = lz1;
+    pig_uvx = uvx;
+    pig_uvy = uvy;
+    pig_sx = sx;
+    pig_sy = sy;
+    pig_sz = sz;
+
+
+    /* Entity face culling for the independently yaw/pitch rotated head. */
+    pig_cam_dx = player_x - pig_draw_x;
+    pig_cam_dz = player_z - pig_draw_z;
+    pig_cam_base_lx = pig_cam_dx * pig_draw_c + pig_cam_dz * pig_draw_s;
+    pig_cam_base_lz = (0.0f - pig_cam_dx) * pig_draw_s + pig_cam_dz * pig_draw_c;
+    pig_cam_base_ly = player_y - pig_draw_y;
+
+    pig_cam_rel_x = pig_cam_base_lx - pig_head_piv_x;
+    pig_cam_rel_y = pig_cam_base_ly - pig_head_piv_y;
+    pig_cam_rel_z = pig_cam_base_lz - pig_head_piv_z;
+
+    pig_cam_local_x = pig_head_piv_x + pig_cam_rel_x * pig_head_rot_c + pig_cam_rel_z * pig_head_rot_s;
+    pig_cam_pitch_z = (0.0f - pig_cam_rel_x) * pig_head_rot_s + pig_cam_rel_z * pig_head_rot_c;
+    pig_cam_local_y = pig_head_piv_y + pig_cam_rel_y * pig_head_pitch_c + pig_cam_pitch_z * pig_head_pitch_s;
+    pig_cam_local_z = pig_head_piv_z + (0.0f - pig_cam_rel_y) * pig_head_pitch_s + pig_cam_pitch_z * pig_head_pitch_c;
+
+    pig_draw_face_front = 0;
+    pig_draw_face_right = 0;
+    pig_draw_face_back = 0;
+    pig_draw_face_left = 0;
+    pig_draw_face_top = 0;
+    pig_draw_face_bottom = 0;
+    if (pig_cam_local_z < pig_box_lz0) pig_draw_face_front = 1;
+    if (pig_cam_local_x > pig_box_lx1) pig_draw_face_right = 1;
+    if (pig_cam_local_z > pig_box_lz1) pig_draw_face_back = 1;
+    if (pig_cam_local_x < pig_box_lx0) pig_draw_face_left = 1;
+    if (pig_cam_local_y > pig_box_ly1) pig_draw_face_top = 1;
+    if (pig_cam_local_y < pig_box_ly0) pig_draw_face_bottom = 1;
+    if (pig_cam_local_x > pig_box_lx0 && pig_cam_local_x < pig_box_lx1 &&
+        pig_cam_local_y > pig_box_ly0 && pig_cam_local_y < pig_box_ly1 &&
+        pig_cam_local_z > pig_box_lz0 && pig_cam_local_z < pig_box_lz1) {
+        pig_draw_face_front = 1;
+        pig_draw_face_right = 1;
+        pig_draw_face_back = 1;
+        pig_draw_face_left = 1;
+        pig_draw_face_top = 1;
+        pig_draw_face_bottom = 1;
+    }
+    if (pig_death_roll_angle > 0.001f) {
+        pig_draw_face_front = 1;
+        pig_draw_face_right = 1;
+        pig_draw_face_back = 1;
+        pig_draw_face_left = 1;
+        pig_draw_face_top = 1;
+        pig_draw_face_bottom = 1;
+    }
+
+    pig_fu0 = (float)(pig_uvx + pig_sz);
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_front != 0)
+    {
+    fillQuad3DTexZ(
+        pigHeadTX(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pigHeadTY(pig_box_lx0, pig_box_ly0, pig_box_lz0), pigHeadTZ(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu0, pig_fv1,
+        pigHeadTX(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pigHeadTY(pig_box_lx1, pig_box_ly0, pig_box_lz0), pigHeadTZ(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu1, pig_fv1,
+        pigHeadTX(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pigHeadTY(pig_box_lx1, pig_box_ly1, pig_box_lz0), pigHeadTZ(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pigHeadTX(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pigHeadTY(pig_box_lx0, pig_box_ly1, pig_box_lz0), pigHeadTZ(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    pig_fu0 = (float)(pig_uvx + pig_sz + pig_sx);
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx + pig_sz) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_right != 0)
+    {
+    fillQuad3DTexZ(
+        pigHeadTX(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pigHeadTY(pig_box_lx1, pig_box_ly0, pig_box_lz0), pigHeadTZ(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu0, pig_fv1,
+        pigHeadTX(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pigHeadTY(pig_box_lx1, pig_box_ly0, pig_box_lz1), pigHeadTZ(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pigHeadTX(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pigHeadTY(pig_box_lx1, pig_box_ly1, pig_box_lz1), pigHeadTZ(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu1, pig_fv0,
+        pigHeadTX(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pigHeadTY(pig_box_lx1, pig_box_ly1, pig_box_lz0), pigHeadTZ(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    pig_fu0 = (float)(pig_uvx + pig_sz + pig_sx + pig_sz);
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx + pig_sz + pig_sx) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_back != 0)
+    {
+    fillQuad3DTexZ(
+        pigHeadTX(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pigHeadTY(pig_box_lx1, pig_box_ly0, pig_box_lz1), pigHeadTZ(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pigHeadTX(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pigHeadTY(pig_box_lx0, pig_box_ly0, pig_box_lz1), pigHeadTZ(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pigHeadTX(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pigHeadTY(pig_box_lx0, pig_box_ly1, pig_box_lz1), pigHeadTZ(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu1, pig_fv0,
+        pigHeadTX(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pigHeadTY(pig_box_lx1, pig_box_ly1, pig_box_lz1), pigHeadTZ(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    pig_fu0 = (float)pig_uvx;
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_left != 0)
+    {
+    fillQuad3DTexZ(
+        pigHeadTX(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pigHeadTY(pig_box_lx0, pig_box_ly0, pig_box_lz1), pigHeadTZ(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pigHeadTX(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pigHeadTY(pig_box_lx0, pig_box_ly0, pig_box_lz0), pigHeadTZ(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu1, pig_fv1,
+        pigHeadTX(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pigHeadTY(pig_box_lx0, pig_box_ly1, pig_box_lz0), pigHeadTZ(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pigHeadTX(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pigHeadTY(pig_box_lx0, pig_box_ly1, pig_box_lz1), pigHeadTZ(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    pig_fu0 = (float)(pig_uvx + pig_sz);
+    pig_fv0 = (float)pig_uvy;
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz) - 0.001f);
+    if (pig_draw_face_top != 0)
+    {
+    fillQuad3DTexZ(
+        pigHeadTX(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pigHeadTY(pig_box_lx0, pig_box_ly1, pig_box_lz0), pigHeadTZ(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pigHeadTX(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pigHeadTY(pig_box_lx1, pig_box_ly1, pig_box_lz0), pigHeadTZ(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pigHeadTX(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pigHeadTY(pig_box_lx1, pig_box_ly1, pig_box_lz1), pigHeadTZ(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pigHeadTX(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pigHeadTY(pig_box_lx0, pig_box_ly1, pig_box_lz1), pigHeadTZ(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    pig_fu0 = (float)(pig_uvx + pig_sz + pig_sx);
+    pig_fv0 = (float)pig_uvy;
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx + pig_sx) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz) - 0.001f);
+    if (pig_draw_face_bottom != 0)
+    {
+    fillQuad3DTexZ(
+        pigHeadTX(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pigHeadTY(pig_box_lx0, pig_box_ly0, pig_box_lz1), pigHeadTZ(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu0, pig_fv0,
+        pigHeadTX(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pigHeadTY(pig_box_lx1, pig_box_ly0, pig_box_lz1), pigHeadTZ(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu1, pig_fv0,
+        pigHeadTX(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pigHeadTY(pig_box_lx1, pig_box_ly0, pig_box_lz0), pigHeadTZ(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu1, pig_fv1,
+        pigHeadTX(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pigHeadTY(pig_box_lx0, pig_box_ly0, pig_box_lz0), pigHeadTZ(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu0, pig_fv1,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+}
+
+void drawPigLegBox(float lx0, float ly0, float lz0, float lx1, float ly1, float lz1, float piv_y, float piv_z, float angle, int uvx, int uvy, int sx, int sy, int sz)
+{
+    pig_box_lx0 = lx0;
+    pig_box_lx1 = lx1;
+    pig_box_ly0 = ly0;
+    pig_box_ly1 = ly1;
+    pig_box_lz0 = lz0;
+    pig_box_lz1 = lz1;
+    pig_leg_piv_y = piv_y;
+    pig_leg_piv_z = piv_z;
+    pig_leg_rot_c = cosf(angle);
+    pig_leg_rot_s = sinf(angle);
+    pig_uvx = uvx;
+    pig_uvy = uvy;
+    pig_sx = sx;
+    pig_sy = sy;
+    pig_sz = sz;
+
+
+    /* Entity face culling for this leg's animated local Y/Z rotation. */
+    pig_cam_dx = player_x - pig_draw_x;
+    pig_cam_dz = player_z - pig_draw_z;
+    pig_cam_base_lx = pig_cam_dx * pig_draw_c + pig_cam_dz * pig_draw_s;
+    pig_cam_base_lz = (0.0f - pig_cam_dx) * pig_draw_s + pig_cam_dz * pig_draw_c;
+    pig_cam_base_ly = player_y - pig_draw_y;
+
+    pig_cam_rel_y = pig_cam_base_ly - pig_leg_piv_y;
+    pig_cam_rel_z = pig_cam_base_lz - pig_leg_piv_z;
+    pig_cam_local_x = pig_cam_base_lx;
+    pig_cam_local_y = pig_leg_piv_y + pig_cam_rel_y * pig_leg_rot_c + pig_cam_rel_z * pig_leg_rot_s;
+    pig_cam_local_z = pig_leg_piv_z + (0.0f - pig_cam_rel_y) * pig_leg_rot_s + pig_cam_rel_z * pig_leg_rot_c;
+
+    pig_draw_face_front = 0;
+    pig_draw_face_right = 0;
+    pig_draw_face_back = 0;
+    pig_draw_face_left = 0;
+    pig_draw_face_top = 0;
+    pig_draw_face_bottom = 0;
+    if (pig_cam_local_z < pig_box_lz0) pig_draw_face_front = 1;
+    if (pig_cam_local_x > pig_box_lx1) pig_draw_face_right = 1;
+    if (pig_cam_local_z > pig_box_lz1) pig_draw_face_back = 1;
+    if (pig_cam_local_x < pig_box_lx0) pig_draw_face_left = 1;
+    if (pig_cam_local_y > pig_box_ly1) pig_draw_face_top = 1;
+    if (pig_cam_local_y < pig_box_ly0) pig_draw_face_bottom = 1;
+    if (pig_cam_local_x > pig_box_lx0 && pig_cam_local_x < pig_box_lx1 &&
+        pig_cam_local_y > pig_box_ly0 && pig_cam_local_y < pig_box_ly1 &&
+        pig_cam_local_z > pig_box_lz0 && pig_cam_local_z < pig_box_lz1) {
+        pig_draw_face_front = 1;
+        pig_draw_face_right = 1;
+        pig_draw_face_back = 1;
+        pig_draw_face_left = 1;
+        pig_draw_face_top = 1;
+        pig_draw_face_bottom = 1;
+    }
+    if (pig_death_roll_angle > 0.001f) {
+        pig_draw_face_front = 1;
+        pig_draw_face_right = 1;
+        pig_draw_face_back = 1;
+        pig_draw_face_left = 1;
+        pig_draw_face_top = 1;
+        pig_draw_face_bottom = 1;
+    }
+
+    /* Same Bedrock cube net as drawPigBox, but every vertex is rotated around
+       the leg's top pivot before the whole pig is yaw-rotated. */
+
+    pig_fu0 = (float)(pig_uvx + pig_sz);
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_front != 0)
+    {
+    fillQuad3DTexZ(
+        pigLegTX(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pigLegTY(pig_box_lx0, pig_box_ly0, pig_box_lz0), pigLegTZ(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu0, pig_fv1,
+        pigLegTX(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pigLegTY(pig_box_lx1, pig_box_ly0, pig_box_lz0), pigLegTZ(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu1, pig_fv1,
+        pigLegTX(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pigLegTY(pig_box_lx1, pig_box_ly1, pig_box_lz0), pigLegTZ(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pigLegTX(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pigLegTY(pig_box_lx0, pig_box_ly1, pig_box_lz0), pigLegTZ(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    pig_fu0 = (float)(pig_uvx + pig_sz + pig_sx);
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx + pig_sz) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_right != 0)
+    {
+    fillQuad3DTexZ(
+        pigLegTX(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pigLegTY(pig_box_lx1, pig_box_ly0, pig_box_lz0), pigLegTZ(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu0, pig_fv1,
+        pigLegTX(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pigLegTY(pig_box_lx1, pig_box_ly0, pig_box_lz1), pigLegTZ(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pigLegTX(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pigLegTY(pig_box_lx1, pig_box_ly1, pig_box_lz1), pigLegTZ(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu1, pig_fv0,
+        pigLegTX(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pigLegTY(pig_box_lx1, pig_box_ly1, pig_box_lz0), pigLegTZ(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    pig_fu0 = (float)(pig_uvx + pig_sz + pig_sx + pig_sz);
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx + pig_sz + pig_sx) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_back != 0)
+    {
+    fillQuad3DTexZ(
+        pigLegTX(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pigLegTY(pig_box_lx1, pig_box_ly0, pig_box_lz1), pigLegTZ(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pigLegTX(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pigLegTY(pig_box_lx0, pig_box_ly0, pig_box_lz1), pigLegTZ(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pigLegTX(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pigLegTY(pig_box_lx0, pig_box_ly1, pig_box_lz1), pigLegTZ(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu1, pig_fv0,
+        pigLegTX(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pigLegTY(pig_box_lx1, pig_box_ly1, pig_box_lz1), pigLegTZ(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    pig_fu0 = (float)pig_uvx;
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_left != 0)
+    {
+    fillQuad3DTexZ(
+        pigLegTX(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pigLegTY(pig_box_lx0, pig_box_ly0, pig_box_lz1), pigLegTZ(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pigLegTX(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pigLegTY(pig_box_lx0, pig_box_ly0, pig_box_lz0), pigLegTZ(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu1, pig_fv1,
+        pigLegTX(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pigLegTY(pig_box_lx0, pig_box_ly1, pig_box_lz0), pigLegTZ(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pigLegTX(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pigLegTY(pig_box_lx0, pig_box_ly1, pig_box_lz1), pigLegTZ(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    pig_fu0 = (float)(pig_uvx + pig_sz);
+    pig_fv0 = (float)pig_uvy;
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz) - 0.001f);
+    if (pig_draw_face_top != 0)
+    {
+    fillQuad3DTexZ(
+        pigLegTX(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pigLegTY(pig_box_lx0, pig_box_ly1, pig_box_lz0), pigLegTZ(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pigLegTX(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pigLegTY(pig_box_lx1, pig_box_ly1, pig_box_lz0), pigLegTZ(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pigLegTX(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pigLegTY(pig_box_lx1, pig_box_ly1, pig_box_lz1), pigLegTZ(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pigLegTX(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pigLegTY(pig_box_lx0, pig_box_ly1, pig_box_lz1), pigLegTZ(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    pig_fu0 = (float)(pig_uvx + pig_sz + pig_sx);
+    pig_fv0 = (float)pig_uvy;
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx + pig_sx) - 0.001f);
+    pig_fv1 = ((float)(pig_uvy + pig_sz) - 0.001f);
+    if (pig_draw_face_bottom != 0)
+    {
+    fillQuad3DTexZ(
+        pigLegTX(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pigLegTY(pig_box_lx0, pig_box_ly0, pig_box_lz1), pigLegTZ(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu0, pig_fv0,
+        pigLegTX(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pigLegTY(pig_box_lx1, pig_box_ly0, pig_box_lz1), pigLegTZ(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu1, pig_fv0,
+        pigLegTX(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pigLegTY(pig_box_lx1, pig_box_ly0, pig_box_lz0), pigLegTZ(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu1, pig_fv1,
+        pigLegTX(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pigLegTY(pig_box_lx0, pig_box_ly0, pig_box_lz0), pigLegTZ(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu0, pig_fv1,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+}
+
+
+
+
+void drawPigBodyBoxRotX(float lx0, float ly0, float lz0, float lx1, float ly1, float lz1, int uvx, int uvy, int sx, int sy, int sz)
+{
+    pig_box_lx0 = lx0;
+    pig_box_lx1 = lx1;
+    pig_box_ly0 = ly0;
+    pig_box_ly1 = ly1;
+    pig_box_lz0 = lz0;
+    pig_box_lz1 = lz1;
+    pig_uvx = uvx;
+    pig_uvy = uvy;
+    pig_sx = sx;
+    pig_sy = sy;
+    pig_sz = sz;
+
+    pig_y0 = (pig_draw_y + pig_box_ly0) * block_world_size;
+    pig_y1 = (pig_draw_y + pig_box_ly1) * block_world_size;
+
+
+    /* Entity face culling: convert camera into this cuboid's local space.
+       A closed cuboid only needs the faces whose outward side can see the camera. */
+    pig_cam_dx = player_x - pig_draw_x;
+    pig_cam_dz = player_z - pig_draw_z;
+    pig_cam_base_lx = pig_cam_dx * pig_draw_c + pig_cam_dz * pig_draw_s;
+    pig_cam_base_lz = (0.0f - pig_cam_dx) * pig_draw_s + pig_cam_dz * pig_draw_c;
+    pig_cam_base_ly = player_y - pig_draw_y;
+    pig_cam_local_x = pig_cam_base_lx;
+    pig_cam_local_y = pig_cam_base_ly;
+    pig_cam_local_z = pig_cam_base_lz;
+
+    pig_draw_face_front = 0;
+    pig_draw_face_right = 0;
+    pig_draw_face_back = 0;
+    pig_draw_face_left = 0;
+    pig_draw_face_top = 0;
+    pig_draw_face_bottom = 0;
+    if (pig_cam_local_z < pig_box_lz0) pig_draw_face_front = 1;
+    if (pig_cam_local_x > pig_box_lx1) pig_draw_face_right = 1;
+    if (pig_cam_local_z > pig_box_lz1) pig_draw_face_back = 1;
+    if (pig_cam_local_x < pig_box_lx0) pig_draw_face_left = 1;
+    if (pig_cam_local_y > pig_box_ly1) pig_draw_face_top = 1;
+    if (pig_cam_local_y < pig_box_ly0) pig_draw_face_bottom = 1;
+    if (pig_cam_local_x > pig_box_lx0 && pig_cam_local_x < pig_box_lx1 &&
+        pig_cam_local_y > pig_box_ly0 && pig_cam_local_y < pig_box_ly1 &&
+        pig_cam_local_z > pig_box_lz0 && pig_cam_local_z < pig_box_lz1) {
+        pig_draw_face_front = 1;
+        pig_draw_face_right = 1;
+        pig_draw_face_back = 1;
+        pig_draw_face_left = 1;
+        pig_draw_face_top = 1;
+        pig_draw_face_bottom = 1;
+    }
+    if (pig_death_roll_angle > 0.001f) {
+        pig_draw_face_front = 1;
+        pig_draw_face_right = 1;
+        pig_draw_face_back = 1;
+        pig_draw_face_left = 1;
+        pig_draw_face_top = 1;
+        pig_draw_face_bottom = 1;
+    }
+
+    /* The Bedrock pig body cube has bind_pose_rotation X=90. Its texture net is
+       still laid out as X/Y/Z = 10/16/8, but on screen the cube is X/Z/Y.
+       So the 16-pixel atlas height runs along body length, not world height. */
+
+    /* Left long side: atlas left panel [u, v+depth, depth, model-height]. */
+    pig_fu0 = (float)pig_uvx;
+    pig_fu1 = ((float)(pig_uvx + pig_sz) - 0.001f);
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_left != 0)
+    {
+    fillQuad3DTexZ(
+        pigTX3(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly0, pig_box_lz1), pigTZ3(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pigTX3(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly0, pig_box_lz0), pigTZ3(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pigTX3(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly1, pig_box_lz0), pigTZ3(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pigTX3(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly1, pig_box_lz1), pigTZ3(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    /* Right long side: atlas right panel [u+depth+width, v+depth, depth, model-height]. */
+    pig_fu0 = (float)(pig_uvx + pig_sz + pig_sx);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx + pig_sz) - 0.001f);
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_right != 0)
+    {
+    fillQuad3DTexZ(
+        pigTX3(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly0, pig_box_lz0), pigTZ3(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pigTX3(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly0, pig_box_lz1), pigTZ3(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pigTX3(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly1, pig_box_lz1), pigTZ3(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pigTX3(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly1, pig_box_lz0), pigTZ3(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    /* Front/head end: atlas top panel becomes one vertical end after the body X rotation. */
+    pig_fu0 = (float)(pig_uvx + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx) - 0.001f);
+    pig_fv0 = (float)pig_uvy;
+    pig_fv1 = ((float)(pig_uvy + pig_sz) - 0.001f);
+    if (pig_draw_face_front != 0)
+    {
+    fillQuad3DTexZ(
+        pigTX3(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly0, pig_box_lz0), pigTZ3(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu0, pig_fv1,
+        pigTX3(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly0, pig_box_lz0), pigTZ3(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu1, pig_fv1,
+        pigTX3(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly1, pig_box_lz0), pigTZ3(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pigTX3(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly1, pig_box_lz0), pigTZ3(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    /* Rear end: atlas bottom panel. */
+    pig_fu0 = (float)(pig_uvx + pig_sz + pig_sx);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx + pig_sx) - 0.001f);
+    pig_fv0 = (float)pig_uvy;
+    pig_fv1 = ((float)(pig_uvy + pig_sz) - 0.001f);
+    if (pig_draw_face_back != 0)
+    {
+    fillQuad3DTexZ(
+        pigTX3(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly0, pig_box_lz1), pigTZ3(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pigTX3(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly0, pig_box_lz1), pigTZ3(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pigTX3(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly1, pig_box_lz1), pigTZ3(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu1, pig_fv0,
+        pigTX3(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly1, pig_box_lz1), pigTZ3(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    /* Top: atlas back panel, with model Y mapped along local Z. */
+    pig_fu0 = (float)(pig_uvx + pig_sz + pig_sx + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx + pig_sz + pig_sx) - 0.001f);
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_top != 0)
+    {
+    fillQuad3DTexZ(
+        pigTX3(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly1, pig_box_lz0), pigTZ3(pig_box_lx0, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pigTX3(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly1, pig_box_lz0), pigTZ3(pig_box_lx1, pig_box_ly1, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pigTX3(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly1, pig_box_lz1), pigTZ3(pig_box_lx1, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pigTX3(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly1, pig_box_lz1), pigTZ3(pig_box_lx0, pig_box_ly1, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+
+    /* Bottom: atlas front panel. */
+    pig_fu0 = (float)(pig_uvx + pig_sz);
+    pig_fu1 = ((float)(pig_uvx + pig_sz + pig_sx) - 0.001f);
+    pig_fv0 = (float)(pig_uvy + pig_sz);
+    pig_fv1 = ((float)(pig_uvy + pig_sz + pig_sy) - 0.001f);
+    if (pig_draw_face_bottom != 0)
+    {
+    fillQuad3DTexZ(
+        pigTX3(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly0, pig_box_lz1), pigTZ3(pig_box_lx0, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu0, pig_fv1,
+        pigTX3(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly0, pig_box_lz1), pigTZ3(pig_box_lx1, pig_box_ly0, pig_box_lz1) * block_world_size, pig_fu1, pig_fv1,
+        pigTX3(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx1, pig_box_ly0, pig_box_lz0), pigTZ3(pig_box_lx1, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu1, pig_fv0,
+        pigTX3(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pigTY3(pig_box_lx0, pig_box_ly0, pig_box_lz0), pigTZ3(pig_box_lx0, pig_box_ly0, pig_box_lz0) * block_world_size, pig_fu0, pig_fv0,
+        pig_texture_ptr, pig_texture_w, pig_texture_h, 0, &cam[0]
+    );
+    }
+}
+
+int pigBlockedAt(float ax, float ay, float az)
+{
+    pig_bx0 = floorFloatToInt(ax - pig_hitbox_x);
+    pig_bx1 = floorFloatToInt(ax + pig_hitbox_x);
+    pig_bz0 = floorFloatToInt(az - pig_hitbox_z);
+    pig_bz1 = floorFloatToInt(az + pig_hitbox_z);
+    pig_by0 = floorFloatToInt(ay + 0.05f);
+    pig_by1 = floorFloatToInt(ay + pig_body_height);
+
+    if (blockAtAbs(pig_bx0, pig_by0, pig_bz0) != (uint)0) return 1;
+    if (blockAtAbs(pig_bx1, pig_by0, pig_bz0) != (uint)0) return 1;
+    if (blockAtAbs(pig_bx0, pig_by0, pig_bz1) != (uint)0) return 1;
+    if (blockAtAbs(pig_bx1, pig_by0, pig_bz1) != (uint)0) return 1;
+
+    /* Most of the time by0 == by1 because the pig is under one block tall.
+       Avoid doing the same four blockAtAbs calls twice on the hot path. */
+    if (pig_by1 != pig_by0)
+    {
+        if (blockAtAbs(pig_bx0, pig_by1, pig_bz0) != (uint)0) return 1;
+        if (blockAtAbs(pig_bx1, pig_by1, pig_bz0) != (uint)0) return 1;
+        if (blockAtAbs(pig_bx0, pig_by1, pig_bz1) != (uint)0) return 1;
+        if (blockAtAbs(pig_bx1, pig_by1, pig_bz1) != (uint)0) return 1;
+    }
+    return 0;
+}
+
+int pigSpawnAllowedAt(int ax, int az)
+{
+    pig_ground_y = highestSolidAtAbsLimited(ax, az, 64.0f);
+    if (pig_ground_y < 0) return 0;
+
+    /* Passive-pig style spawn rule from the reference behavior: grass floor,
+       two clear blocks above the floor, and enough light. */
+    if (blockAtAbs(ax, pig_ground_y, az) != (uint)pig_spawn_floor_block) return 0;
+    if (blockAtAbs(ax, pig_ground_y + 1, az) != BLOCK_AIR) return 0;
+    if (blockAtAbs(ax, pig_ground_y + 2, az) != BLOCK_AIR) return 0;
+    if (lightLevelAtAbs(ax, pig_ground_y + 1, az) < pig_spawn_light_min) return 0;
+    return 1;
+}
+
+int pigWalkGoalAllowedAt(int ax, int az)
+{
+    /* Walking to a coordinate is not the same as spawning there. Existing pigs
+       should keep moving at night and under shade; only initial spawning needs
+       light >= 7. This also removes the expensive skylight-bleed scan from the
+       normal AI loop. */
+    pig_ground_y = highestSolidAtAbsLimited(ax, az, 64.0f);
+    if (pig_ground_y < 0) return 0;
+    if (blockAtAbs(ax, pig_ground_y + 1, az) != BLOCK_AIR) return 0;
+    if (blockAtAbs(ax, pig_ground_y + 2, az) != BLOCK_AIR) return 0;
+    return 1;
+}
+
+void pigUpdateVertical(int idx)
+{
+    /* Gravity/support is separate from wandering AI. Resting pigs still fall
+       when the block below them is broken. */
+    pig_new_floor_x = floorFloatToInt(pigs[idx].x);
+    pig_new_floor_z = floorFloatToInt(pigs[idx].z);
+    pig_ground_y = highestSolidAtAbsLimited(pig_new_floor_x, pig_new_floor_z, pigs[idx].y + 0.05f);
+    pigs[idx].on_ground = 0;
+
+    if (pig_ground_y >= 0)
+    {
+        pig_ground_top = (float)pig_ground_y + 1.0f;
+
+        if (pigs[idx].y < pig_ground_top)
+        {
+            if (pigBlockedAt(pigs[idx].x, pig_ground_top, pigs[idx].z) == 0)
+            {
+                pigs[idx].y = pig_ground_top;
+                pigs[idx].vy = 0.0f;
+                pigs[idx].on_ground = 1;
+                return;
+            }
+        }
+
+        if ((pigs[idx].y <= (pig_ground_top + 0.04f)) && (pigs[idx].vy <= 0.0f))
+        {
+            pigs[idx].y = pig_ground_top;
+            pigs[idx].vy = 0.0f;
+            pigs[idx].on_ground = 1;
+            return;
+        }
+    }
+
+    pigs[idx].vy = pigs[idx].vy - gravity_accel * pig_ai_dt;
+    if (pigs[idx].vy < max_fall_speed) pigs[idx].vy = max_fall_speed;
+
+    pig_new_y = pigs[idx].y + pigs[idx].vy * pig_ai_dt;
+
+    if (pig_ground_y >= 0)
+    {
+        pig_ground_top = (float)pig_ground_y + 1.0f;
+        if (pig_new_y <= pig_ground_top)
+        {
+            pigs[idx].y = pig_ground_top;
+            pigs[idx].vy = 0.0f;
+            pigs[idx].on_ground = 1;
+            return;
+        }
+    }
+
+    pigs[idx].y = pig_new_y;
+}
+
+int pigInRenderedChunk(int idx)
+{
+    if (render_cache_valid == 0) return 0;
+
+    pig_new_floor_x = floorFloatToInt(pigs[idx].x);
+    pig_new_floor_z = floorFloatToInt(pigs[idx].z);
+
+    pig_render_cx = pig_new_floor_x - render_cache_origin_x;
+    pig_render_cz = pig_new_floor_z - render_cache_origin_z;
+    if (pig_render_cx < 0) return 0;
+    if (pig_render_cz < 0) return 0;
+    if (pig_render_cx >= render_cache_width) return 0;
+    if (pig_render_cz >= render_cache_width) return 0;
+
+    pig_render_cx = pig_render_cx / 8;
+    pig_render_cz = pig_render_cz / 8;
+    if (pig_render_cx < 0) return 0;
+    if (pig_render_cz < 0) return 0;
+    if (pig_render_cx >= 16) return 0;
+    if (pig_render_cz >= 16) return 0;
+
+    pig_dx = pigs[idx].x - render_abs_player_x;
+    pig_dz = pigs[idx].z - render_abs_player_z;
+    pig_dist2 = pig_dx * pig_dx + pig_dz * pig_dz;
+    if (pig_dist2 > render_distance_sq) return 0;
+
+    /* This is intentionally stricter than render_chunk_built[]. A built chunk
+       can be outside the current camera view or outside the current render ring.
+       renderWorld() stamps only the x/z chunks it actually rendered this frame. */
+    rn_idx = (pig_render_cz * 16) + pig_render_cx;
+    if (render_xz_visible_stamp[rn_idx] != render_frame_stamp) return 0;
+
+    return 1;
+}
+
+int objectOnScreenBlocks(float bx, float by, float bz, float radius)
+{
+    obj_radius = radius;
+    obj_dx = bx - player_x;
+    obj_dy = by - player_y;
+    obj_dz = bz - player_z;
+
+    obj_forward = obj_dx * view_x + obj_dy * view_y + obj_dz * view_z;
+    if (obj_forward < (0.0f - obj_radius)) return 0;
+
+    obj_side = obj_dx * cam_right_x + obj_dz * cam_right_z;
+    obj_side_abs = obj_side;
+    if (obj_side_abs < 0.0f) obj_side_abs = 0.0f - obj_side_abs;
+
+    obj_up = obj_dx * cam_up_x + obj_dy * cam_up_y + obj_dz * cam_up_z;
+    obj_up_abs = obj_up;
+    if (obj_up_abs < 0.0f) obj_up_abs = 0.0f - obj_up_abs;
+
+    obj_margin = obj_forward * render_fov_scale + obj_radius;
+    if (obj_margin < obj_radius) obj_margin = obj_radius;
+    if (obj_side_abs > obj_margin) return 0;
+
+    obj_margin = obj_forward * render_fov_y_scale + obj_radius;
+    if (obj_margin < obj_radius) obj_margin = obj_radius;
+    if (obj_up_abs > obj_margin) return 0;
+
+    return 1;
+}
+
+void clearPigSlot(int idx)
+{
+    pigs[idx].active = 0;
+    pigs[idx].type_id = TC_ENTITY_NONE;
+    pigs[idx].x = 0.0f;
+    pigs[idx].y = 0.0f;
+    pigs[idx].z = 0.0f;
+    pigs[idx].prev_x = 0.0f;
+    pigs[idx].prev_y = 0.0f;
+    pigs[idx].prev_z = 0.0f;
+    pigs[idx].yaw = 0.0f;
+    pigs[idx].prev_yaw = 0.0f;
+    pigs[idx].target_yaw = 0.0f;
+    pigs[idx].cached_c = 1.0f;
+    pigs[idx].cached_s = 0.0f;
+    pigs[idx].prev_cached_c = 1.0f;
+    pigs[idx].prev_cached_s = 0.0f;
+    pigs[idx].leg_offset = 0.0f;
+    pigs[idx].prev_leg_offset = 0.0f;
+    pigs[idx].vy = 0.0f;
+    pigs[idx].on_ground = 0;
+    pigs[idx].walk_ms = 0.0f;
+    pigs[idx].turn_ms = 0.0f;
+    pigs[idx].step_phase = 0.0f;
+    pigs[idx].goal_x = 0.0f;
+    pigs[idx].goal_z = 0.0f;
+    pigs[idx].rest_ms = 0.0f;
+    pigs[idx].has_goal = 0;
+    pigs[idx].save_slot = -1;
+    pigs[idx].head_yaw = 0.0f;
+    pigs[idx].prev_head_yaw = 0.0f;
+    pigs[idx].head_pitch = 0.0f;
+    pigs[idx].prev_head_pitch = 0.0f;
+    pigs[idx].head_rel_c = 1.0f;
+    pigs[idx].head_rel_s = 0.0f;
+    pigs[idx].prev_head_rel_c = 1.0f;
+    pigs[idx].prev_head_rel_s = 0.0f;
+    pigs[idx].head_pitch_c = 1.0f;
+    pigs[idx].head_pitch_s = 0.0f;
+    pigs[idx].prev_head_pitch_c = 1.0f;
+    pigs[idx].prev_head_pitch_s = 0.0f;
+    pigs[idx].attack_cooldown_ms = 0.0f;
+    pigs[idx].panic_ms = 0.0f;
+    pigs[idx].max_health = 0;
+    pigs[idx].health = 0;
+    pigs[idx].hurt_ms = 0.0f;
+    pigs[idx].invuln_ms = 0.0f;
+    pigs[idx].last_damage_taken = 0.0f;
+    pigs[idx].vx = 0.0f;
+    pigs[idx].vz = 0.0f;
+    pigs[idx].dead = 0;
+    pigs[idx].death_ms = 0.0f;
+}
+
+int entityDefaultMaxHealth(int entity_type)
+{
+    if (entity_type == TC_ENTITY_ZOMBIE) return 20;
+    if (entity_type == TC_ENTITY_SKELETON) return 20;
+    if (entity_type == TC_ENTITY_CREEPER) return 20;
+    if (entity_type == TC_ENTITY_STEVE) return 20;
+    if (entity_type == TC_ENTITY_COW) return 10;
+    if (entity_type == TC_ENTITY_PIG) return 10;
+    return 10;
+}
+
+void initEntityCombatStats(int idx)
+{
+    pigs[idx].max_health = entityDefaultMaxHealth(pigs[idx].type_id);
+    pigs[idx].health = pigs[idx].max_health;
+    pigs[idx].hurt_ms = 0.0f;
+    pigs[idx].invuln_ms = 0.0f;
+    pigs[idx].last_damage_taken = 0.0f;
+    pigs[idx].vx = 0.0f;
+    pigs[idx].vz = 0.0f;
+    pigs[idx].dead = 0;
+    pigs[idx].death_ms = 0.0f;
+    pigs[idx].panic_ms = 0.0f;
+}
+
+void spawnEntityAt(int idx, int entity_type, int ax, int az)
+{
+    pigs[idx].active = 0;
+    if (entityDefinitionUsable(entity_type) == 0) return;
+    applyEntityDefinitionToRuntime(entity_type);
+    if (pigSpawnAllowedAt(ax, az) == 0) return;
+
+    pigs[idx].active = 1;
+    pigs[idx].type_id = entity_type;
+    pigs[idx].x = (float)ax + 0.5f;
+    pigs[idx].z = (float)az + 0.5f;
+    pigs[idx].y = (float)pig_ground_y + 1.0f;
+    pigs[idx].prev_x = pigs[idx].x;
+    pigs[idx].prev_y = pigs[idx].y;
+    pigs[idx].prev_z = pigs[idx].z;
+    pigs[idx].yaw = (float)(idx + 1) * 1.0472f;
+    pigs[idx].prev_yaw = pigs[idx].yaw;
+    pigs[idx].target_yaw = pigs[idx].yaw;
+    pigs[idx].head_yaw = pigs[idx].yaw;
+    pigs[idx].prev_head_yaw = pigs[idx].yaw;
+    pigs[idx].head_pitch = 0.0f;
+    pigs[idx].prev_head_pitch = 0.0f;
+    pigs[idx].cached_c = cosf(pigs[idx].yaw);
+    pigs[idx].cached_s = sinf(pigs[idx].yaw);
+    pigs[idx].prev_cached_c = pigs[idx].cached_c;
+    pigs[idx].prev_cached_s = pigs[idx].cached_s;
+    pigs[idx].head_rel_c = 1.0f;
+    pigs[idx].head_rel_s = 0.0f;
+    pigs[idx].prev_head_rel_c = 1.0f;
+    pigs[idx].prev_head_rel_s = 0.0f;
+    pigs[idx].head_pitch_c = 1.0f;
+    pigs[idx].head_pitch_s = 0.0f;
+    pigs[idx].prev_head_pitch_c = 1.0f;
+    pigs[idx].prev_head_pitch_s = 0.0f;
+    pigs[idx].walk_ms = 0.0f;
+    pigs[idx].turn_ms = 0.0f;
+    pigs[idx].step_phase = (float)(idx * 80);
+    pigs[idx].leg_offset = 0.0f;
+    pigs[idx].prev_leg_offset = 0.0f;
+    pigs[idx].vy = 0.0f;
+    pigs[idx].on_ground = 1;
+    pigs[idx].has_goal = 0;
+    pigs[idx].goal_x = pigs[idx].x;
+    pigs[idx].goal_z = pigs[idx].z;
+    pigs[idx].rest_ms = 1000.0f + (float)((rand32() >> 8) % (uint)5001);
+    pigs[idx].save_slot = idx;
+    pigs[idx].attack_cooldown_ms = 0.0f;
+    pigs[idx].panic_ms = 0.0f;
+    initEntityCombatStats(idx);
+}
+
+void spawnInitialEntityGroup(int entity_type)
+{
+    if (entityDefinitionUsable(entity_type) == 0) return;
+    applyEntityDefinitionToRuntime(entity_type);
+
+    pig_spawn_x = floorFloatToInt((float)world_origin_x + player_x);
+    pig_spawn_z = floorFloatToInt((float)world_origin_z + player_z);
+    entity_type_count = 0;
+    pig_i = 0;
+    while (pig_i < TC_MAX_ACTIVE_ENTITIES)
+    {
+        if ((pigs[pig_i].active != 0) && (pigs[pig_i].dead == 0))
+        {
+            if (pigs[pig_i].type_id == entity_type) entity_type_count = entity_type_count + 1;
+        }
+        pig_i = pig_i + 1;
+    }
+
+    pig_spawn_attempts = 0;
+    while ((entity_type_count < pig_spawn_group) && (pig_spawn_attempts < 64) && (pig_count < TC_MAX_ACTIVE_ENTITIES))
+    {
+        pig_goal_off_x = (int)(terrainHash(pig_spawn_x + pig_spawn_attempts, pig_spawn_z, 201 + entity_type) & (uint)15) - 8;
+        pig_goal_off_z = (int)(terrainHash(pig_spawn_x, pig_spawn_z + pig_spawn_attempts, 202 + entity_type) & (uint)15) - 8;
+        if ((pig_goal_off_x < -2) || (pig_goal_off_x > 2) || (pig_goal_off_z < -2) || (pig_goal_off_z > 2))
+        {
+            pig_i = findFreePigSlot();
+            if (pig_i >= 0)
+            {
+                spawnEntityAt(pig_i, entity_type, pig_spawn_x + pig_goal_off_x, pig_spawn_z + pig_goal_off_z);
+                if (pigs[pig_i].active != 0)
+                {
+                    pig_count = pig_count + 1;
+                    entity_type_count = entity_type_count + 1;
+                }
+            }
+        }
+        pig_spawn_attempts = pig_spawn_attempts + 1;
+    }
+}
+
+void initPigs()
+{
+    clearPigsOnly();
+
+    entity_spawn_type = 1;
+    while ((entity_spawn_type < TC_MAX_ENTITY_DEFS) && (pig_count < TC_MAX_ACTIVE_ENTITIES))
+    {
+        spawnInitialEntityGroup(entity_spawn_type);
+        entity_spawn_type = entity_spawn_type + 1;
+    }
+}
+
+void clearPigsOnly()
+{
+    pig_i = 0;
+    while (pig_i < TC_MAX_ACTIVE_ENTITIES)
+    {
+        clearPigSlot(pig_i);
+        pig_i = pig_i + 1;
+    }
+
+    pig_ai_accum_ms = 0.0f;
+    pig_ai_dt = 0.0f;
+    entity_stream_loaded = 0;
+    pig_count = 0;
+}
+
+int entityRecordOffset(int slot)
+{
+    return entity_file_offset + slot * entity_record_size;
+}
+
+int findPigBySaveSlot(int slot)
+{
+    pig_i = 0;
+    while (pig_i < TC_MAX_ACTIVE_ENTITIES)
+    {
+        if (pigs[pig_i].active != 0)
+        {
+            if (pigs[pig_i].save_slot == slot) return pig_i;
+        }
+        pig_i = pig_i + 1;
+    }
+    return -1;
+}
+
+int findFreePigSlot()
+{
+    pig_i = 0;
+    while (pig_i < TC_MAX_ACTIVE_ENTITIES)
+    {
+        if (pigs[pig_i].active == 0) return pig_i;
+        pig_i = pig_i + 1;
+    }
+    return -1;
+}
+
+void recountPigs()
+{
+    pig_count = 0;
+    pig_i = 0;
+    while (pig_i < TC_MAX_ACTIVE_ENTITIES)
+    {
+        if (pigs[pig_i].active != 0) pig_count = pig_count + 1;
+        pig_i = pig_i + 1;
+    }
+}
+
+void writePigEntityRecordToIO(int idx)
+{
+    clearWorldIO();
+    writeU32ToIO(0, (uint)pigs[idx].type_id);
+    if (pigs[idx].dead != 0) writeU32ToIO(4, (uint)0);
+    else writeU32ToIO(4, (uint)1);   /* active/persistent */
+    save_bits.f = pigs[idx].x; writeU32ToIO(8, save_bits.u);
+    save_bits.f = pigs[idx].y; writeU32ToIO(12, save_bits.u);
+    save_bits.f = pigs[idx].z; writeU32ToIO(16, save_bits.u);
+    save_bits.f = pigs[idx].yaw; writeU32ToIO(20, save_bits.u);
+    save_bits.f = pigs[idx].target_yaw; writeU32ToIO(24, save_bits.u);
+    save_bits.f = pigs[idx].rest_ms; writeU32ToIO(28, save_bits.u);
+    writeU32ToIO(32, (uint)pigs[idx].has_goal);
+    save_bits.f = pigs[idx].goal_x; writeU32ToIO(36, save_bits.u);
+    save_bits.f = pigs[idx].goal_z; writeU32ToIO(40, save_bits.u);
+    save_bits.f = pigs[idx].vy; writeU32ToIO(44, save_bits.u);
+    writeU32ToIO(48, (uint)pigs[idx].on_ground);
+    save_bits.f = pigs[idx].step_phase; writeU32ToIO(52, save_bits.u);
+    save_bits.f = pigs[idx].leg_offset; writeU32ToIO(56, save_bits.u);
+    writeU32ToIO(60, (uint)pigs[idx].health);
+}
+
+void deactivateEntityWorldRecord(int slot)
+{
+    if (current_world_loaded == 0) return;
+    if (slot < 0) return;
+    if (slot >= entity_max_slots) return;
+    buildWorldPathFromCurrentName();
+    if (!sdFileExists(world_path)) return;
+    clearWorldIO();
+    writeU32ToIO(0, (uint)TC_ENTITY_NONE);
+    writeU32ToIO(4, (uint)0);
+    sdFileWrite(world_path, world_io, entityRecordOffset(slot));
+}
+
+void readPigEntityRecordFromIO(int idx, int slot)
+{
+    entity_stream_record_type = (int)readU32FromIO(0);
+    clearPigSlot(idx);
+    pigs[idx].active = 1;
+    pigs[idx].type_id = entity_stream_record_type;
+    save_bits.u = readU32FromIO(8); pigs[idx].x = save_bits.f;
+    save_bits.u = readU32FromIO(12); pigs[idx].y = save_bits.f;
+    save_bits.u = readU32FromIO(16); pigs[idx].z = save_bits.f;
+    pigs[idx].prev_x = pigs[idx].x;
+    pigs[idx].prev_y = pigs[idx].y;
+    pigs[idx].prev_z = pigs[idx].z;
+    save_bits.u = readU32FromIO(20); pigs[idx].yaw = save_bits.f;
+    pigs[idx].prev_yaw = pigs[idx].yaw;
+    save_bits.u = readU32FromIO(24); pigs[idx].target_yaw = save_bits.f;
+    save_bits.u = readU32FromIO(28); pigs[idx].rest_ms = save_bits.f;
+    pigs[idx].has_goal = (int)readU32FromIO(32);
+    save_bits.u = readU32FromIO(36); pigs[idx].goal_x = save_bits.f;
+    save_bits.u = readU32FromIO(40); pigs[idx].goal_z = save_bits.f;
+    save_bits.u = readU32FromIO(44); pigs[idx].vy = save_bits.f;
+    pigs[idx].on_ground = (int)readU32FromIO(48);
+    save_bits.u = readU32FromIO(52); pigs[idx].step_phase = save_bits.f;
+    save_bits.u = readU32FromIO(56); pigs[idx].leg_offset = save_bits.f;
+    pigs[idx].prev_leg_offset = pigs[idx].leg_offset;
+    pigs[idx].cached_c = cosf(pigs[idx].yaw);
+    pigs[idx].cached_s = sinf(pigs[idx].yaw);
+    pigs[idx].prev_cached_c = pigs[idx].cached_c;
+    pigs[idx].prev_cached_s = pigs[idx].cached_s;
+    pigs[idx].walk_ms = 0.0f;
+    pigs[idx].turn_ms = 0.0f;
+    pigs[idx].save_slot = slot;
+    pigs[idx].head_yaw = pigs[idx].yaw;
+    pigs[idx].prev_head_yaw = pigs[idx].yaw;
+    pigs[idx].head_pitch = 0.0f;
+    pigs[idx].prev_head_pitch = 0.0f;
+    pigs[idx].head_rel_c = 1.0f;
+    pigs[idx].head_rel_s = 0.0f;
+    pigs[idx].prev_head_rel_c = 1.0f;
+    pigs[idx].prev_head_rel_s = 0.0f;
+    pigs[idx].head_pitch_c = 1.0f;
+    pigs[idx].head_pitch_s = 0.0f;
+    pigs[idx].prev_head_pitch_c = 1.0f;
+    pigs[idx].prev_head_pitch_s = 0.0f;
+    pigs[idx].attack_cooldown_ms = 0.0f;
+    pigs[idx].panic_ms = 0.0f;
+    initEntityCombatStats(idx);
+    combat_damage_int = (int)readU32FromIO(60);
+    if (world_load_entity_version >= 2)
+    {
+        if ((combat_damage_int > 0) && (combat_damage_int <= pigs[idx].max_health)) pigs[idx].health = combat_damage_int;
+    }
+}
+
+void flushActiveEntitiesToWorldFile()
+{
+    if (current_world_loaded == 0) return;
+    buildWorldPathFromCurrentName();
+    if (!sdFileExists(world_path)) return;
+
+    pig_i = 0;
+    while (pig_i < TC_MAX_ACTIVE_ENTITIES)
+    {
+        if (pigs[pig_i].active != 0)
+        {
+            if ((pigs[pig_i].save_slot >= 0) && (pigs[pig_i].save_slot < entity_max_slots))
+            {
+                writePigEntityRecordToIO(pig_i);
+                sdFileWrite(world_path, world_io, entityRecordOffset(pigs[pig_i].save_slot));
+            }
+        }
+        pig_i = pig_i + 1;
+    }
+}
+
+void streamEntitiesForCurrentPosition()
+{
+    if (current_world_loaded == 0) return;
+
+    entity_stream_abs_x = world_origin_x + floorFloatToInt(player_x);
+    entity_stream_abs_z = world_origin_z + floorFloatToInt(player_z);
+    entity_stream_cx = floorDivInt(entity_stream_abs_x, 16);
+    entity_stream_cz = floorDivInt(entity_stream_abs_z, 16);
+    if (entity_stream_loaded != 0)
+    {
+        if ((entity_stream_cx == entity_stream_center_cx) && (entity_stream_cz == entity_stream_center_cz)) return;
+    }
+
+    entity_stream_loaded = 1;
+    entity_stream_center_cx = entity_stream_cx;
+    entity_stream_center_cz = entity_stream_cz;
+    entity_stream_player_x = (float)world_origin_x + player_x;
+    entity_stream_player_z = (float)world_origin_z + player_z;
+    entity_stream_dist_limit_sq = entity_stream_radius_blocks * entity_stream_radius_blocks;
+
+    if (entity_stream_skip_flush == 0) flushActiveEntitiesToWorldFile();
+
+    pig_i = 0;
+    while (pig_i < TC_MAX_ACTIVE_ENTITIES)
+    {
+        if (pigs[pig_i].active != 0)
+        {
+            entity_stream_dx = pigs[pig_i].x - entity_stream_player_x;
+            entity_stream_dz = pigs[pig_i].z - entity_stream_player_z;
+            if ((entity_stream_dx * entity_stream_dx + entity_stream_dz * entity_stream_dz) > (float)entity_stream_dist_limit_sq)
+            {
+                clearPigSlot(pig_i);
+            }
+        }
+        pig_i = pig_i + 1;
+    }
+    recountPigs();
+
+    buildWorldPathFromCurrentName();
+    if (!sdFileExists(world_path)) return;
+
+    entity_stream_loaded_any = 0;
+    entity_stream_slot = 0;
+    while ((entity_stream_slot < entity_max_slots) && (pig_count < TC_MAX_ACTIVE_ENTITIES))
+    {
+        if (findPigBySaveSlot(entity_stream_slot) < 0)
+        {
+            clearWorldIO();
+            entity_stream_read = sdFileRead(world_path, world_io, entityRecordOffset(entity_stream_slot));
+            if (entity_stream_read >= 64)
+            {
+                entity_stream_record_type = (int)readU32FromIO(0);
+                entity_stream_active_flag = (int)readU32FromIO(4);
+                if ((entityDefinitionUsable(entity_stream_record_type) != 0) && (entity_stream_active_flag != 0))
+                {
+                    entity_stream_loaded_any = 1;
+                    save_bits.u = readU32FromIO(8); entity_stream_x = save_bits.f;
+                    save_bits.u = readU32FromIO(16); entity_stream_z = save_bits.f;
+                    entity_stream_dx = entity_stream_x - entity_stream_player_x;
+                    entity_stream_dz = entity_stream_z - entity_stream_player_z;
+                    if ((entity_stream_dx * entity_stream_dx + entity_stream_dz * entity_stream_dz) <= (float)entity_stream_dist_limit_sq)
+                    {
+                        entity_stream_free_slot = findFreePigSlot();
+                        if (entity_stream_free_slot >= 0)
+                        {
+                            readPigEntityRecordFromIO(entity_stream_free_slot, entity_stream_slot);
+                            pig_count = pig_count + 1;
+                        }
+                    }
+                }
+            }
+        }
+        entity_stream_slot = entity_stream_slot + 1;
+    }
+}
+
+void pigStartRest(int idx)
+{
+    pigs[idx].has_goal = 0;
+    pigs[idx].rest_ms = 1000.0f + (float)((rand32() >> 8) % (uint)5001);
+}
+
+void pigChooseGoal(int idx)
+{
+    pigs[idx].has_goal = 0;
+    pig_goal_attempts = 0;
+    while ((pig_goal_attempts < 10) && (pigs[idx].has_goal == 0))
+    {
+        pig_goal_off_x = (int)(rand32() & (uint)15) - 8;
+        pig_goal_off_z = (int)((rand32() >> 8) & (uint)15) - 8;
+        if ((pig_goal_off_x != 0) || (pig_goal_off_z != 0))
+        {
+            pig_goal_bx = floorFloatToInt(pigs[idx].x) + pig_goal_off_x;
+            pig_goal_bz = floorFloatToInt(pigs[idx].z) + pig_goal_off_z;
+            if (pigWalkGoalAllowedAt(pig_goal_bx, pig_goal_bz) != 0)
+            {
+                pigs[idx].goal_x = (float)pig_goal_bx + 0.5f;
+                pigs[idx].goal_z = (float)pig_goal_bz + 0.5f;
+                pigs[idx].has_goal = 1;
+            }
+        }
+        pig_goal_attempts = pig_goal_attempts + 1;
+    }
+
+    if (pigs[idx].has_goal == 0) pigStartRest(idx);
+}
+
+float wrapPigYaw(float a)
+{
+    while (a < 0.0f) a = a + 6.28318f;
+    while (a >= 6.28318f) a = a - 6.28318f;
+    return a;
+}
+
+float pigShortestYawError(float from_yaw, float to_yaw)
+{
+    pig_yaw_error = to_yaw - from_yaw;
+    while (pig_yaw_error > 3.14159f) pig_yaw_error = pig_yaw_error - 6.28318f;
+    while (pig_yaw_error < -3.14159f) pig_yaw_error = pig_yaw_error + 6.28318f;
+    return pig_yaw_error;
+}
+
+void pigChooseSoftTurn(int idx)
+{
+    /* Continuous small wander turn: about -28 to +28 degrees. This avoids
+       the old cardinal/diagonal snap turns that looked like 45/90 degrees. */
+    pig_rand_dir = (int)(rand32() & (uint)255);
+    pig_turn_delta = ((float)pig_rand_dir - 128.0f) * 0.0038f;
+
+    /* Avoid near-zero turns too often, otherwise a pig can look stuck. */
+    if ((pig_turn_delta < 0.10f) && (pig_turn_delta > -0.10f))
+    {
+        if ((rand32() & (uint)1) == (uint)0) pig_turn_delta = pig_turn_delta - 0.16f;
+        else pig_turn_delta = pig_turn_delta + 0.16f;
+    }
+
+    pigs[idx].target_yaw = wrapPigYaw(pigs[idx].target_yaw + pig_turn_delta);
+}
+
+void pigChooseAvoidTurn(int idx)
+{
+    /* Larger avoidance target, but still not applied instantly. */
+    pig_turn_delta = 0.52f + (float)((rand32() >> 8) & (uint)255) * 0.0022f;
+    if ((rand32() & (uint)1) == (uint)0) pig_turn_delta = 0.0f - pig_turn_delta;
+    pigs[idx].target_yaw = wrapPigYaw(pigs[idx].yaw + pig_turn_delta);
+}
+
+void pigSmoothYawTowardTarget(int idx)
+{
+    pig_yaw_error = pigShortestYawError(pigs[idx].yaw, pigs[idx].target_yaw);
+
+    /* Max turn speed in radians per millisecond. Movement uses this same yaw,
+       so the pig always walks in the direction its body is facing. */
+    pig_turn_step = pig_ai_dt * pig_turn_speed;
+    if (pig_turn_step > 0.34f) pig_turn_step = 0.34f;
+
+    if (pig_yaw_error > pig_turn_step) pigs[idx].yaw = pigs[idx].yaw + pig_turn_step;
+    else
+    {
+        if (pig_yaw_error < (0.0f - pig_turn_step)) pigs[idx].yaw = pigs[idx].yaw - pig_turn_step;
+        else pigs[idx].yaw = pigs[idx].target_yaw;
+    }
+
+    pigs[idx].yaw = wrapPigYaw(pigs[idx].yaw);
+}
+
+float pigApproxSqrt(float v)
+{
+    if (v <= 0.0f) return 0.0f;
+    pig_sqrt_guess = v;
+    if (pig_sqrt_guess < 1.0f) pig_sqrt_guess = 1.0f;
+    pig_sqrt_guess = (pig_sqrt_guess + v / pig_sqrt_guess) * 0.5f;
+    pig_sqrt_guess = (pig_sqrt_guess + v / pig_sqrt_guess) * 0.5f;
+    pig_sqrt_guess = (pig_sqrt_guess + v / pig_sqrt_guess) * 0.5f;
+    return pig_sqrt_guess;
+}
+
+void cacheEntityRenderAngles(int idx)
+{
+    pig_look_rel = pigShortestYawError(pigs[idx].yaw, pigs[idx].head_yaw);
+    if (pig_look_rel > pig_head_yaw_limit) pig_look_rel = pig_head_yaw_limit;
+    if (pig_look_rel < (0.0f - pig_head_yaw_limit)) pig_look_rel = 0.0f - pig_head_yaw_limit;
+
+    pigs[idx].head_rel_c = cosf(pig_look_rel);
+    pigs[idx].head_rel_s = sinf(pig_look_rel);
+    pigs[idx].head_pitch_c = cosf(pigs[idx].head_pitch);
+    pigs[idx].head_pitch_s = sinf(pigs[idx].head_pitch);
+}
+
+void storeEntityPrevState(int idx)
+{
+    pigs[idx].prev_x = pigs[idx].x;
+    pigs[idx].prev_y = pigs[idx].y;
+    pigs[idx].prev_z = pigs[idx].z;
+    pigs[idx].prev_yaw = pigs[idx].yaw;
+    pigs[idx].prev_cached_c = pigs[idx].cached_c;
+    pigs[idx].prev_cached_s = pigs[idx].cached_s;
+    pigs[idx].prev_leg_offset = pigs[idx].leg_offset;
+    pigs[idx].prev_head_yaw = pigs[idx].head_yaw;
+    pigs[idx].prev_head_pitch = pigs[idx].head_pitch;
+    pigs[idx].prev_head_rel_c = pigs[idx].head_rel_c;
+    pigs[idx].prev_head_rel_s = pigs[idx].head_rel_s;
+    pigs[idx].prev_head_pitch_c = pigs[idx].head_pitch_c;
+    pigs[idx].prev_head_pitch_s = pigs[idx].head_pitch_s;
+}
+
+void tickEntityCombatTimers(int idx)
+{
+    if (pigs[idx].hurt_ms > 0.0f)
+    {
+        pigs[idx].hurt_ms = pigs[idx].hurt_ms - pig_ai_dt;
+        if (pigs[idx].hurt_ms < 0.0f) pigs[idx].hurt_ms = 0.0f;
+    }
+    if (pigs[idx].invuln_ms > 0.0f)
+    {
+        pigs[idx].invuln_ms = pigs[idx].invuln_ms - pig_ai_dt;
+        if (pigs[idx].invuln_ms <= 0.0f)
+        {
+            pigs[idx].invuln_ms = 0.0f;
+            pigs[idx].last_damage_taken = 0.0f;
+        }
+    }
+    if (pigs[idx].attack_cooldown_ms > 0.0f)
+    {
+        pigs[idx].attack_cooldown_ms = pigs[idx].attack_cooldown_ms - pig_ai_dt;
+        if (pigs[idx].attack_cooldown_ms < 0.0f) pigs[idx].attack_cooldown_ms = 0.0f;
+    }
+}
+
+void entityApplyKnockback(int idx, float source_x, float source_z, float strength)
+{
+    combat_dx = source_x;
+    combat_dz = source_z;
+    combat_len = pigApproxSqrt(combat_dx * combat_dx + combat_dz * combat_dz);
+    if (combat_len < 0.0001f) return;
+
+    strength = strength * (1.0f - entity_knockback_resistance);
+    if (strength <= 0.0f) return;
+
+    combat_dx = combat_dx / combat_len;
+    combat_dz = combat_dz / combat_len;
+    pigs[idx].vx = pigs[idx].vx * 0.50f - combat_dx * strength;
+    pigs[idx].vz = pigs[idx].vz * 0.50f - combat_dz * strength;
+    pigs[idx].vy = pigs[idx].vy * 0.50f + strength * entity_knockback_vertical_scale;
+    if (pigs[idx].vy > entity_knockback_vertical_cap) pigs[idx].vy = entity_knockback_vertical_cap;
+    pigs[idx].on_ground = 0;
+}
+
+void entityApplyKnockbackMotion(int idx)
+{
+    combat_tmp = pigs[idx].vx;
+    if (combat_tmp < 0.0f) combat_tmp = 0.0f - combat_tmp;
+    combat_amount = pigs[idx].vz;
+    if (combat_amount < 0.0f) combat_amount = 0.0f - combat_amount;
+    if ((combat_tmp + combat_amount) < 0.003f) return;
+
+    pig_c = pigs[idx].cached_c;
+    pig_s = pigs[idx].cached_s;
+    pig_nx = pigs[idx].x + pigs[idx].vx * pig_ai_dt * entity_knockback_motion_scale;
+    pig_nz = pigs[idx].z + pigs[idx].vz * pig_ai_dt * entity_knockback_motion_scale;
+    if (pigTryMoveTo(idx, pig_nx, pig_nz) == 0)
+    {
+        pigs[idx].vx = 0.0f;
+        pigs[idx].vz = 0.0f;
+        pigs[idx].has_goal = 0;
+    }
+    else
+    {
+        pigs[idx].vx = pigs[idx].vx * 0.55f;
+        pigs[idx].vz = pigs[idx].vz * 0.55f;
+    }
+}
+
+void entityStartDeath(int idx)
+{
+    pigs[idx].dead = 1;
+    pigs[idx].death_ms = 0.0f;
+    pigs[idx].health = 0;
+    pigs[idx].has_goal = 0;
+    pigs[idx].rest_ms = 0.0f;
+    pigs[idx].panic_ms = 0.0f;
+    pigs[idx].attack_cooldown_ms = 0.0f;
+    pigs[idx].vx = pigs[idx].vx * 0.20f;
+    pigs[idx].vz = pigs[idx].vz * 0.20f;
+    world_dirty = 1;
+}
+
+void removeDeadEntitySlot(int idx)
+{
+    if (pigs[idx].save_slot >= 0) deactivateEntityWorldRecord(pigs[idx].save_slot);
+    clearPigSlot(idx);
+    recountPigs();
+}
+
+void entityChoosePanicGoal(int idx, float source_x, float source_z)
+{
+    combat_len = pigApproxSqrt(source_x * source_x + source_z * source_z);
+    if (combat_len > 0.001f)
+    {
+        combat_dx = source_x / combat_len;
+        combat_dz = source_z / combat_len;
+    }
+    else
+    {
+        pig_push_angle = ((float)(rand32() & (uint)1023)) * 0.00613592f;
+        combat_dx = cosf(pig_push_angle);
+        combat_dz = sinf(pig_push_angle);
+    }
+
+    pigs[idx].has_goal = 0;
+    pig_goal_attempts = 0;
+    while ((pig_goal_attempts < 12) && (pigs[idx].has_goal == 0))
+    {
+        pig_goal_off_x = 0;
+        pig_goal_off_z = 0;
+        if (pig_goal_attempts > 0)
+        {
+            pig_goal_off_x = (int)((rand32() >> 8) & (uint)7) - 3;
+            pig_goal_off_z = (int)((rand32() >> 16) & (uint)7) - 3;
+        }
+
+        pig_goal_bx = floorFloatToInt(pigs[idx].x - combat_dx * 7.0f) + pig_goal_off_x;
+        pig_goal_bz = floorFloatToInt(pigs[idx].z - combat_dz * 7.0f) + pig_goal_off_z;
+        if (pigWalkGoalAllowedAt(pig_goal_bx, pig_goal_bz) != 0)
+        {
+            pigs[idx].goal_x = (float)pig_goal_bx + 0.5f;
+            pigs[idx].goal_z = (float)pig_goal_bz + 0.5f;
+            pigs[idx].has_goal = 1;
+        }
+        pig_goal_attempts = pig_goal_attempts + 1;
+    }
+}
+
+void entityStartPanic(int idx, float source_x, float source_z)
+{
+    pigs[idx].panic_ms = entity_panic_duration_ms;
+    pigs[idx].rest_ms = 0.0f;
+    entityChoosePanicGoal(idx, source_x, source_z);
+    if (pigs[idx].has_goal == 0) pigChooseAvoidTurn(idx);
+}
+
+void entitySpawnDeathDrops(int idx)
+{
+    entity_drop_item = (uint)0;
+    if (pigs[idx].type_id == TC_ENTITY_PIG) entity_drop_item = ITEM_RAW_PORKCHOP;
+    if (entity_drop_item != (uint)0)
+    {
+        spawnDropAbs(floorFloatToInt(pigs[idx].x), floorFloatToInt(pigs[idx].y), floorFloatToInt(pigs[idx].z), entity_drop_item);
+    }
+}
+
+int entityDamage(int idx, int source_id, int damage_type, float amount, float source_x, float source_z, float knockback_strength, int flags)
+{
+    if (idx < 0) return 0;
+    if (idx >= TC_MAX_ACTIVE_ENTITIES) return 0;
+    if (pigs[idx].active == 0) return 0;
+    if (pigs[idx].dead != 0) return 0;
+    if (amount <= 0.0f) return 0;
+
+    if (pigs[idx].max_health <= 0) pigs[idx].max_health = entityDefaultMaxHealth(pigs[idx].type_id);
+    if (pigs[idx].health <= 0) pigs[idx].health = pigs[idx].max_health;
+    if (pigs[idx].health > pigs[idx].max_health) pigs[idx].health = pigs[idx].max_health;
+
+    combat_final_damage = amount;
+    if (pigs[idx].invuln_ms > 0.0f)
+    {
+        if (combat_final_damage <= pigs[idx].last_damage_taken) return 0;
+        combat_final_damage = combat_final_damage - pigs[idx].last_damage_taken;
+    }
+
+    combat_damage_int = (int)combat_final_damage;
+    if (combat_damage_int <= 0) combat_damage_int = 1;
+    pigs[idx].health = pigs[idx].health - combat_damage_int;
+    pigs[idx].hurt_ms = 500.0f;
+    pigs[idx].invuln_ms = 500.0f;
+    pigs[idx].last_damage_taken = amount;
+    if (knockback_strength > 0.0f) entityApplyKnockback(idx, source_x, source_z, knockback_strength);
+
+    if (entityDefs[pigs[idx].type_id].behavior_kind == TC_ENTITY_BEHAVIOR_CONTROLLER_PASSIVE_00)
+    {
+        entityStartPanic(idx, source_x, source_z);
+    }
+
+    if (pigs[idx].health <= 0) entityStartDeath(idx);
+    world_dirty = 1;
+    return 1;
+}
+
+int combatRayAxisHit(float axis_min, float axis_max, float axis_origin, float axis_dir)
+{
+    if ((axis_dir > -0.00001f) && (axis_dir < 0.00001f))
+    {
+        if (axis_origin < axis_min) return 0;
+        if (axis_origin > axis_max) return 0;
+        return 1;
+    }
+
+    combat_ray_t1 = (axis_min - axis_origin) / axis_dir;
+    combat_ray_t2 = (axis_max - axis_origin) / axis_dir;
+    if (combat_ray_t1 > combat_ray_t2)
+    {
+        combat_tmp = combat_ray_t1;
+        combat_ray_t1 = combat_ray_t2;
+        combat_ray_t2 = combat_tmp;
+    }
+    if (combat_ray_t1 > combat_ray_tmin) combat_ray_tmin = combat_ray_t1;
+    if (combat_ray_t2 < combat_ray_tmax) combat_ray_tmax = combat_ray_t2;
+    if (combat_ray_tmin > combat_ray_tmax) return 0;
+    return 1;
+}
+
+int combatRayIntersectsEntity(int idx)
+{
+    if (pigs[idx].active == 0) return 0;
+    if (pigs[idx].dead != 0) return 0;
+    applyEntityDefinitionToRuntime(pigs[idx].type_id);
+
+    combat_ray_tmin = 0.0f;
+    combat_ray_tmax = player_melee_reach;
+
+    if (combatRayAxisHit(pigs[idx].x - pig_hitbox_x - player_melee_expand, pigs[idx].x + pig_hitbox_x + player_melee_expand, combat_ray_ox, combat_ray_dx) == 0) return 0;
+    if (combatRayAxisHit(pigs[idx].y - player_melee_expand, pigs[idx].y + pig_body_height + player_melee_expand, combat_ray_oy, combat_ray_dy) == 0) return 0;
+    if (combatRayAxisHit(pigs[idx].z - pig_hitbox_z - player_melee_expand, pigs[idx].z + pig_hitbox_z + player_melee_expand, combat_ray_oz, combat_ray_dz) == 0) return 0;
+    if (combat_ray_tmin < 0.0f) return 0;
+    if (combat_ray_tmin > player_melee_reach) return 0;
+    return 1;
+}
+
+int playerTryMeleeAttack()
+{
+    if (player_dead != 0) return 0;
+    if (player_attack_cooldown_ms > 0.0f) return 0;
+
+    updateSelectedBlock();
+    combat_item_id = selected_block;
+    combat_damage_int = player_fist_damage;
+    player_attack_cooldown_ms = (float)player_fist_cooldown_ms;
+    if (combat_item_id != (uint)0)
+    {
+        combat_damage_int = runtimeItemAttackDamage(combat_item_id);
+        player_attack_cooldown_ms = (float)runtimeItemAttackCooldownMs(combat_item_id);
+    }
+
+    combat_ray_ox = (float)world_origin_x + player_x;
+    combat_ray_oy = player_y;
+    combat_ray_oz = (float)world_origin_z + player_z;
+    combat_ray_dx = view_x;
+    combat_ray_dy = view_y;
+    combat_ray_dz = view_z;
+
+    combat_best_slot = -1;
+    combat_best_t = player_melee_reach + 1.0f;
+    pig_i = 0;
+    while (pig_i < TC_MAX_ACTIVE_ENTITIES)
+    {
+        if (combatRayIntersectsEntity(pig_i) != 0)
+        {
+            if (combat_ray_tmin < combat_best_t)
+            {
+                combat_best_t = combat_ray_tmin;
+                combat_best_slot = pig_i;
+            }
+        }
+        pig_i = pig_i + 1;
+    }
+
+    if (combat_best_slot >= 0)
+    {
+        combat_source_x = combat_ray_ox - pigs[combat_best_slot].x;
+        combat_source_z = combat_ray_oz - pigs[combat_best_slot].z;
+        return entityDamage(combat_best_slot, TC_ENTITY_STEVE, combat_damage_melee, (float)combat_damage_int, combat_source_x, combat_source_z, entity_melee_knockback_strength, 0);
+    }
+    return 0;
+}
+
+int mobTryMeleeAttack(int idx, int damage, float cooldown_ms)
+{
+    if (idx < 0) return 0;
+    if (idx >= TC_MAX_ACTIVE_ENTITIES) return 0;
+    if (pigs[idx].active == 0) return 0;
+    if (pigs[idx].dead != 0) return 0;
+    if (player_dead != 0) return 0;
+    if (pigs[idx].attack_cooldown_ms > 0.0f) return 0;
+
+    applyEntityDefinitionToRuntime(pigs[idx].type_id);
+    combat_width = pig_hitbox_x * 2.0f;
+    combat_tmp = pig_hitbox_z * 2.0f;
+    if (combat_tmp > combat_width) combat_width = combat_tmp;
+    combat_target_width = 0.60f;
+    combat_reach_sq = (combat_width * 2.0f) * (combat_width * 2.0f) + combat_target_width;
+
+    combat_dx = render_abs_player_x - pigs[idx].x;
+    combat_dz = render_abs_player_z - pigs[idx].z;
+    pig_goal_dist2 = combat_dx * combat_dx + combat_dz * combat_dz;
+    if (pig_goal_dist2 > combat_reach_sq) return 0;
+    if (player_foot_y >= (pigs[idx].y + pig_body_height + 0.60f)) return 0;
+    if ((player_foot_y + 1.80f) <= pigs[idx].y) return 0;
+
+    damagePlayerFromSource(damage, pigs[idx].x - render_abs_player_x, pigs[idx].z - render_abs_player_z, entity_melee_knockback_strength);
+    pigs[idx].attack_cooldown_ms = cooldown_ms;
+    air_hit_anim_ms = (uint)300;
+    return 1;
+}
+
+void pigUpdateLookControl(int idx)
+{
+    pigs[idx].prev_head_yaw = pigs[idx].head_yaw;
+    pigs[idx].prev_head_pitch = pigs[idx].head_pitch;
+
+    pig_look_dx = render_abs_player_x - pigs[idx].x;
+    pig_look_dz = render_abs_player_z - pigs[idx].z;
+    pig_look_dy = (player_foot_y + 1.50f) - (pigs[idx].y + pig_eye_height);
+    pig_look_dist2 = pig_look_dx * pig_look_dx + pig_look_dz * pig_look_dz;
+
+    if ((pigs[idx].panic_ms > 0.0f) && (pigs[idx].has_goal != 0))
+    {
+        pig_look_dx = pigs[idx].goal_x - pigs[idx].x;
+        pig_look_dz = pigs[idx].goal_z - pigs[idx].z;
+        pig_look_dy = 0.0f;
+        pig_look_dist2 = pig_look_dx * pig_look_dx + pig_look_dz * pig_look_dz;
+    }
+    else
+    {
+        if ((entity_behavior_kind != TC_ENTITY_BEHAVIOR_CONTROLLER_AGGRESSIVE_00) && (pig_look_dist2 > 64.0f) && (pigs[idx].has_goal != 0))
+        {
+            pig_look_dx = pigs[idx].goal_x - pigs[idx].x;
+            pig_look_dz = pigs[idx].goal_z - pigs[idx].z;
+            pig_look_dy = 0.0f;
+            pig_look_dist2 = pig_look_dx * pig_look_dx + pig_look_dz * pig_look_dz;
+        }
+
+        if (pig_look_dist2 > 144.0f)
+        {
+            pig_look_dx = sinf(pigs[idx].yaw);
+            pig_look_dz = 0.0f - cosf(pigs[idx].yaw);
+            pig_look_dy = 0.0f;
+            pig_look_dist2 = 1.0f;
+        }
+    }
+
+    pig_look_hdist = pigApproxSqrt(pig_look_dist2);
+    if (pig_look_hdist < 0.001f)
+    {
+        pig_look_tx = sinf(pigs[idx].head_yaw);
+        pig_look_tz = 0.0f - cosf(pigs[idx].head_yaw);
+        pig_look_hdist = 1.0f;
+    }
+    else
+    {
+        pig_look_tx = pig_look_dx / pig_look_hdist;
+        pig_look_tz = pig_look_dz / pig_look_hdist;
+    }
+
+    pig_c = cosf(pigs[idx].head_yaw);
+    pig_s = sinf(pigs[idx].head_yaw);
+    pig_goal_dot = pig_s * pig_look_tx - pig_c * pig_look_tz;
+    pig_goal_cross = pig_s * pig_look_tz + pig_c * pig_look_tx;
+
+    pig_look_step = pig_ai_dt * pig_head_turn_speed;
+    if (pig_look_step > 0.44f) pig_look_step = 0.44f;
+    if (pig_look_step < 0.10f) pig_look_step = 0.10f;
+
+    if (pig_goal_cross > 0.020f) pigs[idx].head_yaw = pigs[idx].head_yaw + pig_look_step;
+    else
+    {
+        if (pig_goal_cross < -0.020f) pigs[idx].head_yaw = pigs[idx].head_yaw - pig_look_step;
+        else
+        {
+            if (pig_goal_dot < 0.0f) pigs[idx].head_yaw = pigs[idx].head_yaw + pig_look_step;
+        }
+    }
+    pigs[idx].head_yaw = wrapPigYaw(pigs[idx].head_yaw);
+
+    pig_look_rel = pigShortestYawError(pigs[idx].yaw, pigs[idx].head_yaw);
+    if (pig_look_rel > pig_head_yaw_limit)
+    {
+        pigs[idx].head_yaw = wrapPigYaw(pigs[idx].yaw + pig_head_yaw_limit);
+        pigs[idx].target_yaw = wrapPigYaw(pigs[idx].yaw + 0.55f);
+        pig_turn_step = pig_ai_dt * 0.0014f;
+        if (pig_turn_step > 0.22f) pig_turn_step = 0.22f;
+        pigs[idx].yaw = wrapPigYaw(pigs[idx].yaw + pig_turn_step);
+        pigs[idx].cached_c = cosf(pigs[idx].yaw);
+        pigs[idx].cached_s = sinf(pigs[idx].yaw);
+        pigs[idx].head_yaw = wrapPigYaw(pigs[idx].yaw + pig_head_yaw_limit);
+    }
+    else
+    {
+        if (pig_look_rel < (0.0f - pig_head_yaw_limit))
+        {
+            pigs[idx].head_yaw = wrapPigYaw(pigs[idx].yaw - pig_head_yaw_limit);
+            pigs[idx].target_yaw = wrapPigYaw(pigs[idx].yaw - 0.55f);
+            pig_turn_step = pig_ai_dt * 0.0014f;
+            if (pig_turn_step > 0.22f) pig_turn_step = 0.22f;
+            pigs[idx].yaw = wrapPigYaw(pigs[idx].yaw - pig_turn_step);
+            pigs[idx].cached_c = cosf(pigs[idx].yaw);
+            pigs[idx].cached_s = sinf(pigs[idx].yaw);
+            pigs[idx].head_yaw = wrapPigYaw(pigs[idx].yaw - pig_head_yaw_limit);
+        }
+    }
+
+    pig_look_target_pitch = 0.0f - (pig_look_dy / (pig_look_hdist + 0.20f));
+    if (pig_look_target_pitch > pig_head_pitch_limit) pig_look_target_pitch = pig_head_pitch_limit;
+    if (pig_look_target_pitch < (0.0f - pig_head_pitch_limit)) pig_look_target_pitch = 0.0f - pig_head_pitch_limit;
+
+    pig_look_pitch_err = pig_look_target_pitch - pigs[idx].head_pitch;
+    pig_look_step = pig_ai_dt * 0.0018f;
+    if (pig_look_step > 0.30f) pig_look_step = 0.30f;
+    if (pig_look_step < 0.07f) pig_look_step = 0.07f;
+
+    if (pig_look_pitch_err > pig_look_step) pigs[idx].head_pitch = pigs[idx].head_pitch + pig_look_step;
+    else
+    {
+        if (pig_look_pitch_err < (0.0f - pig_look_step)) pigs[idx].head_pitch = pigs[idx].head_pitch - pig_look_step;
+        else pigs[idx].head_pitch = pig_look_target_pitch;
+    }
+
+    if (pigs[idx].head_pitch > pig_head_pitch_limit) pigs[idx].head_pitch = pig_head_pitch_limit;
+    if (pigs[idx].head_pitch < (0.0f - pig_head_pitch_limit)) pigs[idx].head_pitch = 0.0f - pig_head_pitch_limit;
+}
+
+int pigHorizontalAabbOverlap(float ax, float az, float ahx, float ahz, float bx, float bz, float bhx, float bhz)
+{
+    pig_min_a = ax - ahx;
+    pig_max_a = ax + ahx;
+    pig_min_b = bx - bhx;
+    pig_max_b = bx + bhx;
+    if (pig_max_a < pig_max_b) pig_overlap_x = pig_max_a;
+    else pig_overlap_x = pig_max_b;
+    if (pig_min_a > pig_min_b) pig_overlap_x = pig_overlap_x - pig_min_a;
+    else pig_overlap_x = pig_overlap_x - pig_min_b;
+    if (pig_overlap_x <= 0.0f) return 0;
+
+    pig_min_a = az - ahz;
+    pig_max_a = az + ahz;
+    pig_min_b = bz - bhz;
+    pig_max_b = bz + bhz;
+    if (pig_max_a < pig_max_b) pig_overlap_z = pig_max_a;
+    else pig_overlap_z = pig_max_b;
+    if (pig_min_a > pig_min_b) pig_overlap_z = pig_overlap_z - pig_min_a;
+    else pig_overlap_z = pig_overlap_z - pig_min_b;
+    if (pig_overlap_z <= 0.0f) return 0;
+    return 1;
+}
+
+void pigApplyHorizontalPush(int idx, float dx, float dz)
+{
+    if (dx != 0.0f)
+    {
+        pig_nx = pigs[idx].x + dx;
+        if (pigBlockedAt(pig_nx, pigs[idx].y, pigs[idx].z) == 0) pigs[idx].x = pig_nx;
+        else pigs[idx].has_goal = 0;
+    }
+
+    if (dz != 0.0f)
+    {
+        pig_nz = pigs[idx].z + dz;
+        if (pigBlockedAt(pigs[idx].x, pigs[idx].y, pig_nz) == 0) pigs[idx].z = pig_nz;
+        else pigs[idx].has_goal = 0;
+    }
+}
+
+void pigApplyPlayerHorizontalPush(float dx, float dz)
+{
+    if (dx != 0.0f)
+    {
+        pig_player_nx = player_x + dx;
+        if (playerBodyClear(pig_player_nx, player_foot_y, player_z) != 0)
+        {
+            player_x = pig_player_nx;
+            render_abs_player_x = (float)world_origin_x + player_x;
+        }
+    }
+
+    if (dz != 0.0f)
+    {
+        pig_player_nz = player_z + dz;
+        if (playerBodyClear(player_x, player_foot_y, pig_player_nz) != 0)
+        {
+            player_z = pig_player_nz;
+            render_abs_player_z = (float)world_origin_z + player_z;
+        }
+    }
+}
+
+void pigPushPlayerFromPig(int idx)
+{
+    if (pigHorizontalAabbOverlap(pigs[idx].x, pigs[idx].z, pig_hitbox_x, pig_hitbox_z, render_abs_player_x, render_abs_player_z, 0.30f, 0.30f) == 0) return;
+
+    pig_center_dx = render_abs_player_x - pigs[idx].x;
+    pig_center_dz = render_abs_player_z - pigs[idx].z;
+    pig_push_dist = pigApproxSqrt(pig_center_dx * pig_center_dx + pig_center_dz * pig_center_dz);
+
+    if (pig_push_dist > 0.001f)
+    {
+        pig_push_x = (pig_center_dx / pig_push_dist) * 0.05f;
+        pig_push_z = (pig_center_dz / pig_push_dist) * 0.05f;
+    }
+    else
+    {
+        pig_push_angle = ((float)(rand32() & (uint)1023)) * 0.00613592f;
+        pig_push_x = cosf(pig_push_angle) * 0.05f;
+        pig_push_z = sinf(pig_push_angle) * 0.05f;
+    }
+
+    pigApplyHorizontalPush(idx, 0.0f - pig_push_x, 0.0f - pig_push_z);
+    pigApplyPlayerHorizontalPush(pig_push_x, pig_push_z);
+}
+
+void pigPushFromBox(int idx, float bx, float bz, float bhx, float bhz, int share_with_other)
+{
+    if (pigHorizontalAabbOverlap(pigs[idx].x, pigs[idx].z, pig_hitbox_x, pig_hitbox_z, bx, bz, bhx, bhz) == 0) return;
+
+    pig_center_dx = bx - pigs[idx].x;
+    pig_center_dz = bz - pigs[idx].z;
+    pig_push_dist = pigApproxSqrt(pig_center_dx * pig_center_dx + pig_center_dz * pig_center_dz);
+
+    if (pig_push_dist > 0.001f)
+    {
+        pig_push_x = (pig_center_dx / pig_push_dist) * 0.05f;
+        pig_push_z = (pig_center_dz / pig_push_dist) * 0.05f;
+    }
+    else
+    {
+        pig_push_angle = ((float)(rand32() & (uint)1023)) * 0.00613592f;
+        pig_push_x = cosf(pig_push_angle) * 0.05f;
+        pig_push_z = sinf(pig_push_angle) * 0.05f;
+    }
+
+    pigApplyHorizontalPush(idx, 0.0f - pig_push_x, 0.0f - pig_push_z);
+    if (share_with_other != 0)
+    {
+        applyEntityDefinitionToRuntime(pigs[pig_j].type_id);
+        pigApplyHorizontalPush(pig_j, pig_push_x, pig_push_z);
+        applyEntityDefinitionToRuntime(pigs[idx].type_id);
+    }
+}
+
+void resolvePigEntityCollisions()
+{
+    pig_i = 0;
+    while (pig_i < TC_MAX_ACTIVE_ENTITIES)
+    {
+        if (pigs[pig_i].active != 0)
+        {
+            applyEntityDefinitionToRuntime(pigs[pig_i].type_id);
+            if ((pigs[pig_i].dead == 0) && (player_foot_y < (pigs[pig_i].y + pig_body_height)) && ((player_foot_y + 1.80f) > pigs[pig_i].y))
+            {
+                pigPushPlayerFromPig(pig_i);
+            }
+
+            pig_j = pig_i + 1;
+            while (pig_j < TC_MAX_ACTIVE_ENTITIES)
+            {
+                if ((pigs[pig_j].active != 0) && (pigs[pig_j].dead == 0))
+                {
+                    pig_diff_y = pigs[pig_j].y - pigs[pig_i].y;
+                    if (pig_diff_y < 0.0f) pig_diff_y = 0.0f - pig_diff_y;
+                    if (pig_diff_y < pig_body_height) pigPushFromBox(pig_i, pigs[pig_j].x, pigs[pig_j].z, entityDefs[pigs[pig_j].type_id].hitbox_x, entityDefs[pigs[pig_j].type_id].hitbox_z, 1);
+                }
+                pig_j = pig_j + 1;
+            }
+        }
+        pig_i = pig_i + 1;
+    }
+}
+
+int pigTryMoveTo(int idx, float nx, float nz)
+{
+    pig_old_floor_x = floorFloatToInt(pigs[idx].x);
+    pig_old_floor_z = floorFloatToInt(pigs[idx].z);
+    pig_new_floor_x = floorFloatToInt(nx);
+    pig_new_floor_z = floorFloatToInt(nz);
+
+    pig_step_y = pigs[idx].y;
+    pig_diff_y = 0.0f;
+
+    if ((pig_old_floor_x != pig_new_floor_x) || (pig_old_floor_z != pig_new_floor_z))
+    {
+        pig_ground_y = highestSolidAtAbsLimited(pig_new_floor_x, pig_new_floor_z, pigs[idx].y + 1.10f);
+        if (pig_ground_y < 0) return 0;
+
+        pig_ground_top = (float)pig_ground_y + 1.0f;
+        pig_diff_y = pig_ground_top - pigs[idx].y;
+
+        /* Reject real cliffs/walls, but allow one-block changes. For down-steps,
+           keep the current Y during the horizontal move and let gravity settle
+           the pig down. This prevents the old ledge block from colliding with
+           the pig's lower body while its footprint still overlaps the edge. */
+        if (pig_diff_y > 1.15f) return 0;
+        if (pig_diff_y < -1.35f) return 0;
+        if (pig_diff_y > 0.12f) pig_step_y = pig_ground_top;
+    }
+
+    if (pigBlockedAt(nx, pig_step_y, nz) == 0)
+    {
+        pigs[idx].x = nx;
+        pigs[idx].z = nz;
+        pigs[idx].y = pig_step_y;
+        if (pig_diff_y > 0.12f)
+        {
+            pigs[idx].vy = 0.0f;
+            pigs[idx].on_ground = 1;
+        }
+        return 1;
+    }
+
+    /* If the front of the footprint hit a one-block ledge before the center
+       entered the next column, try a one-block step-up using a forward support
+       probe. This is what lets pigs walk over normal block terrain instead of
+       treating every ledge as a wall. */
+    pig_step_y = pigs[idx].y + 1.0f;
+    if (pigBlockedAt(nx, pig_step_y, nz) == 0)
+    {
+        pig_probe_x = nx + pig_s * 0.56f;
+        pig_probe_z = nz - pig_c * 0.56f;
+        pig_new_floor_x = floorFloatToInt(pig_probe_x);
+        pig_new_floor_z = floorFloatToInt(pig_probe_z);
+        pig_ground_y = highestSolidAtAbsLimited(pig_new_floor_x, pig_new_floor_z, pigs[idx].y + 1.10f);
+        if (pig_ground_y >= 0)
+        {
+            pig_ground_top = (float)pig_ground_y + 1.0f;
+            pig_diff_y = pig_ground_top - pigs[idx].y;
+            if ((pig_diff_y > 0.12f) && (pig_diff_y < 1.15f))
+            {
+                pigs[idx].x = nx;
+                pigs[idx].z = nz;
+                pigs[idx].y = pig_ground_top;
+                pigs[idx].vy = 0.0f;
+                pigs[idx].on_ground = 1;
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+void entityMoveTowardCurrentGoal(int idx, float arrive_dist_sq, int rest_on_arrival, float speed_mult)
+{
+    if (pigs[idx].has_goal == 0) return;
+
+    pig_goal_dx = pigs[idx].goal_x - pigs[idx].x;
+    pig_goal_dz = pigs[idx].goal_z - pigs[idx].z;
+    pig_goal_dist2 = pig_goal_dx * pig_goal_dx + pig_goal_dz * pig_goal_dz;
+
+    if (pig_goal_dist2 < arrive_dist_sq)
+    {
+        if (rest_on_arrival != 0) pigStartRest(idx);
+        else pigs[idx].has_goal = 0;
+        return;
+    }
+
+    pigs[idx].cached_c = cosf(pigs[idx].yaw);
+    pigs[idx].cached_s = sinf(pigs[idx].yaw);
+    pig_c = pigs[idx].cached_c;
+    pig_s = pigs[idx].cached_s;
+
+    pig_goal_abs = pig_goal_dx;
+    if (pig_goal_abs < 0.0f) pig_goal_abs = 0.0f - pig_goal_abs;
+    pig_side_abs = pig_goal_dz;
+    if (pig_side_abs < 0.0f) pig_side_abs = 0.0f - pig_side_abs;
+    pig_goal_abs = pig_goal_abs + pig_side_abs;
+    if (pig_goal_abs < 0.001f) pig_goal_abs = 0.001f;
+    pig_goal_tx = pig_goal_dx / pig_goal_abs;
+    pig_goal_tz = pig_goal_dz / pig_goal_abs;
+
+    /* Render forward is local -Z, i.e. world forward=(sin(yaw), -cos(yaw)). */
+    pig_goal_dot = pig_s * pig_goal_tx - pig_c * pig_goal_tz;
+    pig_goal_cross = pig_s * pig_goal_tz + pig_c * pig_goal_tx;
+
+    if (pig_goal_cross > 0.035f) pigs[idx].target_yaw = wrapPigYaw(pigs[idx].yaw + 0.55f);
+    else
+    {
+        if (pig_goal_cross < -0.035f) pigs[idx].target_yaw = wrapPigYaw(pigs[idx].yaw - 0.55f);
+        else
+        {
+            if (pig_goal_dot < -0.20f)
+            {
+                if ((rand32() & (uint)1) == (uint)0) pigs[idx].target_yaw = wrapPigYaw(pigs[idx].yaw + 0.55f);
+                else pigs[idx].target_yaw = wrapPigYaw(pigs[idx].yaw - 0.55f);
+            }
+            else pigs[idx].target_yaw = pigs[idx].yaw;
+        }
+    }
+
+    pigSmoothYawTowardTarget(idx);
+    pigs[idx].cached_c = cosf(pigs[idx].yaw);
+    pigs[idx].cached_s = sinf(pigs[idx].yaw);
+    pig_c = pigs[idx].cached_c;
+    pig_s = pigs[idx].cached_s;
+    pig_step = pig_ai_dt * pig_move_speed * speed_mult;
+
+    pig_nx = pigs[idx].x + pig_s * pig_step;
+    pig_nz = pigs[idx].z - pig_c * pig_step;
+
+    if (pigTryMoveTo(idx, pig_nx, pig_nz) != 0)
+    {
+        pigs[idx].step_phase = pigs[idx].step_phase + pig_ai_dt;
+        pigs[idx].leg_offset = sinf(pigs[idx].step_phase * 0.010f) * 0.48f;
+    }
+    else
+    {
+        if (rest_on_arrival != 0) pigStartRest(idx);
+        else
+        {
+            pigs[idx].has_goal = 0;
+            pigChooseAvoidTurn(idx);
+        }
+    }
+}
+
+void runEntityControllerPassive00(int idx)
+{
+    if (pigs[idx].panic_ms > 0.0f)
+    {
+        pigs[idx].panic_ms = pigs[idx].panic_ms - pig_ai_dt;
+        if (pigs[idx].panic_ms < 0.0f) pigs[idx].panic_ms = 0.0f;
+
+        if (pigs[idx].has_goal == 0)
+        {
+            entityChoosePanicGoal(idx, render_abs_player_x - pigs[idx].x, render_abs_player_z - pigs[idx].z);
+        }
+
+        entityMoveTowardCurrentGoal(idx, 0.16f, 0, 1.85f);
+        if ((pigs[idx].panic_ms > 0.0f) && (pigs[idx].has_goal == 0))
+        {
+            entityChoosePanicGoal(idx, render_abs_player_x - pigs[idx].x, render_abs_player_z - pigs[idx].z);
+        }
+        return;
+    }
+
+    if (pigs[idx].rest_ms > 0.0f)
+    {
+        pigs[idx].rest_ms = pigs[idx].rest_ms - pig_ai_dt;
+        pigs[idx].leg_offset = pigs[idx].leg_offset * 0.55f;
+        if (pigs[idx].rest_ms <= 0.0f) pigChooseGoal(idx);
+    }
+    else
+    {
+        if (pigs[idx].has_goal == 0) pigChooseGoal(idx);
+    }
+
+    entityMoveTowardCurrentGoal(idx, 0.055f, 1, 1.0f);
+}
+
+void runEntityControllerAggressive00(int idx)
+{
+    if (player_dead == 0)
+    {
+        pig_goal_dx = render_abs_player_x - pigs[idx].x;
+        pig_goal_dz = render_abs_player_z - pigs[idx].z;
+        pig_goal_dist2 = pig_goal_dx * pig_goal_dx + pig_goal_dz * pig_goal_dz;
+
+        if (pig_goal_dist2 < entity_controller_chase_dist_sq)
+        {
+            pigs[idx].goal_x = render_abs_player_x;
+            pigs[idx].goal_z = render_abs_player_z;
+            pigs[idx].has_goal = 1;
+            pigs[idx].rest_ms = 0.0f;
+
+            if (pig_goal_dist2 < entity_controller_attack_dist_sq)
+            {
+                mobTryMeleeAttack(idx, entity_controller_attack_damage, entity_controller_attack_cooldown_ms);
+            }
+
+            entityMoveTowardCurrentGoal(idx, 0.45f, 0, 1.25f);
+            return;
+        }
+    }
+
+    runEntityControllerPassive00(idx);
+}
+
+void runEntityControllerForSlot(int idx)
+{
+    if (entity_behavior_kind == TC_ENTITY_BEHAVIOR_CONTROLLER_AGGRESSIVE_00)
+    {
+        runEntityControllerAggressive00(idx);
+        return;
+    }
+
+    if (entity_behavior_kind == TC_ENTITY_BEHAVIOR_CONTROLLER_PASSIVE_00)
+    {
+        runEntityControllerPassive00(idx);
+        return;
+    }
+
+    runEntityControllerPassive00(idx);
+}
+
+void updatePigs()
+{
+    if (pig_count <= 0) return;
+
+    render_abs_player_x = (float)world_origin_x + player_x;
+    render_abs_player_z = (float)world_origin_z + player_z;
+
+    pig_collision_accum_ms = pig_collision_accum_ms + up_dtf;
+    if (pig_collision_accum_ms >= 50.0f)
+    {
+        resolvePigEntityCollisions();
+        pig_collision_accum_ms = pig_collision_accum_ms - 50.0f;
+        if (pig_collision_accum_ms > 100.0f) pig_collision_accum_ms = 0.0f;
+    }
+
+    pig_ai_accum_ms = pig_ai_accum_ms + up_dtf;
+    if (pig_ai_accum_ms < entity_update_tick_ms) return;
+
+    pig_ai_dt = pig_ai_accum_ms;
+    if (pig_ai_dt > 180.0f) pig_ai_dt = 180.0f;
+    pig_ai_accum_ms = 0.0f;
+
+    pig_i = 0;
+    while (pig_i < TC_MAX_ACTIVE_ENTITIES)
+    {
+        if (pigs[pig_i].active != 0)
+        {
+            applyEntityDefinitionToRuntime(pigs[pig_i].type_id);
+            storeEntityPrevState(pig_i);
+            tickEntityCombatTimers(pig_i);
+            pig_dx = pigs[pig_i].x - render_abs_player_x;
+            pig_dz = pigs[pig_i].z - render_abs_player_z;
+            pig_dist2 = pig_dx * pig_dx + pig_dz * pig_dz;
+
+            pigUpdateVertical(pig_i);
+            entityApplyKnockbackMotion(pig_i);
+
+            if (pigs[pig_i].dead != 0)
+            {
+                pigs[pig_i].death_ms = pigs[pig_i].death_ms + pig_ai_dt;
+                pigs[pig_i].leg_offset = pigs[pig_i].leg_offset * 0.45f;
+                if (pigs[pig_i].death_ms >= entity_death_duration_ms)
+                {
+                    entitySpawnDeathDrops(pig_i);
+                    removeDeadEntitySlot(pig_i);
+                }
+            }
+            else
+            {
+                if ((pig_dist2 < 900.0f) && (pigs[pig_i].on_ground != 0))
+                {
+                    runEntityControllerForSlot(pig_i);
+                }
+                pigUpdateLookControl(pig_i);
+            }
+            cacheEntityRenderAngles(pig_i);
+        }
+        pig_i = pig_i + 1;
+    }
+}
+
+void drawPigModelPart(int part_idx)
+{
+    if ((entityModelParts[part_idx].lod_group > 0) && (pig_dist2 > pig_lod_dist_sq)) return;
+
+    pig_part_texture_id = entityModelParts[part_idx].texture_id;
+    if (pig_part_texture_id < 0) pig_part_texture_id = pig_texture_id;
+    if (pig_part_texture_id >= TC_MAX_TEXTURES) pig_part_texture_id = pig_texture_id;
+    if (pig_part_texture_id != pig_bound_texture_id)
+    {
+        pig_texture_ptr = textureRegistryPtr(pig_part_texture_id);
+        pig_texture_w = textureRegistryWidth(pig_part_texture_id);
+        pig_texture_h = textureRegistryHeight(pig_part_texture_id);
+        pig_bound_texture_id = pig_part_texture_id;
+    }
+
+    if (entityModelParts[part_idx].part_kind == TC_ENTITY_PART_BODY_ROT_X)
+    {
+        drawPigBodyBoxRotX(
+            entityModelParts[part_idx].lx0,
+            entityModelParts[part_idx].ly0,
+            entityModelParts[part_idx].lz0,
+            entityModelParts[part_idx].lx1,
+            entityModelParts[part_idx].ly1,
+            entityModelParts[part_idx].lz1,
+            entityModelParts[part_idx].uvx,
+            entityModelParts[part_idx].uvy,
+            entityModelParts[part_idx].sx,
+            entityModelParts[part_idx].sy,
+            entityModelParts[part_idx].sz
+        );
+        return;
+    }
+
+    if (entityModelParts[part_idx].part_kind == TC_ENTITY_PART_HEAD)
+    {
+        pig_head_piv_x = entityModelParts[part_idx].pivot_x;
+        pig_head_piv_y = entityModelParts[part_idx].pivot_y;
+        pig_head_piv_z = entityModelParts[part_idx].pivot_z;
+        drawPigHeadBox(
+            entityModelParts[part_idx].lx0,
+            entityModelParts[part_idx].ly0,
+            entityModelParts[part_idx].lz0,
+            entityModelParts[part_idx].lx1,
+            entityModelParts[part_idx].ly1,
+            entityModelParts[part_idx].lz1,
+            entityModelParts[part_idx].uvx,
+            entityModelParts[part_idx].uvy,
+            entityModelParts[part_idx].sx,
+            entityModelParts[part_idx].sy,
+            entityModelParts[part_idx].sz
+        );
+        return;
+    }
+
+    if (entityModelParts[part_idx].part_kind == TC_ENTITY_PART_LEG)
+    {
+        pig_part_angle = 0.0f;
+        if (entityModelParts[part_idx].anim_kind == TC_ENTITY_PART_ANIM_LEG_POS) pig_part_angle = pig_leg_anim;
+        if (entityModelParts[part_idx].anim_kind == TC_ENTITY_PART_ANIM_LEG_NEG) pig_part_angle = 0.0f - pig_leg_anim;
+        drawPigLegBox(
+            entityModelParts[part_idx].lx0,
+            entityModelParts[part_idx].ly0,
+            entityModelParts[part_idx].lz0,
+            entityModelParts[part_idx].lx1,
+            entityModelParts[part_idx].ly1,
+            entityModelParts[part_idx].lz1,
+            entityModelParts[part_idx].pivot_y,
+            entityModelParts[part_idx].pivot_z,
+            pig_part_angle,
+            entityModelParts[part_idx].uvx,
+            entityModelParts[part_idx].uvy,
+            entityModelParts[part_idx].sx,
+            entityModelParts[part_idx].sy,
+            entityModelParts[part_idx].sz
+        );
+        return;
+    }
+
+    if (entityModelParts[part_idx].part_kind == TC_ENTITY_PART_BODY)
+    {
+        drawPigBox(
+            entityModelParts[part_idx].lx0,
+            entityModelParts[part_idx].ly0,
+            entityModelParts[part_idx].lz0,
+            entityModelParts[part_idx].lx1,
+            entityModelParts[part_idx].ly1,
+            entityModelParts[part_idx].lz1,
+            entityModelParts[part_idx].uvx,
+            entityModelParts[part_idx].uvy,
+            entityModelParts[part_idx].sx,
+            entityModelParts[part_idx].sy,
+            entityModelParts[part_idx].sz
+        );
+    }
+}
+
+void drawPigMob(int idx)
+{
+    pig_render_blend = 1.0f;
+    if (entity_update_tick_ms > 1.0f) pig_render_blend = pig_ai_accum_ms / entity_update_tick_ms;
+    if (pig_render_blend < 0.0f) pig_render_blend = 0.0f;
+    if (pig_render_blend > 1.0f) pig_render_blend = 1.0f;
+
+    pig_draw_x = (pigs[idx].prev_x + (pigs[idx].x - pigs[idx].prev_x) * pig_render_blend) - (float)world_origin_x;
+    pig_draw_z = (pigs[idx].prev_z + (pigs[idx].z - pigs[idx].prev_z) * pig_render_blend) - (float)world_origin_z;
+    pig_draw_y = pigs[idx].prev_y + (pigs[idx].y - pigs[idx].prev_y) * pig_render_blend;
+    pig_draw_c = pigs[idx].prev_cached_c + (pigs[idx].cached_c - pigs[idx].prev_cached_c) * pig_render_blend;
+    pig_draw_s = pigs[idx].prev_cached_s + (pigs[idx].cached_s - pigs[idx].prev_cached_s) * pig_render_blend;
+    pig_dx = pigs[idx].x - render_abs_player_x;
+    pig_dz = pigs[idx].z - render_abs_player_z;
+    pig_dist2 = pig_dx * pig_dx + pig_dz * pig_dz;
+
+    pig_look_blend = pig_render_blend;
+    pig_head_rot_c = pigs[idx].prev_head_rel_c + (pigs[idx].head_rel_c - pigs[idx].prev_head_rel_c) * pig_look_blend;
+    pig_head_rot_s = pigs[idx].prev_head_rel_s + (pigs[idx].head_rel_s - pigs[idx].prev_head_rel_s) * pig_look_blend;
+    pig_head_pitch_c = pigs[idx].prev_head_pitch_c + (pigs[idx].head_pitch_c - pigs[idx].prev_head_pitch_c) * pig_look_blend;
+    pig_head_pitch_s = pigs[idx].prev_head_pitch_s + (pigs[idx].head_pitch_s - pigs[idx].prev_head_pitch_s) * pig_look_blend;
+
+    pig_death_progress = 0.0f;
+    pig_death_roll_angle = 0.0f;
+    if (pigs[idx].dead != 0)
+    {
+        pig_death_progress = (pigs[idx].death_ms + pig_ai_accum_ms) / entity_death_duration_ms;
+        if (pig_death_progress < 0.0f) pig_death_progress = 0.0f;
+        if (pig_death_progress > 1.0f) pig_death_progress = 1.0f;
+        pig_death_roll_angle = pig_death_progress * 1.5708f;
+        pig_death_roll_c = cosf(pig_death_roll_angle);
+        pig_death_roll_s = sinf(pig_death_roll_angle);
+    }
+    else
+    {
+        pig_death_roll_c = 1.0f;
+        pig_death_roll_s = 0.0f;
+    }
+
+    pig_render_leg = pigs[idx].prev_leg_offset + (pigs[idx].leg_offset - pigs[idx].prev_leg_offset) * pig_render_blend;
+    if (pigs[idx].dead != 0) pig_render_leg = pig_render_leg * (1.0f - pig_death_progress);
+    pig_leg_anim = pig_render_leg;
+
+    if (pig_model_id <= TC_ENTITY_MODEL_NONE) return;
+    if (pig_model_id >= TC_MAX_ENTITY_MODELS) return;
+    if (entityModelDefs[pig_model_id].used == 0) return;
+
+    pig_model_first_part = entityModelDefs[pig_model_id].first_part;
+    pig_model_part_end = pig_model_first_part + entityModelDefs[pig_model_id].part_count;
+    pig_bound_texture_id = -1;
+    pig_model_part_i = pig_model_first_part;
+    while (pig_model_part_i < pig_model_part_end)
+    {
+        drawPigModelPart(pig_model_part_i);
+        pig_model_part_i = pig_model_part_i + 1;
+    }
+}
+
+void drawPigs()
+{
+    if (pig_count <= 0) return;
+
+    render_abs_player_x = (float)world_origin_x + player_x;
+    render_abs_player_z = (float)world_origin_z + player_z;
+
+    pig_i = 0;
+    while (pig_i < TC_MAX_ACTIVE_ENTITIES)
+    {
+        if (pigs[pig_i].active != 0)
+        {
+            applyEntityDefinitionToRuntime(pigs[pig_i].type_id);
+            if (pigInRenderedChunk(pig_i) != 0)
+            {
+                pig_draw_x = pigs[pig_i].x - (float)world_origin_x;
+                pig_draw_z = pigs[pig_i].z - (float)world_origin_z;
+                if (objectOnScreenBlocks(pig_draw_x, pigs[pig_i].y + 0.55f, pig_draw_z, pig_render_radius) != 0)
+                {
+                    drawPigMob(pig_i);
+                }
+            }
+        }
+        pig_i = pig_i + 1;
+    }
+}

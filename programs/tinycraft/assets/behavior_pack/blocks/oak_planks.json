@@ -1,0 +1,24 @@
+{
+  "format_version": "1.21.80",
+  "minecraft:block": {
+    "description": { "identifier": "tinycraft:oak_planks" },
+    "components": {
+      "minecraft:destructible_by_mining": { "seconds_to_destroy": 3.0 },
+      "minecraft:collision_box": true,
+      "minecraft:selection_box": true,
+      "minecraft:loot": "loot_tables/blocks/oak_planks.json",
+      "minecraft:material_instances": {
+        "*": { "texture": "tinycraft:oak_planks", "render_method": "opaque" }
+      },
+      "tinycraft:runtime": {
+        "block_id": 6,
+        "render_class": "fast_cube",
+        "ui_color": 170,
+        "preferred_tool": "axe",
+        "preferred_break_seconds": 0.75,
+        "name_label": "oak_planks",
+        "item": "tinycraft:oak_planks"
+      }
+    }
+  }
+}

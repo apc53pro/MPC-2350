@@ -1,0 +1,387 @@
+/* NARM frame-batch and keyboard/mouse adapter. Player ticks stay at 20 Hz and
+ * use Timer's 10-tick catch-up ceiling. No world or player save is written. */
+char mc_game_blocked_keys[256];
+int mc_game_cached_codes[13];
+int mc_game_cached_key_count[13];
+char mc_game_cached_keys[13][256];
+struct MCMenuButton mc_game_buttons[5];
+uint mc_game_last_time;
+uint mc_game_last_look;
+uint mc_game_accumulator;
+int mc_game_paused;
+int mc_game_exit;
+int mc_game_frame_active;
+int mc_game_tick_backlog;
+int mc_game_profile_toggle_pending;
+#ifdef MC10_WORLD_SYSTEMS
+int mc_game_camera_toggle_pending;
+void mc_game_apply_camera_toggle(void)
+{
+    if(mc_game_frame_active)return;
+    while(mc_game_camera_toggle_pending>0)
+    {mc_third_cycle();mc_game_camera_toggle_pending=mc_game_camera_toggle_pending-1;}
+}
+#endif
+#ifdef MC10_PLAYER_FOUNDATION
+int mc_game_inventory_pending;
+float mc_game_partial_tick(void)
+{return (float)mc_game_accumulator/50.0f;}
+
+void mc_game_reset_clock(void)
+{
+    mc_game_last_time=narm_millis();mc_game_last_look=mc_game_last_time;
+    mc_game_accumulator=0;mc_game_tick_backlog=0;
+}
+int mc_game_event_binding(int index,uint key)
+{
+    int code=mc_options.key_codes[index];
+    return code>0&&mc_options_narm_to_lwjgl(key)==code;
+}
+/* Entity.isInsideOfMaterial, using EntityPlayer's 0.12F eye-height offset.
+ * A whole-body water collision is not equivalent to a submerged viewpoint. */
+void mc_game_hud_environment(void)
+{
+    int x,y,z,eye;uint id,metadata;float level;
+    mc_fp_reset();eye=mc_fp_add(1,mc_fp_f32(.12f));
+    x=mc_fp_floor(0);y=mc_fp_floor(eye);z=mc_fp_floor(2);
+    mc_hud_underwater=0;
+    if(mc_runtime_try_get_block(x,y,z,&id)&&id>0&&id<256&&mc_blocks[id].material==MC_MATERIAL_WATER&&
+       mc_runtime_try_get_metadata(x,y,z,&metadata))
+    {
+        if(metadata>=8)metadata=0;
+        level=(float)(y+1)-((float)(metadata+1)/9.0f-1.0f/9.0f);
+        mc_hud_underwater=mc_fp_lt(eye,mc_fp_f32(level));
+    }
+}
+#endif
+
+/* A batch was prepared with the previous culling mode. Complete it before
+ * UI drawing or settings changes; all textured-list calls are synchronous. */
+void mc_game_finish_render_batch(void)
+{
+#ifdef MC10_TILE_PROFILE
+    mc_render_list_flush();
+#endif
+}
+void mc_game_apply_render_settings(void)
+{
+    mc_game_finish_render_batch();
+#ifdef MC10_WORLD_SYSTEMS
+    if(mc_blocks[18].opaque_cube!=(mc_options.fancy_graphics?0:1))
+    {
+        mc_blocks_set_graphics_level(mc_options.fancy_graphics);
+        /* Leaf opacity/texture changes neighbor faces, not just raster flags.
+         * Recompile only at this already-flushed, paused frame boundary. */
+        if(mc_stream_ready())
+        {mc_render_rebuild_cancel();mc_runtime_access_ok=0;mc_stream_dirty=1;mc_stream_status=MC_STREAM_LOADING;}
+    }
+#endif
+    mc_render_cull_mode=1|(mc_options.occlusion_culling?2:0);
+    mc_render_cull_diagnostics=0;
+}
+
+/* Only change diagnostics with no partially submitted frame or native job. */
+void mc_game_apply_profile_toggle(void)
+{
+    if(!mc_game_profile_toggle_pending||mc_game_frame_active)return;
+    mc_game_profile_toggle_pending=0;
+    mc_profile_enabled=!mc_profile_enabled;
+    mc_profile_cancel();mc_profile_valid=0;
+    mc_render_fps_reset();
+    renderStats(0); /* No native per-span, per-pixel or stage diagnostics in play. */
+}
+
+void mc_game_clear_input(void)
+{
+    unsigned key,action,mods,character;int i;
+    while(narm_next_key_event(&key,&action,&mods,&character)>0){}
+    for(i=0;i<256;i=i+1)mc_game_blocked_keys[i]=(char)(narm_key_down((uint)i)>0);
+    mc_game_last_time=narm_millis();mc_game_last_look=mc_game_last_time;mc_game_accumulator=0;
+}
+int mc_game_held(int key)
+{
+    int down=narm_key_down((uint)key)>0;
+    if(!down)mc_game_blocked_keys[key]=0;
+    return down&&!mc_game_blocked_keys[key];
+}
+int mc_game_binding(int index)
+{
+    int key,i,code=mc_options.key_codes[index];
+    if(code<=0)return 0;
+    if(mc_game_cached_codes[index]!=code)
+    {
+        mc_game_cached_codes[index]=code;mc_game_cached_key_count[index]=0;
+        for(key=4;key<256;key=key+1)
+            if(mc_options_narm_to_lwjgl((uint)key)==code)
+            {mc_game_cached_keys[index][mc_game_cached_key_count[index]]=(char)key;mc_game_cached_key_count[index]=mc_game_cached_key_count[index]+1;}
+    }
+    for(i=0;i<mc_game_cached_key_count[index];i=i+1)
+        if(mc_game_held((int)((uint)mc_game_cached_keys[index][i]&255)))return 1;
+    return 0;
+}
+void mc_game_pause_button(int slot,int id,int x,int y,int width,char *label,int enabled)
+{
+    mc_game_buttons[slot].id=id;mc_game_buttons[slot].x_position=x;mc_game_buttons[slot].y_position=y;
+    mc_game_buttons[slot].width=width;mc_game_buttons[slot].height=20;mc_game_buttons[slot].display_string=label;
+    mc_game_buttons[slot].enabled=enabled;mc_game_buttons[slot].draw_button=1;
+}
+void mc_game_build_pause(void)
+{
+    mc_game_pause_button(0,4,60,68,200,"Back to game",1);
+    mc_game_pause_button(1,5,60,92,98,"Achievements",0);
+    mc_game_pause_button(2,6,162,92,98,"Statistics",0);
+    mc_game_pause_button(3,0,60,140,200,"Options...",1);
+    mc_game_pause_button(4,1,60,164,200,"Exit without saving",1);
+}
+void mc_game_draw_pause(void)
+{
+    /* Temporary presentation adaptation: opaque owned dirt, not the original
+     * frozen-world alpha gradient. NARM currently has no alpha-overlay API. */
+    int i;
+#ifdef MC10_PLAYER_FOUNDATION
+    mc_game_buttons[0].display_string=mc_stream_status<0?"Retry loading":"Back to game";
+#endif
+    mc_options_draw_background();mc_menu_draw_centered_string("Game menu",160,40,0xffffff);
+    for(i=0;i<5;i=i+1)mc_menu_draw_button(&mc_game_buttons[i]);
+#ifdef MC10_PLAYER_FOUNDATION
+    if(mc_stream_status==MC_STREAM_ERR_BLOCK)
+    {
+        mc_world_line[0]=0;mc_world_append(mc_world_line,160,"Block ");
+        mc_world_append_int(mc_world_line,160,mc_render_rebuild_bad_id);
+        mc_world_append(mc_world_line,160," port pending");
+        mc_menu_draw_centered_string(mc_world_line,160,196,0xff5555);
+    }
+    else if(mc_stream_status<0)mc_menu_draw_centered_string(mc_runtime_error_text(mc_stream_status),160,196,0xff5555);
+    else if(mc_player_status==1)mc_menu_draw_centered_string("Nearby chunk unavailable",160,196,0xffff55);
+#else
+    if(mc_player_status==1)mc_menu_draw_centered_string("Chunk streaming pending",160,196,0xffff55);
+#endif
+    else if(mc_player_status==2)mc_menu_draw_centered_string("Block collision port pending",160,196,0xffff55);
+    else if(mc_player_status>=3)mc_menu_draw_centered_string("Player workspace exhausted",160,196,0xff5555);
+    mc_menu_draw_centered_string("World saving is not implemented",160,210,0xa0a0a0);
+    mc_menu_draw_pointer();narm_half_present();
+}
+void mc_game_pause(void)
+{
+    mc_game_finish_render_batch();
+    mc_profile_cancel();
+    mc_game_paused=1;mc_game_frame_active=0;mc_game_clear_input();mc_game_draw_pause();
+}
+void mc_game_resume(void)
+{
+    mc_game_apply_render_settings();
+#ifdef MC10_PLAYER_FOUNDATION
+    if(mc_stream_status<0)mc_stream_retry();
+#endif
+    mc_game_clear_input();mc_game_paused=0;mc_game_frame_active=0;
+}
+void mc_game_pump(void)
+{
+    unsigned key,action,mods,character;uint now,elapsed,profile_started;int i,button,event,tick_ok;
+    float strafe,forward,dx,dy;
+    while(narm_next_key_event(&key,&action,&mods,&character)>0)
+    {
+        if(key<256&&action==NARM_KEY_ACTION_RELEASE)mc_game_blocked_keys[key]=0;
+        if(action!=NARM_KEY_ACTION_PRESS)continue;
+        if(key==NARM_KEY_F3){mc_game_profile_toggle_pending=!mc_game_profile_toggle_pending;continue;}
+#ifdef MC10_WORLD_SYSTEMS
+        if(key==0x3e&&!mc_game_paused)
+        {mc_game_camera_toggle_pending=(mc_game_camera_toggle_pending+1)%3;continue;}
+#endif
+#ifdef MC10_PLAYER_FOUNDATION
+        if(!mc_game_paused)
+        {
+            if(mc_game_event_binding(9,key)){mc_game_inventory_pending=1;continue;}
+            if(key>=0x1e&&key<=0x26){mc_inventory_select((int)key-0x1e);continue;}
+            /* Keyboard adapter for source Mouse 1; the swing has no fabricated
+             * combat or world-mutation effect while those ports are pending. */
+            if(mc_game_event_binding(0,key)||(mc_options.key_codes[0]==-100&&key==NARM_KEY_ENTER))
+            {mc_viewmodel_swing();continue;}
+        }
+#endif
+        if(key==NARM_KEY_ESCAPE)
+        {if(mc_game_paused)mc_game_resume();else mc_game_pause();}
+        else if(key==NARM_KEY_ENTER&&mc_game_paused)
+        {
+            button=-1;for(i=0;i<5;i=i+1)if(mc_game_buttons[i].enabled&&mc_menu_button_hovered(&mc_game_buttons[i]))button=mc_game_buttons[i].id;
+            if(button==4)mc_game_resume();
+            else if(button==1)mc_game_exit=1;
+            else if(button==0){mc_options_run();mc_game_apply_render_settings();mc_game_clear_input();mc_game_draw_pause();}
+        }
+    }
+    event=narm_poll_system_event();
+    if(event==NARM_EVENT_CLOSE_REQUESTED){mc_game_exit=1;return;}
+    if(event==NARM_EVENT_FOCUS_LOST&&!mc_game_paused)mc_game_pause();
+    now=narm_millis();
+    if(mc_game_paused){if(mc_menu_update_pointer_held(now))mc_game_draw_pause();mc_game_last_time=now;return;}
+#ifdef MC10_PLAYER_FOUNDATION
+    if(!mc_stream_ready()||mc_game_inventory_pending||mc_player_status==1)
+    {mc_game_reset_clock();return;}
+#endif
+    elapsed=(uint)(now-mc_game_last_look);
+    if(elapsed>=8)
+    {
+        mc_game_last_look=now;if(elapsed>1000)elapsed=0;
+        dx=(float)(mc_game_held(NARM_KEY_RIGHT)-mc_game_held(NARM_KEY_LEFT))*(float)elapsed*.5f;
+        dy=(float)(mc_game_held(NARM_KEY_UP)-mc_game_held(NARM_KEY_DOWN))*(float)elapsed*.5f;
+        if(dx!=0||dy!=0)mc_player_look(dx,dy);
+    }
+    elapsed=(uint)(now-mc_game_last_time);mc_game_last_time=now;
+    if(elapsed>1000)elapsed=1000;mc_game_accumulator=mc_game_accumulator+elapsed;
+    mc_game_tick_backlog=(int)(mc_game_accumulator/50);mc_game_accumulator=mc_game_accumulator%50;
+    if(mc_game_tick_backlog>10)mc_game_tick_backlog=10;
+    for(i=0;i<mc_game_tick_backlog;i=i+1)
+    {
+        profile_started=0;if(mc_profile_active)profile_started=narm_micros();
+        forward=(float)(mc_game_binding(2)-mc_game_binding(4));strafe=(float)(mc_game_binding(3)-mc_game_binding(5));
+#ifdef MC10_PLAYER_FOUNDATION
+        mc_viewmodel_begin_tick();
+#endif
+#ifdef MC10_WORLD_SYSTEMS
+        mc_third_begin_tick();
+#endif
+        tick_ok=mc_player_tick(strafe,forward,mc_game_binding(6),mc_game_binding(7));
+#ifdef MC10_WORLD_SYSTEMS
+        /* World time is a simulation update, never a rendering side effect.
+         * It runs even with no movement and is paused by the existing world
+         * loading/menu gates; failure does not invent a successful player tick. */
+        mc_world_clock_tick();
+#endif
+#ifdef MC10_PLAYER_FOUNDATION
+        if(tick_ok){mc_viewmodel_tick();mc_player_ui_tick();mc_game_hud_environment();}
+#endif
+#ifdef MC10_WORLD_SYSTEMS
+        if(tick_ok)mc_third_tick();
+#endif
+        if(mc_profile_active)mc_profile_tick_us=mc_profile_tick_us+(uint)(narm_micros()-profile_started);
+        if(!tick_ok)
+        {
+#ifdef MC10_PLAYER_FOUNDATION
+            /* Missing-neighbor rollback is not a successful tick. Finish the
+             * current image before retargeting the provider; never draw a
+             * partially replaced resident window. */
+            if(mc_player_status==1)break;
+#endif
+            mc_game_pause();break;
+        }
+    }
+}
+void mc_game_run(struct MCWorldInfo *world)
+{
+    uint profile_started;
+#ifdef MC10_INTERACTIVE
+    mc_profile_enabled=0; /* Optional diagnostics start off; FPS remains. */
+#else
+    mc_profile_enabled=1;
+#endif
+    mc_game_profile_toggle_pending=0;
+    mc_profile_cancel();mc_profile_valid=0;
+    if(!mc_math_init()) {mc_ui_draw_status("BAD/MISSING /MC10/math10.dat");mc_wait_for_return();return;}
+    mc_player_init();
+    if(mc_player_status){mc_ui_draw_status("UNSUPPORTED PLAYER NUMERIC STATE");mc_wait_for_return();return;}
+#ifdef MC10_WORLD_SYSTEMS
+    struct MCU64 biome_seed;biome_seed.lo=world->random_seed_lo;biome_seed.hi=world->random_seed_hi;
+    mc_biome_seed(&biome_seed);
+    mc_world_clock_init();
+    if(!mc_sky_init()){mc_ui_draw_status("BAD/MISSING /MC10/sky10.dat");mc_wait_for_return();return;}
+    mc_game_camera_toggle_pending=0;
+#endif
+#ifdef MC10_PLAYER_FOUNDATION
+    if(!mc_inventory_ready||!mc_player_ui_init())
+    {mc_ui_draw_status("INVENTORY ASSET/STATE LOAD FAILED");mc_wait_for_return();return;}
+    if((uint)renderStat(76)!=0x44430001)
+    {mc_ui_draw_status("UPDATE FIRMWARE: DEPTH CLEAR REQUIRED");mc_wait_for_return();return;}
+    mc_viewmodel_init();
+#ifdef MC10_WORLD_SYSTEMS
+    mc_third_init();
+#endif
+    if(mc_viewmodel_status==1||mc_viewmodel_status==2)
+    {mc_ui_draw_status("FIRST PERSON ASSET/SERVICE FAILED");mc_wait_for_return();return;}
+    mc_hud_hardcore=world->hardcore;mc_inventory_creative=world->game_type==1;
+    mc_game_hud_environment();mc_game_inventory_pending=0;
+#endif
+    if(!mc_render_prepare_assets())
+    {
+#ifdef MC10_WORLD_SYSTEMS
+        if(!mc_block_mesh_ready)mc_ui_draw_status("BAD/MISSING BLOCK MESH ASSETS");
+        else mc_ui_draw_status("TERRAIN RENDER FAILED");
+#else
+        mc_ui_draw_status("TERRAIN RENDER FAILED");
+#endif
+        mc_wait_for_return();return;
+    }
+#ifdef MC10_PLAYER_FOUNDATION
+    mc_stream_reset();mc_stream_request(mc_runtime_center_x,mc_runtime_center_z);
+#else
+    mc_render_build_cache(); /* Capacity failure keeps the exact scan fallback. */
+#endif
+#ifdef MC10_TILE_PROFILE
+    mc_render_list_enabled=1;
+#endif
+    mc_game_apply_render_settings();
+    renderStats(0);mc_render_fps_reset();
+    mc_game_paused=0;mc_game_exit=0;mc_game_frame_active=0;mc_game_build_pause();mc_game_clear_input();
+    while(!mc_game_exit)
+    {
+        if(!mc_game_paused&&!mc_profile_active)mc_profile_begin();
+        profile_started=0;if(mc_profile_active)profile_started=narm_micros();mc_game_pump();
+        if(mc_profile_active)mc_profile_pump_us=mc_profile_pump_us+(uint)(narm_micros()-profile_started);
+        if(mc_game_exit)break;
+        mc_game_apply_profile_toggle();
+#ifdef MC10_WORLD_SYSTEMS
+        mc_game_apply_camera_toggle();
+#endif
+        if(mc_game_paused){narm_sleep_ms(4);continue;}
+#ifdef MC10_PLAYER_FOUNDATION
+        if(!mc_game_frame_active)
+        {
+            mc_game_finish_render_batch();
+            int stream_result=mc_stream_request(mc_region_floor_div(mc_runtime_player.block_x,16),
+                                                mc_region_floor_div(mc_runtime_player.block_z,16));
+            if(stream_result==0)
+            {
+                stream_result=mc_stream_step();
+                if(stream_result==1&&mc_player_status==1)mc_player_status=0;
+            }
+            if(stream_result<0)
+            {mc_profile_cancel();mc_game_pause();continue;}
+            if(stream_result==0)
+            {mc_profile_cancel();mc_game_reset_clock();narm_yield();continue;}
+            if(mc_player_status==1)
+            {mc_game_pause();continue;}
+            if(mc_game_inventory_pending)
+            {
+                mc_profile_cancel();mc_game_inventory_pending=0;
+                if(mc_inventory_run()<0){mc_game_exit=1;break;}
+                mc_game_clear_input();mc_render_fps_reset();continue;
+            }
+        }
+#endif
+        if(!mc_game_frame_active){mc_render_begin_frame();mc_game_frame_active=1;}
+        if(mc_render_step_frame())mc_game_frame_active=0;
+        mc_game_apply_profile_toggle();
+#ifdef MC10_TILE_PROFILE
+        if(mc_render_list_error
+#ifdef MC10_WORLD_SYSTEMS
+           ||mc_tint_error
+#endif
+           )
+        {
+            mc_profile_cancel();
+#ifdef MC10_WORLD_SYSTEMS
+            if(mc_block_mesh_error||mc_tint_error)mc_ui_draw_status("BLOCK MESH ASSET LOAD FAILED");
+            else mc_ui_draw_status("TEXTURED LIST SERVICE FAILED");
+#else
+            mc_ui_draw_status("TEXTURED LIST SERVICE FAILED");
+#endif
+            mc_wait_for_return();break;
+        }
+#endif
+        mc_profile_yield();
+    }
+    mc_game_finish_render_batch();
+#ifdef MC10_PLAYER_FOUNDATION
+    mc_stream_cancel();
+#endif
+    mc_profile_cancel();mc_render_terrain_ready=0;mc_render_cache_ready=0;mc_game_clear_input();
+}

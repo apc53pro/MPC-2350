@@ -1,0 +1,340 @@
+/* Minecraft 1.0 Material and resident Block registry reproduction.
+ * Every ID present in the staged 3x3 world is sourced from Block.java and
+ * its subclass. Unported IDs remain explicitly absent. */
+
+int mc_runtime_try_get_block(int x, int y, int z, uint *value);
+
+#define MC_MATERIAL_AIR 0
+#define MC_MATERIAL_GRASS 1
+#define MC_MATERIAL_GROUND 2
+#define MC_MATERIAL_WOOD 3
+#define MC_MATERIAL_ROCK 4
+#define MC_MATERIAL_IRON 5
+#define MC_MATERIAL_WATER 6
+#define MC_MATERIAL_LAVA 7
+#define MC_MATERIAL_LEAVES 8
+#define MC_MATERIAL_PLANTS 9
+#define MC_MATERIAL_VINE 10
+#define MC_MATERIAL_SPONGE 11
+#define MC_MATERIAL_CLOTH 12
+#define MC_MATERIAL_FIRE 13
+#define MC_MATERIAL_SAND 14
+#define MC_MATERIAL_CIRCUITS 15
+#define MC_MATERIAL_GLASS 16
+#define MC_MATERIAL_TNT 17
+#define MC_MATERIAL_UNUSED 18
+#define MC_MATERIAL_ICE 19
+#define MC_MATERIAL_SNOW 20
+#define MC_MATERIAL_CRAFTED_SNOW 21
+#define MC_MATERIAL_CACTUS 22
+#define MC_MATERIAL_CLAY 23
+#define MC_MATERIAL_PUMPKIN 24
+#define MC_MATERIAL_FIELD_Z 25
+#define MC_MATERIAL_PORTAL 26
+#define MC_MATERIAL_CAKE 27
+#define MC_MATERIAL_WEB 28
+#define MC_MATERIAL_PISTON 29
+#define MC_MATERIAL_COUNT 30
+
+struct MCMaterial {
+    int liquid; int solid; int blocks_movement;
+    int can_block_grass; int ground_cover;
+    int translucent; int harvestable; int burns; int mobility;
+};
+
+struct MCBlock {
+    int present; int material; int texture; int render_type;
+    int opaque_cube; int normal_block; int light_opacity; int light_value;
+    float min_x; float min_y; float min_z;
+    float max_x; float max_y; float max_z;
+};
+
+struct MCMaterial mc_materials[MC_MATERIAL_COUNT];
+struct MCBlock mc_blocks[256];
+int mc_blocks_ready = 0;
+
+#ifdef MC10_WORLD_SYSTEMS
+void mc_blocks_register_world_systems(void);
+int mc_block_extra_texture(uint id,int side,uint metadata,int x,int y,int z);
+void mc_block_extra_bounds(uint id,uint metadata,float *x0,float *y0,float *z0,float *x1,float *y1,float *z1);
+#endif
+
+void mc_material_base(int id)
+{
+    mc_materials[id].liquid = 0; mc_materials[id].solid = 1;
+    mc_materials[id].blocks_movement = 1;
+    mc_materials[id].can_block_grass = 1; mc_materials[id].ground_cover = 0;
+    mc_materials[id].translucent = 0; mc_materials[id].harvestable = 1;
+    mc_materials[id].burns = 0; mc_materials[id].mobility = 0;
+}
+
+void mc_material_logic(int id)
+{
+    mc_material_base(id);
+    mc_materials[id].solid = 0;
+    mc_materials[id].blocks_movement = 0;
+    mc_materials[id].can_block_grass = 0;
+}
+
+void mc_material_init(void)
+{
+    int i;
+    for (i = 0; i < MC_MATERIAL_COUNT; i = i + 1) mc_material_base(i);
+    mc_materials[MC_MATERIAL_AIR].solid = 0;
+    mc_materials[MC_MATERIAL_AIR].blocks_movement = 0;
+    mc_materials[MC_MATERIAL_AIR].can_block_grass = 0;
+    mc_materials[MC_MATERIAL_AIR].ground_cover = 1;
+    mc_materials[MC_MATERIAL_WOOD].burns = 1;
+    mc_materials[MC_MATERIAL_ROCK].harvestable = 0;
+    mc_materials[MC_MATERIAL_IRON].harvestable = 0;
+    mc_materials[MC_MATERIAL_WATER].liquid = 1;
+    mc_materials[MC_MATERIAL_WATER].solid = 0;
+    mc_materials[MC_MATERIAL_WATER].blocks_movement = 0;
+    mc_materials[MC_MATERIAL_WATER].ground_cover = 1;
+    mc_materials[MC_MATERIAL_WATER].mobility = 1;
+    mc_materials[MC_MATERIAL_LAVA].liquid = 1;
+    mc_materials[MC_MATERIAL_LAVA].solid = 0;
+    mc_materials[MC_MATERIAL_LAVA].blocks_movement = 0;
+    mc_materials[MC_MATERIAL_LAVA].can_block_grass = 1;
+    mc_materials[MC_MATERIAL_LAVA].ground_cover = 1;
+    mc_materials[MC_MATERIAL_LAVA].translucent = 0;
+    mc_materials[MC_MATERIAL_LAVA].harvestable = 1;
+    mc_materials[MC_MATERIAL_LAVA].burns = 0;
+    mc_materials[MC_MATERIAL_LAVA].mobility = 1;
+    mc_materials[MC_MATERIAL_LEAVES].burns = 1;
+    mc_materials[MC_MATERIAL_LEAVES].translucent = 1;
+    mc_materials[MC_MATERIAL_LEAVES].mobility = 1;
+    mc_material_logic(MC_MATERIAL_PLANTS);
+    mc_materials[MC_MATERIAL_PLANTS].mobility = 1;
+    mc_material_logic(MC_MATERIAL_VINE);
+    mc_materials[MC_MATERIAL_VINE].burns = 1;
+    mc_materials[MC_MATERIAL_VINE].ground_cover = 1;
+    mc_materials[MC_MATERIAL_VINE].mobility = 1;
+    mc_materials[MC_MATERIAL_CLOTH].burns = 1;
+    mc_materials[MC_MATERIAL_FIRE].liquid = 0;
+    mc_materials[MC_MATERIAL_FIRE].solid = 0;
+    mc_materials[MC_MATERIAL_FIRE].blocks_movement = 0;
+    mc_materials[MC_MATERIAL_FIRE].can_block_grass = 0;
+    mc_materials[MC_MATERIAL_FIRE].ground_cover = 1;
+    mc_materials[MC_MATERIAL_FIRE].translucent = 0;
+    mc_materials[MC_MATERIAL_FIRE].harvestable = 1;
+    mc_materials[MC_MATERIAL_FIRE].burns = 0;
+    mc_materials[MC_MATERIAL_FIRE].mobility = 0;
+    mc_materials[MC_MATERIAL_FIRE].mobility = 1;
+    mc_material_logic(MC_MATERIAL_CIRCUITS);
+    mc_materials[MC_MATERIAL_CIRCUITS].mobility = 1;
+    mc_materials[MC_MATERIAL_GLASS].translucent = 1;
+    mc_materials[MC_MATERIAL_TNT].burns = 1;
+    mc_materials[MC_MATERIAL_TNT].translucent = 1;
+    mc_materials[MC_MATERIAL_UNUSED].mobility = 1;
+    mc_materials[MC_MATERIAL_ICE].translucent = 1;
+    mc_material_logic(MC_MATERIAL_SNOW);
+    mc_materials[MC_MATERIAL_SNOW].ground_cover = 1;
+    mc_materials[MC_MATERIAL_SNOW].translucent = 1;
+    mc_materials[MC_MATERIAL_SNOW].harvestable = 0;
+    mc_materials[MC_MATERIAL_SNOW].mobility = 1;
+    mc_materials[MC_MATERIAL_CRAFTED_SNOW].harvestable = 0;
+    mc_materials[MC_MATERIAL_CACTUS].translucent = 1;
+    mc_materials[MC_MATERIAL_CACTUS].mobility = 1;
+    mc_materials[MC_MATERIAL_PUMPKIN].mobility = 1;
+    mc_materials[MC_MATERIAL_FIELD_Z].mobility = 1;
+    mc_materials[MC_MATERIAL_PORTAL].solid = 0;
+    mc_materials[MC_MATERIAL_PORTAL].blocks_movement = 0;
+    mc_materials[MC_MATERIAL_PORTAL].can_block_grass = 0;
+    mc_materials[MC_MATERIAL_PORTAL].mobility = 2;
+    mc_materials[MC_MATERIAL_CAKE].mobility = 1;
+    /* MaterialWeb inherits isSolid() == true but overrides getIsSolid(). */
+    mc_materials[MC_MATERIAL_WEB].blocks_movement = 0;
+    mc_materials[MC_MATERIAL_WEB].harvestable = 0;
+    mc_materials[MC_MATERIAL_WEB].mobility = 1;
+    mc_materials[MC_MATERIAL_PISTON].mobility = 2;
+}
+
+void mc_block_register(int id, int material, int texture, int render_type,
+                       int opaque, int normal, int light_opacity,
+                       int light_value)
+{
+    struct MCBlock *block = &mc_blocks[id];
+    block->present = 1; block->material = material;
+    block->texture = texture; block->render_type = render_type;
+    block->opaque_cube = opaque; block->normal_block = normal;
+    block->light_opacity = light_opacity; block->light_value = light_value;
+    block->min_x = 0.0f; block->min_y = 0.0f; block->min_z = 0.0f;
+    block->max_x = 1.0f; block->max_y = 1.0f; block->max_z = 1.0f;
+}
+
+void mc_blocks_init(void)
+{
+    int i;
+    mc_blocks_ready = 0; mc_material_init();
+    for (i = 0; i < 256; i = i + 1) mc_blocks[i].present = 0;
+    mc_block_register(1, MC_MATERIAL_ROCK, 1, 0, 1, 1, 255, 0);
+    mc_block_register(2, MC_MATERIAL_GRASS, 3, 0, 1, 1, 255, 0);
+    mc_block_register(3, MC_MATERIAL_GROUND, 2, 0, 1, 1, 255, 0);
+    mc_block_register(4, MC_MATERIAL_ROCK, 16, 0, 1, 1, 255, 0);
+    mc_block_register(5, MC_MATERIAL_WOOD, 4, 0, 1, 1, 255, 0);
+    mc_block_register(7, MC_MATERIAL_ROCK, 17, 0, 1, 1, 255, 0);
+    mc_block_register(9, MC_MATERIAL_WATER, 205, 4, 0, 0, 3, 0);
+    mc_block_register(10, MC_MATERIAL_LAVA, 237, 4, 0, 0, 255, 15);
+    mc_block_register(11, MC_MATERIAL_LAVA, 237, 4, 0, 0, 255, 15);
+    mc_block_register(13, MC_MATERIAL_SAND, 19, 0, 1, 1, 255, 0);
+    mc_block_register(14, MC_MATERIAL_ROCK, 32, 0, 1, 1, 255, 0);
+    mc_block_register(15, MC_MATERIAL_ROCK, 33, 0, 1, 1, 255, 0);
+    mc_block_register(16, MC_MATERIAL_ROCK, 34, 0, 1, 1, 255, 0);
+    mc_block_register(17, MC_MATERIAL_WOOD, 20, 0, 1, 1, 255, 0);
+    mc_block_register(21, MC_MATERIAL_ROCK, 160, 0, 1, 1, 255, 0);
+    mc_block_register(31, MC_MATERIAL_PLANTS, 39, 1, 0, 0, 0, 0);
+    mc_block_register(35, MC_MATERIAL_CLOTH, 64, 0, 1, 1, 255, 0);
+    mc_block_register(37, MC_MATERIAL_PLANTS, 13, 1, 0, 0, 0, 0);
+    mc_block_register(43, MC_MATERIAL_ROCK, 6, 0, 1, 1, 255, 0);
+    mc_block_register(50, MC_MATERIAL_CIRCUITS, 80, 2, 0, 0, 0, 14);
+    mc_block_register(53, MC_MATERIAL_WOOD, 4, 10, 0, 0, 255, 0);
+    mc_block_register(56, MC_MATERIAL_ROCK, 50, 0, 1, 1, 255, 0);
+    mc_block_register(58, MC_MATERIAL_WOOD, 59, 0, 1, 1, 255, 0);
+    mc_block_register(59, MC_MATERIAL_PLANTS, 88, 6, 0, 0, 0, 0);
+    mc_block_register(60, MC_MATERIAL_GROUND, 87, 0, 0, 0, 255, 0);
+    mc_blocks[60].max_y = 15.0f / 16.0f;
+    mc_block_register(64, MC_MATERIAL_WOOD, 97, 7, 0, 0, 0, 0);
+    mc_block_register(65, MC_MATERIAL_CIRCUITS, 83, 8, 0, 0, 0, 0);
+    mc_block_register(67, MC_MATERIAL_ROCK, 16, 10, 0, 0, 255, 0);
+    mc_block_register(72, MC_MATERIAL_WOOD, 4, 0, 0, 0, 0, 0);
+    mc_blocks[72].min_x = 1.0f / 16.0f;
+    mc_blocks[72].min_z = 1.0f / 16.0f;
+    mc_blocks[72].max_x = 15.0f / 16.0f;
+    mc_blocks[72].max_y = 1.0f / 16.0f;
+    mc_blocks[72].max_z = 15.0f / 16.0f;
+    mc_block_register(73, MC_MATERIAL_ROCK, 51, 0, 1, 1, 255, 0);
+    mc_block_register(85, MC_MATERIAL_WOOD, 4, 11, 0, 0, 0, 0);
+    mc_block_register(102, MC_MATERIAL_GLASS, 49, 18, 0, 0, 0, 0);
+#ifdef MC10_WORLD_SYSTEMS
+    mc_blocks_register_world_systems();
+#endif
+    mc_blocks_ready = 1;
+}
+
+int mc_material_is_opaque(int material)
+{
+    if (material < 0 || material >= MC_MATERIAL_COUNT) return 0;
+    return !mc_materials[material].translucent &&
+           mc_materials[material].blocks_movement;
+}
+
+int mc_block_is_opaque(uint id)
+{
+    return id < 256 && mc_blocks[id].present && mc_blocks[id].opaque_cube;
+}
+
+int mc_block_texture(uint id, int side, uint metadata, int x, int y, int z)
+{
+    uint above;
+#ifdef MC10_WORLD_SYSTEMS
+    int extra=mc_block_extra_texture(id,side,metadata,x,y,z);
+    if(extra!=-1000)return extra;
+#endif
+    if (id >= 256 || !mc_blocks[id].present) return 0;
+    if (id == 2)
+    {
+        if (side == 1) return 0;
+        if (side == 0) return 2;
+        if (mc_runtime_try_get_block(x, y + 1, z, &above) &&
+            (above == 78 || above == 80)) return 68;
+        return 3;
+    }
+    if (id == 17)
+    {
+        if (side <= 1) return 21;
+        if (metadata == 1) return 116;
+        if (metadata == 2) return 117;
+        return 20;
+    }
+    if (id == 35)
+    {
+        if (metadata == 0) return 64;
+        metadata = ~(metadata & 15);
+        return 113 + (int)((metadata & 8) >> 3) + (int)(metadata & 7) * 16;
+    }
+    if (id == 43)
+    {
+        if (metadata == 0) return side <= 1 ? 6 : 5;
+        if (metadata == 1) return side == 0 ? 208 : (side == 1 ? 176 : 192);
+        if (metadata == 2) return 4;
+        if (metadata == 3) return 16;
+        if (metadata == 4) return 7;
+        if (metadata == 5) return 54;
+        return 6;
+    }
+    if (id == 58)
+    {
+        if (side == 1) return 43;
+        if (side == 0) return 4;
+        return side == 2 || side == 4 ? 60 : 59;
+    }
+    if (id == 59) return 88 + (int)(metadata > 7 ? 7 : metadata);
+    if (id == 60) return side == 1 ? (metadata > 0 ? 86 : 87) : 2;
+    if (id == 64)
+    {
+        int state;
+        int rotation;
+        int texture;
+        if (side == 0 || side == 1) return 97;
+        state = (metadata & 4) == 0 ? ((int)metadata - 1) & 3 :
+                                      (int)metadata & 3;
+        if (((state == 0 || state == 2) ? 1 : 0) ^ (side <= 3 ? 1 : 0))
+            return 97;
+        rotation = state / 2 + ((side & 1) ^ state);
+        rotation = rotation + ((metadata & 4) / 4);
+        texture = 97 - (int)(metadata & 8) * 2;
+        return (rotation & 1) != 0 ? 0 - texture : texture;
+    }
+    if (id == 53) return 4;
+    if (id == 67) return 16;
+    if ((id == 9 || id == 10 || id == 11) && side > 1)
+        return mc_blocks[id].texture + 1;
+    return mc_blocks[id].texture;
+}
+
+void mc_block_bounds_for_state(uint id, uint metadata,
+                               float *min_x, float *min_y, float *min_z,
+                               float *max_x, float *max_y, float *max_z)
+{
+    struct MCBlock *block = &mc_blocks[id];
+    *min_x = block->min_x; *min_y = block->min_y; *min_z = block->min_z;
+    *max_x = block->max_x; *max_y = block->max_y; *max_z = block->max_z;
+#ifdef MC10_WORLD_SYSTEMS
+    mc_block_extra_bounds(id,metadata,min_x,min_y,min_z,max_x,max_y,max_z);
+#endif
+    if (id == 72) *max_y = metadata == 1 ? 0.03125f : 1.0f / 16.0f;
+    if (id == 64)
+    {
+        int state=(metadata&4)==0?((int)metadata-1)&3:(int)metadata&3;
+        float thickness=3.0f/16.0f;
+        *min_x=0; *min_y=0; *min_z=0; *max_x=1; *max_y=1; *max_z=1;
+        if (state==0) *max_z=thickness;
+        else if (state==1) *min_x=1.0f-thickness;
+        else if (state==2) *min_z=1.0f-thickness;
+        else *max_x=thickness;
+    }
+}
+
+int mc_blocks_self_test(void)
+{
+    if (!mc_blocks_ready) return 0;
+    if (!mc_materials[MC_MATERIAL_WATER].liquid ||
+        mc_materials[MC_MATERIAL_WATER].solid) return 0;
+    if (mc_materials[MC_MATERIAL_ROCK].harvestable) return 0;
+    if (!mc_materials[MC_MATERIAL_WOOD].burns) return 0;
+    if (!mc_materials[MC_MATERIAL_WEB].solid ||
+        mc_materials[MC_MATERIAL_WEB].blocks_movement ||
+        mc_material_is_opaque(MC_MATERIAL_WEB)) return 0;
+    if (!mc_blocks[1].present || mc_blocks[1].texture != 1 ||
+        !mc_blocks[1].opaque_cube) return 0;
+    if (mc_blocks[31].render_type != 1 || mc_blocks[31].opaque_cube) return 0;
+    if (mc_blocks[53].render_type != 10 || mc_blocks[53].normal_block) return 0;
+    if (mc_blocks[85].render_type != 11 || mc_blocks[102].render_type != 18)
+        return 0;
+    if (mc_block_texture(17, 1, 0, 0, 0, 0) != 21) return 0;
+    if (mc_block_texture(35, 2, 0, 0, 0, 0) != 64) return 0;
+    if (mc_block_texture(43, 2, 3, 0, 0, 0) != 16) return 0;
+    return 1;
+}
+

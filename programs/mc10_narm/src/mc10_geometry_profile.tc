@@ -1,0 +1,245 @@
+/* Build 23/24 geometry A/B and Build 26 three-way visibility comparison use
+ * the same ordered tiled rasterizer. Build 23/24 switch submission/preparation
+ * together; Build 26 keeps both optimized and measures OFF/BACKFACE/BOTH.
+ * Detailed counters and image hashes are outside timed frames. */
+#define MC_GEOMETRY_FIELDS 25
+struct MCGeometrySample {
+    struct MCBenchmarkSample sample;
+    uint counters[10];
+    uint flags;uint sys_hz;uint peri_hz;uint order;
+    uint tile[9];uint stage[MC_GEOMETRY_FIELDS];
+};
+#ifdef MC10_CULL_PROFILE
+#define MC_GEOMETRY_MODES 3
+#define MC_GEOMETRY_TOTAL 60
+#define MC_GEOMETRY_WARMS 8
+/* Permutation ID is stored in historical pair_order, not physical position. */
+int mc_cull_triple_mode(int permutation,int position)
+{
+    if(permutation==0)return position;
+    if(permutation==1)return (position+1)%3;
+    if(permutation==2)return (position+2)%3;
+    if(permutation==3)return position==0?0:(position==1?2:1);
+    if(permutation==4)return 2-position;
+    return position==0?1:(position==1?0:2);
+}
+uint mc_cull_warmup[8][7];
+#else
+#define MC_GEOMETRY_MODES 2
+#define MC_GEOMETRY_TOTAL 40
+#define MC_GEOMETRY_WARMS 4
+#endif
+struct MCGeometrySample mc_geometry_samples[MC_GEOMETRY_TOTAL];
+uint mc_geometry_warmup[MC_GEOMETRY_WARMS][MC_GEOMETRY_FIELDS];
+uint mc_geometry_pixel_warmup[MC_GEOMETRY_WARMS][4];
+uint mc_geometry_job_warmup[MC_GEOMETRY_WARMS][2];
+
+int mc_geometry_measure_frame(int mode,uint flags)
+{
+    mc_render_list_flush();
+    if(mc_render_list_error)return 0;
+    mc_render_list_enabled=1;
+#ifdef MC10_CULL_PROFILE
+    mc_render_submit_optimized=1;mc_render_cull_mode=mode==2?3:mode;
+    mc_render_cull_diagnostics=mode&&(flags&512);
+#else
+    mc_render_submit_optimized=mode;
+#endif
+    renderStats(flags);
+    if((uint)(narm_millis()-mc_bench_run_started_ms)>600000)
+    {mc_bench_cancelled=1;return 0;}
+    return mc_bench_measure_frame();
+}
+int mc_geometry_collect(void)
+{
+    int view,pair,order,mode,j,index,warm_index,ok=1,saved_hud=mc_render_show_hud;
+    int saved_mode=mc_render_list_enabled,saved_submit=mc_render_submit_optimized;
+#ifdef MC10_CULL_PROFILE
+    int saved_cull=mc_render_cull_mode,saved_diagnostics=mc_render_cull_diagnostics;
+#endif
+    uint *out,*in;struct MCGeometrySample *s;
+    mc_bench_cancelled=0;mc_bench_completed=0;mc_render_list_error=0;
+    mc_bench_run_started_ms=narm_millis();
+    mc_bench_saved_yaw=mc_runtime_player.yaw_bits;mc_bench_saved_pitch=mc_runtime_player.pitch_bits;
+#ifdef MC10_PREPARATION_PROFILE
+    if(renderStat(66)!=0x50500001)
+    {renderStats(0);mc_profile_cancel();return 0;}
+#endif
+#ifdef MC10_CULL_PROFILE
+    if(renderStat(70)!=0x43550001)
+    {renderStats(0);mc_profile_cancel();return 0;}
+#endif
+    if(renderStat(24)!=0x54420001||renderStat(34)!=0x44530001||renderStat(65)!=0x47500001)
+    {renderStats(0);mc_profile_cancel();return 0;}
+    for(view=0;view<4&&ok;view=view+1)
+    {
+        mc_runtime_player.yaw_bits=mc_bench_saved_yaw;
+        mc_runtime_player.pitch_bits=view>=2?0xc2b40000:mc_bench_saved_pitch;
+        mc_render_show_hud=(view&1)==0;mc_profile_valid=0;
+        for(mode=0;mode<MC_GEOMETRY_MODES;mode=mode+1)
+        {
+#ifdef MC10_CULL_PROFILE
+            if(!mc_geometry_measure_frame(mode,mode?1537:1025)){ok=0;break;}
+#else
+            if(!mc_geometry_measure_frame(mode,mode?1537:3073)){ok=0;break;}
+#endif
+            mc_profile_cancel();
+#ifdef MC10_CULL_PROFILE
+            if(renderStat(20)!=(uint)(mode?1537:1025)){ok=0;break;}
+#else
+            if(renderStat(20)!=(uint)(mode?1537:3073)){ok=0;break;}
+#endif
+            if(mode)
+            {
+                warm_index=(mode-1)*4+view;
+                for(j=0;j<4;j=j+1)mc_geometry_pixel_warmup[warm_index][j]=renderStat((uint)j+27);
+                for(j=0;j<2;j=j+1)mc_geometry_job_warmup[warm_index][j]=renderStat((uint)j+25);
+                for(j=0;j<MC_GEOMETRY_FIELDS;j=j+1)mc_geometry_warmup[warm_index][j]=renderStat((uint)j+35);
+#ifdef MC10_CULL_PROFILE
+                mc_cull_warmup[warm_index][0]=(uint)mc_render_cull_eligible;
+                mc_cull_warmup[warm_index][1]=(uint)mc_render_cull_backfaces;
+                for(j=0;j<5;j=j+1)mc_cull_warmup[warm_index][j+2]=renderStat((uint)j+71);
+#endif
+            }
+        }
+        for(pair=0;pair<5&&ok;pair=pair+1)for(order=0;order<MC_GEOMETRY_MODES;order=order+1)
+        {
+#ifdef MC10_CULL_PROFILE
+            mode=mc_cull_triple_mode((view*5+pair)%6,order);
+            if(!mc_geometry_measure_frame(mode,1025)){ok=0;break;}
+#else
+            mode=(view+pair+order)&1;
+            if(!mc_geometry_measure_frame(mode,mode?1025:3073)){ok=0;break;}
+#endif
+            mc_profile_cancel(); /* All diagnostics and hashes are untimed. */
+            index=mode*20+view*5+pair;s=&mc_geometry_samples[index];
+            out=(uint *)&s->sample.frame;in=(uint *)&mc_profile_last;
+            for(j=0;j<(int)sizeof(struct MCFrameProfile)/4;j=j+1)out[j]=in[j];
+            s->sample.visited=mc_render_last_visited;s->sample.skipped=mc_render_last_skipped;
+            s->sample.yaw_bits=mc_runtime_player.yaw_bits;s->sample.pitch_bits=mc_runtime_player.pitch_bits;
+            for(j=0;j<10;j=j+1)s->counters[j]=renderStat((uint)j+9);
+            s->flags=renderStat(20);s->sys_hz=renderStat(22);s->peri_hz=renderStat(23);
+#ifdef MC10_CULL_PROFILE
+            s->order=(uint)((view*5+pair)%6);
+#else
+            s->order=(uint)order;
+#endif
+            for(j=0;j<9;j=j+1)s->tile[j]=renderStat((uint)j+25);
+            for(j=0;j<MC_GEOMETRY_FIELDS;j=j+1)s->stage[j]=renderStat((uint)j+35);
+#ifdef MC10_CULL_PROFILE
+            if(s->flags!=1025){ok=0;break;}
+#else
+            if(s->flags!=(uint)(mode?1025:3073)){ok=0;break;}
+#endif
+            mc_bench_completed=mc_bench_completed+1;
+        }
+    }
+    mc_render_list_flush();renderStats(0);mc_profile_cancel();
+    mc_runtime_player.yaw_bits=mc_bench_saved_yaw;mc_runtime_player.pitch_bits=mc_bench_saved_pitch;
+    mc_render_show_hud=saved_hud;mc_render_list_enabled=saved_mode;mc_render_submit_optimized=saved_submit;
+#ifdef MC10_CULL_PROFILE
+    mc_render_cull_mode=saved_cull;mc_render_cull_diagnostics=saved_diagnostics;
+#endif
+    return ok&&mc_bench_completed==MC_GEOMETRY_TOTAL&&!mc_bench_cancelled&&!mc_render_list_error;
+}
+char *mc_geometry_field_name(int field)
+{
+    if(field==0)return "service_us";if(field==1)return "validation_us";
+    if(field==2)return "triangle_setup_us";if(field==3)return "tile_flush_us";
+    if(field==4)return "join_wait_us";if(field==5)return "core0_load_us";
+    if(field==6)return "core0_raster_us";if(field==7)return "core0_commit_us";
+    if(field==8)return "core0_active_us";if(field==9)return "core1_load_us";
+    if(field==10)return "core1_raster_us";if(field==11)return "core1_commit_us";
+    if(field==12)return "core1_active_us";if(field==13)return "list_calls";
+    if(field==14)return "occupied_strips";if(field==15)return "triangle_bin_memberships";
+    if(field==16)return "command_bytes";if(field==17)return "staged_pixels";
+    if(field==18)return "valid_depth_loads";if(field==19)return "dirty_depth_stores";
+    if(field==20)return "dirty_words";if(field==21)return "bin_read_bytes";
+    if(field==22)return "bin_reset_bytes";if(field==23)return "core0_strips";
+    return "core1_strips";
+}
+void mc_geometry_append_fields(int view,int sample)
+{
+    int j;struct MCGeometrySample *s=&mc_geometry_samples[mc_geometry_mode*20+view*5+sample];
+    for(j=0;j<10;j=j+1){mc_bench_char(',');mc_bench_uint(s->counters[j]);}
+    mc_bench_char(',');mc_bench_uint(s->flags);
+    mc_bench_char(',');mc_bench_uint(s->sys_hz);mc_bench_char(',');mc_bench_uint(s->peri_hz);
+    mc_bench_char(',');mc_bench_uint(s->order);mc_bench_text(",1"); /* Same tiled rasterizer in every measured mode. */
+    for(j=0;j<9;j=j+1){mc_bench_char(',');mc_bench_uint(s->tile[j]);}
+    mc_bench_char(',');mc_bench_uint((uint)mc_geometry_mode);
+    for(j=0;j<MC_GEOMETRY_FIELDS;j=j+1){mc_bench_char(',');mc_bench_uint(s->stage[j]);}
+}
+#ifdef MC10_CULL_PROFILE
+char *mc_cull_field_name(int field)
+{
+    if(field==0)return "backface_eligible";if(field==1)return "backface_rejects";
+    if(field==2)return "hiz_triangles_tested";if(field==3)return "hiz_triangles_occluded";
+    if(field==4)return "hiz_summary_cell_checks";
+    if(field==5)return "hiz_fully_covered_cells_published";
+    return "hiz_numeric_bound_fallbacks";
+}
+void mc_cull_warmup_key(int mode,int view,char *field)
+{
+    mc_world_copy(mc_bench_key,64,"culling_warmup_");
+    mc_world_append(mc_bench_key,64,mode==1?"backface_":"combined_");
+    mc_world_append_uint(mc_bench_key,64,(uint)view+1);mc_world_append_char(mc_bench_key,64,'_');
+    mc_world_append(mc_bench_key,64,field);
+}
+#endif
+void mc_geometry_format_log(void)
+{
+    int view,pair,j,index,warm_mode,warm_index;uint *out,*in;
+    mc_bench_format_metadata();
+#ifdef MC10_CULL_PROFILE
+    mc_bench_meta("culling_warmup","untimed discarded backface and combined warm-ups renderStats(1537);baseline warm-up 1025;view 1=saved HUD on,2=saved HUD off,3=sky HUD on,4=sky HUD off;warm-up stage times are NOT performance samples");
+#else
+    mc_bench_meta("geometry_warmup","untimed discarded instrumented warm-up only;renderStats(1537);views 1=saved HUD on,2=saved HUD off,3=sky HUD on,4=sky HUD off;warm-up stage times are NOT performance samples");
+#endif
+    for(warm_mode=1;warm_mode<MC_GEOMETRY_MODES;warm_mode=warm_mode+1)
+      for(view=0;view<4;view=view+1)
+    {
+        warm_index=(warm_mode-1)*4+view;
+#ifdef MC10_CULL_PROFILE
+        mc_cull_warmup_key(warm_mode,view,"tile_jobs");
+        mc_bench_meta_uint(mc_bench_key,mc_geometry_job_warmup[warm_index][0]);
+        mc_cull_warmup_key(warm_mode,view,"queued_triangles");
+        mc_bench_meta_uint(mc_bench_key,mc_geometry_job_warmup[warm_index][1]);
+#else
+        mc_world_copy(mc_bench_key,64,"geometry_warmup_");mc_world_append_uint(mc_bench_key,64,(uint)view+1);
+        mc_world_append(mc_bench_key,64,"_tile_jobs");mc_bench_meta_uint(mc_bench_key,mc_geometry_job_warmup[view][0]);
+        mc_world_copy(mc_bench_key,64,"geometry_warmup_");mc_world_append_uint(mc_bench_key,64,(uint)view+1);
+        mc_world_append(mc_bench_key,64,"_queued_triangles");mc_bench_meta_uint(mc_bench_key,mc_geometry_job_warmup[view][1]);
+#endif
+#ifdef MC10_CULL_PROFILE
+        for(j=0;j<7;j=j+1)
+        {
+            mc_cull_warmup_key(warm_mode,view,mc_cull_field_name(j));
+            mc_bench_meta_uint(mc_bench_key,mc_cull_warmup[warm_index][j]);
+        }
+#endif
+        for(j=0;j<4+MC_GEOMETRY_FIELDS;j=j+1)
+        {
+#ifdef MC10_CULL_PROFILE
+            mc_cull_warmup_key(warm_mode,view,"");
+#else
+            mc_world_copy(mc_bench_key,64,"geometry_warmup_");
+            mc_world_append_uint(mc_bench_key,64,(uint)view+1);mc_world_append_char(mc_bench_key,64,'_');
+#endif
+            if(j==0)mc_world_append(mc_bench_key,64,"depth_tests");
+            if(j==1)mc_world_append(mc_bench_key,64,"depth_rejects");
+            if(j==2)mc_world_append(mc_bench_key,64,"mask_tests");
+            if(j==3)mc_world_append(mc_bench_key,64,"pixel_writes");
+            if(j>=4)mc_world_append(mc_bench_key,64,mc_geometry_field_name(j-4));
+            mc_bench_meta_uint(mc_bench_key,j<4?mc_geometry_pixel_warmup[warm_index][j]:mc_geometry_warmup[warm_index][j-4]);
+        }
+    }
+    for(mc_geometry_mode=0;mc_geometry_mode<MC_GEOMETRY_MODES;mc_geometry_mode=mc_geometry_mode+1)
+        for(view=0;view<4;view=view+1)for(pair=0;pair<5;pair=pair+1)
+        {
+            index=view*5+pair;
+            out=(uint *)&mc_bench_samples[index];in=(uint *)&mc_geometry_samples[mc_geometry_mode*20+index].sample;
+            for(j=0;j<(int)sizeof(struct MCBenchmarkSample)/4;j=j+1)out[j]=in[j];
+            mc_bench_row("sample",view,pair,0);
+        }
+    mc_bench_meta("complete","1");
+}

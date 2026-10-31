@@ -1,0 +1,716 @@
+/*
+ * Minecraft 1.0 GuiMainMenu / GuiButton / FontRenderer reproduction.
+ *
+ * The fixed 320x240 target and RGB332 quantization are presentation-boundary
+ * adaptations. Arrow keys drive a virtual mouse because NARM currently
+ * exposes keyboard events but no mouse service; Enter feeds mouse button 0.
+ * The expensive panorama is intentionally disabled for the current milestone;
+ * a black presentation placeholder is drawn behind the reproduced menu UI.
+ */
+
+#define MC_MENU_SPLASH_BYTES 8192
+#define MC_MENU_BUTTON_200_BYTES 4000
+#define MC_MENU_BUTTON_200_WORDS 1000
+#define MC_MENU_BUTTON_98_BYTES 2000
+#define MC_MENU_BUTTON_98_WORDS 500
+#define MC_MENU_BUTTON_150_BYTES 3040
+#define MC_MENU_BUTTON_150_WORDS 760
+#define MC_MENU_BUTTON_70_BYTES 1440
+#define MC_MENU_BUTTON_70_WORDS 360
+#define MC_MENU_LOGO_BYTES 13728
+#define MC_MENU_LOGO_WORDS 3432
+#define MC_MENU_LOGO_MASK_BYTES 1708
+#define MC_MENU_LOGO_MASK_WORDS 427
+
+struct MCMenuButton {
+    int id;
+    int x_position;
+    int y_position;
+    int width;
+    int height;
+    int enabled;
+    int draw_button;
+    char *display_string;
+};
+
+uint mc_menu_button_200[MC_MENU_BUTTON_200_WORDS * 3];
+uint mc_menu_button_98[MC_MENU_BUTTON_98_WORDS * 3];
+uint mc_menu_button_150[MC_MENU_BUTTON_150_WORDS * 3];
+uint mc_menu_button_70[MC_MENU_BUTTON_70_WORDS * 3];
+uint mc_menu_logo_pixels[MC_MENU_LOGO_WORDS * 2];
+uint mc_menu_logo_masks[MC_MENU_LOGO_MASK_WORDS * 2];
+uint mc_menu_font_mask[512];
+/* Exact 8x8 glyph masks, MSB-first like the original font atlas. */
+uint mc_menu_glyph_masks[512];
+char mc_menu_glyph_nonempty[256];
+int mc_menu_glyph_cache_ready;
+uint mc_menu_glyph_fallbacks;
+char mc_menu_font_metrics[256];
+char mc_menu_labels[128];
+char mc_menu_splashes[MC_MENU_SPLASH_BYTES];
+char mc_menu_splash_glyphs[128];
+struct MCMenuButton mc_menu_buttons[5];
+struct MCJavaRandom mc_menu_random;
+struct MCU64 mc_menu_random_seed;
+
+char *mc_menu_label_singleplayer;
+char *mc_menu_label_multiplayer;
+char *mc_menu_label_texture_packs;
+char *mc_menu_label_options;
+char *mc_menu_label_quit;
+
+uint mc_menu_font_mask_bytes = 0;
+uint mc_menu_font_metrics_bytes = 0;
+uint mc_menu_label_bytes = 0;
+uint mc_menu_splash_bytes = 0;
+float mc_menu_update_counter = 0.0f;
+int mc_menu_pointer_x = 160;
+int mc_menu_pointer_y = 118;
+int mc_menu_ready = 0;
+uint mc_menu_pointer_last_move = 0;
+/* Port-only virtual-pointer rate; camera sensitivity is a separate setting. */
+uint mc_menu_pointer_interval_ms = 8;
+uint mc_menu_pointer_pending_ms;
+
+void mc_menu_set_cursor_speed(float value)
+{
+    int percent;
+    if(!(value==value))value=.5f;
+    if(value<0)value=0;if(value>1)value=1;
+    percent=value<=.5f?(int)(25.0f+value*150.0f+.5f):(int)(value*200.0f+.5f);
+    mc_menu_pointer_interval_ms=(uint)((800+percent/2)/percent);
+    mc_menu_pointer_pending_ms=0;
+}
+
+uint mc_menu_rgb888_to_rgb332(uint color)
+{
+    return (((color >> 16) & 255) >> 5) << 5 |
+           (((color >> 8) & 255) >> 5) << 2 |
+           ((color & 255) >> 6);
+}
+
+void mc_menu_draw_background(void)
+{
+    narm_half_clear(MC_COLOR_BLACK);
+}
+
+int mc_menu_font_has_pixel(int glyph, int column, int row)
+{
+    int texture_x = (glyph & 15) * 8 + column;
+    int texture_y = (glyph >> 4) * 8 + row;
+    int index = texture_y * 128 + texture_x;
+    uint word = mc_menu_font_mask[index >> 5];
+    return (word & ((uint)1 << (31 - (index & 31)))) != 0;
+}
+
+int mc_menu_font_width(char *text)
+{
+    int width = 0;
+    int index = 0;
+    uint glyph;
+    while (text[index] != 0)
+    {
+        glyph = (uint)text[index] & 255;
+        width = width + ((uint)mc_menu_font_metrics[glyph] & 255);
+        index = index + 1;
+    }
+    return width;
+}
+
+void mc_menu_draw_glyph_pixels(int x, int y, int glyph, uint color)
+{
+    int row = 0;
+    int column;
+    int screen_x;
+    int screen_y;
+    int row_index;
+    uint word,bits;
+    /* Keep the proven one-pixel service and row-major submission order. The
+     * initialized cache contains exactly the atlas's 64 mask bits, so only two
+     * cache words need reading instead of recomputing an atlas address for
+     * every pixel. Before cache initialization retain the original path. */
+    if(mc_menu_glyph_cache_ready)
+    {
+        if(x<=-8||y<=-8||x>=MC_SCREEN_WIDTH||y>=MC_SCREEN_HEIGHT)return;
+        if(!mc_menu_glyph_nonempty[glyph])return;
+        word=mc_menu_glyph_masks[glyph*2];
+        for(row=0;row<8;row=row+1)
+        {
+            if(row==4)word=mc_menu_glyph_masks[glyph*2+1];
+            bits=word>>24;word=word<<8;
+            screen_y=y+row;
+            if(!bits||screen_y<0||screen_y>=MC_SCREEN_HEIGHT)continue;
+            row_index=screen_y*MC_SCREEN_WIDTH;
+            for(column=0;column<8;column=column+1)
+            {
+                if(bits&128)
+                {
+                    screen_x=x+column;
+                    if(screen_x>=0&&screen_x<MC_SCREEN_WIDTH)
+                        narm_half_pixel((uint)(row_index+screen_x),color);
+                }
+                bits=bits<<1;
+            }
+        }
+        return;
+    }
+    while (row < 8)
+    {
+        column = 0;
+        while (column < 8)
+        {
+            if (mc_menu_font_has_pixel(glyph, column, row))
+            {
+                screen_x = x + column;
+                screen_y = y + row;
+                if (screen_x >= 0 && screen_x < MC_SCREEN_WIDTH &&
+                    screen_y >= 0 && screen_y < MC_SCREEN_HEIGHT)
+                    narm_half_pixel((uint)(screen_y * MC_SCREEN_WIDTH + screen_x),
+                                    color);
+            }
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+}
+
+void mc_menu_prepare_glyph_cache(void)
+{
+    int glyph,row,column,index;
+    for(glyph=0;glyph<256;glyph=glyph+1)
+    {
+        mc_menu_glyph_masks[glyph*2]=0;mc_menu_glyph_masks[glyph*2+1]=0;
+        mc_menu_glyph_nonempty[glyph]=0;
+        for(row=0;row<8;row=row+1)for(column=0;column<8;column=column+1)
+            if(mc_menu_font_has_pixel(glyph,column,row))
+            {
+                index=row*8+column;
+                mc_menu_glyph_masks[glyph*2+(index>>5)]=mc_menu_glyph_masks[glyph*2+(index>>5)]|((uint)1<<(31-(index&31)));
+                mc_menu_glyph_nonempty[glyph]=1;
+            }
+    }
+    mc_menu_glyph_cache_ready=1;
+}
+void mc_menu_draw_glyph(int x,int y,int glyph,uint color)
+{
+#if defined(MC10_STARTUP_DIAGNOSTIC) || defined(MC10_LEGACY_FONT)
+    /* Legacy submission throughout, including loading screens and gameplay. */
+    mc_menu_draw_glyph_pixels(x,y,glyph,color);
+#else
+    if(x<=-8||y<=-8||x>=MC_SCREEN_WIDTH||y>=MC_SCREEN_HEIGHT)return;
+    if(!mc_menu_glyph_cache_ready)mc_menu_prepare_glyph_cache();
+    if(!mc_menu_glyph_nonempty[glyph])return;
+    if(narm_half_glyph(x,y,8,8,&mc_menu_glyph_masks[glyph*2],color)<0)
+    {mc_menu_glyph_fallbacks=mc_menu_glyph_fallbacks+1;mc_menu_draw_glyph_pixels(x,y,glyph,color);}
+#endif
+}
+
+void mc_menu_draw_string_raw(char *text, int x, int y, uint color)
+{
+    int index = 0;
+    uint glyph;
+    while (text[index] != 0)
+    {
+        glyph = (uint)text[index] & 255;
+        mc_menu_draw_glyph(x, y, (int)glyph, color);
+        x = x + ((uint)mc_menu_font_metrics[glyph] & 255);
+        index = index + 1;
+    }
+}
+
+uint mc_menu_text_color(uint rgb)
+{
+    return mc_menu_rgb888_to_rgb332(rgb & 0xffffff);
+}
+
+void mc_menu_draw_string(char *text, int x, int y, uint rgb)
+{
+    uint shadow_rgb = (rgb & 0xfcfcfc) >> 2;
+    mc_menu_draw_string_raw(text, x + 1, y + 1,
+                            mc_menu_text_color(shadow_rgb));
+    mc_menu_draw_string_raw(text, x, y, mc_menu_text_color(rgb));
+}
+
+void mc_menu_draw_centered_string(char *text, int center_x, int y, uint rgb)
+{
+    mc_menu_draw_string(text, center_x - mc_menu_font_width(text) / 2,
+                        y, rgb);
+}
+
+void mc_menu_draw_rotated_glyph_pixel(float translate_x, float translate_y,
+                                      float scale, float cosine, float sine,
+                                      float logical_x, float logical_y,
+                                      uint color)
+{
+    int x0;
+    int y0;
+    int x1;
+    int y1;
+    int x2;
+    int y2;
+    int x3;
+    int y3;
+    float px;
+    float py;
+    px = logical_x * scale;
+    py = logical_y * scale;
+    x0 = (int)(translate_x + px * cosine - py * sine);
+    y0 = (int)(translate_y + px * sine + py * cosine);
+    px = (logical_x + 1.0f) * scale;
+    x1 = (int)(translate_x + px * cosine - py * sine);
+    y1 = (int)(translate_y + px * sine + py * cosine);
+    py = (logical_y + 1.0f) * scale;
+    x2 = (int)(translate_x + px * cosine - py * sine);
+    y2 = (int)(translate_y + px * sine + py * cosine);
+    px = logical_x * scale;
+    x3 = (int)(translate_x + px * cosine - py * sine);
+    y3 = (int)(translate_y + px * sine + py * cosine);
+    narm_half_fill_triangle(x0, y0, x1, y1, x2, y2, color);
+    narm_half_fill_triangle(x0, y0, x2, y2, x3, y3, color);
+}
+
+void mc_menu_draw_transformed_string(char *text, float x, float y,
+                                     float translate_x, float translate_y,
+                                     float scale, float angle,
+                                     uint rgb, int shadow)
+{
+    float cosine = narm_cos(angle);
+    float sine = narm_sin(angle);
+    int index = 0;
+    int row;
+    int column;
+    uint glyph;
+    uint color = mc_menu_text_color(rgb);
+    while (text[index] != 0)
+    {
+        glyph = (uint)text[index] & 255;
+        row = 0;
+        while (row < 8)
+        {
+            column = 0;
+            while (column < 8)
+            {
+                if (mc_menu_font_has_pixel((int)glyph, column, row))
+                    mc_menu_draw_rotated_glyph_pixel(
+                        translate_x, translate_y, scale, cosine, sine,
+                        x + (float)column + (float)shadow,
+                        y + (float)row + (float)shadow, color);
+                column = column + 1;
+            }
+            row = row + 1;
+        }
+        x = x + (float)((uint)mc_menu_font_metrics[glyph] & 255);
+        index = index + 1;
+    }
+}
+
+void mc_menu_draw_splash(void)
+{
+    int width = mc_menu_font_width(&mc_menu_splash_glyphs[0]);
+    float time = (float)(narm_millis() % 1000) / 1000.0f;
+    float wave = narm_sin(time * 6.283185307f) * 0.1f;
+    float scale;
+    if (wave < 0.0f) wave = -wave;
+    scale = (1.8f - wave) * 100.0f / (float)(width + 32);
+    mc_menu_draw_transformed_string(
+        &mc_menu_splash_glyphs[0], (float)(-width / 2), -8.0f,
+        250.0f, 70.0f, scale, -0.3490658504f,
+        (0xffff00 & 0xfcfcfc) >> 2, 1);
+    mc_menu_draw_transformed_string(
+        &mc_menu_splash_glyphs[0], (float)(-width / 2), -8.0f,
+        250.0f, 70.0f, scale, -0.3490658504f,
+        0xffff00, 0);
+}
+
+int mc_menu_button_hovered(struct MCMenuButton *button)
+{
+    return mc_menu_pointer_x >= button->x_position &&
+           mc_menu_pointer_y >= button->y_position &&
+           mc_menu_pointer_x < button->x_position + button->width &&
+           mc_menu_pointer_y < button->y_position + button->height;
+}
+
+uint *mc_menu_button_pixels(struct MCMenuButton *button, int state)
+{
+    if (button->width == 70)
+        return &mc_menu_button_70[state * MC_MENU_BUTTON_70_WORDS];
+    if (button->width == 98)
+        return &mc_menu_button_98[state * MC_MENU_BUTTON_98_WORDS];
+    if (button->width == 150)
+        return &mc_menu_button_150[state * MC_MENU_BUTTON_150_WORDS];
+    return &mc_menu_button_200[state * MC_MENU_BUTTON_200_WORDS];
+}
+
+void mc_menu_draw_button(struct MCMenuButton *button)
+{
+    int hovered;
+    int state;
+    uint text_color;
+    if (!button->draw_button) return;
+    hovered = mc_menu_button_hovered(button);
+    state = button->enabled ? (hovered ? 2 : 1) : 0;
+    narm_half_blit(button->x_position, button->y_position,
+                   button->width, button->height,
+                   mc_menu_button_pixels(button, state));
+    if (!button->enabled) text_color = 0xa0a0a0;
+    else if (hovered) text_color = 0xffffa0;
+    else text_color = 0xe0e0e0;
+    mc_menu_draw_centered_string(
+        button->display_string,
+        button->x_position + button->width / 2,
+        button->y_position + (button->height - 8) / 2,
+        text_color);
+}
+
+void mc_menu_draw_pointer(void)
+{
+    int x = mc_menu_pointer_x;
+    int y = mc_menu_pointer_y;
+    narm_half_fill_triangle(x, y, x, y + 9, x + 6, y + 6, MC_COLOR_BLACK);
+    narm_half_fill_triangle(x + 1, y + 1, x + 1, y + 7,
+                            x + 4, y + 5, MC_COLOR_WHITE);
+    narm_half_line(x + 3, y + 5, x + 6, y + 9, MC_COLOR_BLACK);
+    narm_half_line(x + 4, y + 5, x + 7, y + 8, MC_COLOR_WHITE);
+}
+
+void mc_menu_set_button(int index, int id, int x, int y, int width,
+                        char *display_string, int enabled)
+{
+    mc_menu_buttons[index].id = id;
+    mc_menu_buttons[index].x_position = x;
+    mc_menu_buttons[index].y_position = y;
+    mc_menu_buttons[index].width = width;
+    mc_menu_buttons[index].height = 20;
+    mc_menu_buttons[index].enabled = enabled;
+    mc_menu_buttons[index].draw_button = 1;
+    mc_menu_buttons[index].display_string = display_string;
+}
+
+void mc_menu_bind_labels(void)
+{
+    int offset = 0;
+    mc_menu_label_singleplayer = &mc_menu_labels[offset];
+    while (mc_menu_labels[offset] != 0) offset = offset + 1;
+    offset = offset + 1;
+    mc_menu_label_multiplayer = &mc_menu_labels[offset];
+    while (mc_menu_labels[offset] != 0) offset = offset + 1;
+    offset = offset + 1;
+    mc_menu_label_texture_packs = &mc_menu_labels[offset];
+    while (mc_menu_labels[offset] != 0) offset = offset + 1;
+    offset = offset + 1;
+    mc_menu_label_options = &mc_menu_labels[offset];
+    while (mc_menu_labels[offset] != 0) offset = offset + 1;
+    offset = offset + 1;
+    mc_menu_label_quit = &mc_menu_labels[offset];
+}
+
+void mc_menu_select_splash(void)
+{
+    uint count = mc_asset_read_u32(&mc_menu_splashes[0], 0);
+    int selected;
+    int item;
+    int offset;
+    int length;
+    uint hash;
+    int index;
+    if (count == 0)
+    {
+        mc_menu_splash_glyphs[0] = 'm';
+        mc_menu_splash_glyphs[1] = 'i';
+        mc_menu_splash_glyphs[2] = 's';
+        mc_menu_splash_glyphs[3] = 's';
+        mc_menu_splash_glyphs[4] = 'i';
+        mc_menu_splash_glyphs[5] = 'n';
+        mc_menu_splash_glyphs[6] = 'g';
+        mc_menu_splash_glyphs[7] = 'n';
+        mc_menu_splash_glyphs[8] = 'o';
+        mc_menu_splash_glyphs[9] = 0;
+        return;
+    }
+    for (;;)
+    {
+        selected = mc_java_random_next_int_bound(&mc_menu_random, (int)count);
+        item = 0;
+        offset = 4;
+        while (item < selected)
+        {
+            length = (uint)mc_menu_splashes[offset + 4] & 255;
+            offset = offset + 5 + length;
+            item = item + 1;
+        }
+        hash = mc_asset_read_u32(&mc_menu_splashes[0], offset);
+        length = (uint)mc_menu_splashes[offset + 4] & 255;
+        if (hash != 125780783) break;
+    }
+    if (length > 127) length = 127;
+    index = 0;
+    while (index < length)
+    {
+        mc_menu_splash_glyphs[index] = mc_menu_splashes[offset + 5 + index];
+        index = index + 1;
+    }
+    mc_menu_splash_glyphs[length] = 0;
+}
+
+int mc_menu_load_payload_exact(char *name, void *destination,
+                               uint expected_bytes)
+{
+    uint actual_bytes;
+    if (!mc_asset_read_payload(name, destination, expected_bytes,
+                               &actual_bytes)) return 0;
+    return actual_bytes == expected_bytes;
+}
+
+int mc_menu_load_mask_exact(char *name, void *destination,
+                            uint expected_bytes)
+{
+    uint actual_bytes;
+    if (!mc_asset_read_mask(name, destination, expected_bytes,
+                            &actual_bytes)) return 0;
+    return actual_bytes == expected_bytes;
+}
+
+int mc_menu_load_cached_images(void)
+{
+    if (!mc_menu_load_payload_exact(
+        "mc10/menu/button_200x20_disabled",
+        &mc_menu_button_200[0 * MC_MENU_BUTTON_200_WORDS],
+        MC_MENU_BUTTON_200_BYTES)) return 0;
+    if (!mc_menu_load_payload_exact(
+        "mc10/menu/button_200x20_normal",
+        &mc_menu_button_200[1 * MC_MENU_BUTTON_200_WORDS],
+        MC_MENU_BUTTON_200_BYTES)) return 0;
+    if (!mc_menu_load_payload_exact(
+        "mc10/menu/button_200x20_hover",
+        &mc_menu_button_200[2 * MC_MENU_BUTTON_200_WORDS],
+        MC_MENU_BUTTON_200_BYTES)) return 0;
+    if (!mc_menu_load_payload_exact(
+        "mc10/menu/button_98x20_disabled",
+        &mc_menu_button_98[0 * MC_MENU_BUTTON_98_WORDS],
+        MC_MENU_BUTTON_98_BYTES)) return 0;
+    if (!mc_menu_load_payload_exact(
+        "mc10/menu/button_98x20_normal",
+        &mc_menu_button_98[1 * MC_MENU_BUTTON_98_WORDS],
+        MC_MENU_BUTTON_98_BYTES)) return 0;
+    if (!mc_menu_load_payload_exact(
+        "mc10/menu/button_98x20_hover",
+        &mc_menu_button_98[2 * MC_MENU_BUTTON_98_WORDS],
+        MC_MENU_BUTTON_98_BYTES)) return 0;
+    if (!mc_menu_load_payload_exact(
+        "mc10/menu/button_150x20_disabled",
+        &mc_menu_button_150[0 * MC_MENU_BUTTON_150_WORDS],
+        MC_MENU_BUTTON_150_BYTES)) return 0;
+    if (!mc_menu_load_payload_exact(
+        "mc10/menu/button_150x20_normal",
+        &mc_menu_button_150[1 * MC_MENU_BUTTON_150_WORDS],
+        MC_MENU_BUTTON_150_BYTES)) return 0;
+    if (!mc_menu_load_payload_exact(
+        "mc10/menu/button_150x20_hover",
+        &mc_menu_button_150[2 * MC_MENU_BUTTON_150_WORDS],
+        MC_MENU_BUTTON_150_BYTES)) return 0;
+    if (!mc_menu_load_payload_exact(
+        "mc10/menu/button_70x20_disabled",
+        &mc_menu_button_70[0 * MC_MENU_BUTTON_70_WORDS],
+        MC_MENU_BUTTON_70_BYTES)) return 0;
+    if (!mc_menu_load_payload_exact(
+        "mc10/menu/button_70x20_normal",
+        &mc_menu_button_70[1 * MC_MENU_BUTTON_70_WORDS],
+        MC_MENU_BUTTON_70_BYTES)) return 0;
+    if (!mc_menu_load_payload_exact(
+        "mc10/menu/button_70x20_hover",
+        &mc_menu_button_70[2 * MC_MENU_BUTTON_70_WORDS],
+        MC_MENU_BUTTON_70_BYTES)) return 0;
+    if (!mc_menu_load_payload_exact(
+        "mc10/title/logo_310x44",
+        &mc_menu_logo_pixels[0 * MC_MENU_LOGO_WORDS],
+        MC_MENU_LOGO_BYTES)) return 0;
+    if (!mc_menu_load_mask_exact(
+        "mc10/title/logo_310x44",
+        &mc_menu_logo_masks[0 * MC_MENU_LOGO_MASK_WORDS],
+        MC_MENU_LOGO_MASK_BYTES)) return 0;
+    if (!mc_menu_load_payload_exact(
+        "mc10/title/logo_rare_310x44",
+        &mc_menu_logo_pixels[1 * MC_MENU_LOGO_WORDS],
+        MC_MENU_LOGO_BYTES)) return 0;
+    if (!mc_menu_load_mask_exact(
+        "mc10/title/logo_rare_310x44",
+        &mc_menu_logo_masks[1 * MC_MENU_LOGO_MASK_WORDS],
+        MC_MENU_LOGO_MASK_BYTES)) return 0;
+    return 1;
+}
+
+int mc_menu_init(void)
+{
+    uint entropy_low;
+    uint entropy_high;
+    int button_y = MC_SCREEN_HEIGHT / 4 + 48;
+    mc_menu_ready = 0;
+    mc_menu_glyph_cache_ready=0;
+    if (!mc_menu_load_cached_images()) return 0;
+    if (!mc_asset_read_mask("font/default.png", &mc_menu_font_mask[0],
+                            2048, &mc_menu_font_mask_bytes)) return 0;
+    if (mc_menu_font_mask_bytes != 2048) return 0;
+    if (!mc_asset_read_payload("mc10/font/default_metrics",
+                               &mc_menu_font_metrics[0], 256,
+                               &mc_menu_font_metrics_bytes)) return 0;
+    if (mc_menu_font_metrics_bytes != 256) return 0;
+#ifndef MC10_STARTUP_DIAGNOSTIC
+    mc_menu_prepare_glyph_cache();
+#endif
+    if (!mc_asset_read_payload("mc10/menu/labels", &mc_menu_labels[0],
+                               128, &mc_menu_label_bytes)) return 0;
+    if (!mc_asset_read_payload("mc10/menu/splashes", &mc_menu_splashes[0],
+                               MC_MENU_SPLASH_BYTES,
+                               &mc_menu_splash_bytes)) return 0;
+    mc_menu_bind_labels();
+
+    entropy_low = narm_random_u32();
+    entropy_high = narm_micros();
+    mc_u64_set(&mc_menu_random_seed, entropy_low, entropy_high);
+    mc_java_random_seed_u64(&mc_menu_random, &mc_menu_random_seed);
+    mc_menu_select_splash();
+    mc_menu_update_counter = mc_java_random_next_float(&mc_menu_random);
+
+    mc_menu_set_button(0, 1, MC_SCREEN_WIDTH / 2 - 100, button_y, 200,
+                       mc_menu_label_singleplayer, 1);
+    mc_menu_set_button(1, 2, MC_SCREEN_WIDTH / 2 - 100, button_y + 24, 200,
+                       mc_menu_label_multiplayer, 0);
+    mc_menu_set_button(2, 3, MC_SCREEN_WIDTH / 2 - 100, button_y + 48, 200,
+                       mc_menu_label_texture_packs, 1);
+    mc_menu_set_button(3, 0, MC_SCREEN_WIDTH / 2 - 100,
+                       button_y + 72 + 12, 98, mc_menu_label_options, 1);
+    mc_menu_set_button(4, 4, MC_SCREEN_WIDTH / 2 + 2,
+                       button_y + 72 + 12, 98, mc_menu_label_quit, 1);
+    mc_menu_ready = 1;
+    return 1;
+}
+
+void mc_menu_update_screen(void)
+{
+}
+
+void mc_menu_move_pointer(int delta_x, int delta_y)
+{
+    mc_menu_pointer_x = mc_menu_pointer_x + delta_x;
+    mc_menu_pointer_y = mc_menu_pointer_y + delta_y;
+    if (mc_menu_pointer_x < 0) mc_menu_pointer_x = 0;
+    if (mc_menu_pointer_y < 0) mc_menu_pointer_y = 0;
+    if (mc_menu_pointer_x >= MC_SCREEN_WIDTH) mc_menu_pointer_x = MC_SCREEN_WIDTH - 1;
+    if (mc_menu_pointer_y >= MC_SCREEN_HEIGHT) mc_menu_pointer_y = MC_SCREEN_HEIGHT - 1;
+}
+
+int mc_menu_update_pointer_held(uint now)
+{
+    int delta_x = 0;
+    int delta_y = 0;
+    int previous_x=mc_menu_pointer_x,previous_y=mc_menu_pointer_y;
+    uint elapsed,steps;
+    if (narm_key_down(NARM_KEY_LEFT) > 0) delta_x = -2;
+    if (narm_key_down(NARM_KEY_RIGHT) > 0) delta_x = delta_x + 2;
+    if (narm_key_down(NARM_KEY_UP) > 0) delta_y = -2;
+    if (narm_key_down(NARM_KEY_DOWN) > 0) delta_y = delta_y + 2;
+    if (delta_x == 0 && delta_y == 0)
+    {
+        mc_menu_pointer_last_move = now;
+        mc_menu_pointer_pending_ms=0;
+        return 0;
+    }
+    elapsed=(uint)(now-mc_menu_pointer_last_move);
+    mc_menu_pointer_last_move = now;
+    /* Menu drawing can take longer than the repeat interval. Consume every
+     * elapsed step instead of dropping all but one per redraw. Bound stalls
+     * so returning from storage/UI work cannot teleport the pointer. */
+    if(elapsed>128)elapsed=128;
+    mc_menu_pointer_pending_ms=mc_menu_pointer_pending_ms+elapsed;
+    if(mc_menu_pointer_pending_ms<mc_menu_pointer_interval_ms)return 0;
+    steps=mc_menu_pointer_pending_ms/mc_menu_pointer_interval_ms;
+    mc_menu_pointer_pending_ms=mc_menu_pointer_pending_ms%mc_menu_pointer_interval_ms;
+    mc_menu_move_pointer(delta_x*(int)steps,delta_y*(int)steps);
+    return previous_x!=mc_menu_pointer_x||previous_y!=mc_menu_pointer_y;
+}
+
+int mc_menu_mouse_pressed(int mouse_button)
+{
+    int index = 0;
+    if (mouse_button != 0) return -1;
+    while (index < 5)
+    {
+        if (mc_menu_buttons[index].enabled &&
+            mc_menu_buttons[index].draw_button &&
+            mc_menu_button_hovered(&mc_menu_buttons[index]))
+            return mc_menu_buttons[index].id;
+        index = index + 1;
+    }
+    return -1;
+}
+
+int mc_menu_text_equals(char *left, char *right)
+{
+    int index = 0;
+    while (left[index] != 0 && right[index] != 0)
+    {
+        if (left[index] != right[index]) return 0;
+        index = index + 1;
+    }
+    return left[index] == right[index];
+}
+
+int mc_menu_self_test(void)
+{
+    int row;
+    if (!mc_menu_ready) return 0;
+    if (mc_menu_font_mask_bytes != 2048) return 0;
+    if (mc_menu_font_metrics_bytes != 256) return 0;
+    if (((uint)mc_menu_font_metrics[' '] & 255) != 4) return 0;
+    if (((uint)mc_menu_font_metrics['F'] & 255) != 6) return 0;
+    row = 0;
+    while (row < 7)
+    {
+        if (!mc_menu_font_has_pixel('F', 0, row)) return 0;
+        if (mc_menu_font_has_pixel('F', 7, row)) return 0;
+        row = row + 1;
+    }
+    if (!mc_menu_text_equals(mc_menu_label_singleplayer, "Singleplayer")) return 0;
+    if (!mc_menu_text_equals(mc_menu_label_multiplayer, "Multiplayer")) return 0;
+    if (!mc_menu_text_equals(mc_menu_label_texture_packs, "Texture Packs")) return 0;
+    if (!mc_menu_text_equals(mc_menu_label_options, "Options...")) return 0;
+    if (!mc_menu_text_equals(mc_menu_label_quit, "Quit Game")) return 0;
+    if (mc_asset_read_u32(&mc_menu_splashes[0], 0) != 288) return 0;
+    if (mc_menu_buttons[0].id != 1 || mc_menu_buttons[0].x_position != 60 ||
+        mc_menu_buttons[0].y_position != 108 ||
+        mc_menu_buttons[0].width != 200) return 0;
+    if (mc_menu_buttons[1].id != 2 || mc_menu_buttons[1].enabled) return 0;
+    if (mc_menu_buttons[3].id != 0 || mc_menu_buttons[3].x_position != 60 ||
+        mc_menu_buttons[3].y_position != 192 ||
+        mc_menu_buttons[3].width != 98) return 0;
+    if (mc_menu_buttons[4].id != 4 || mc_menu_buttons[4].x_position != 162 ||
+        mc_menu_buttons[4].y_position != 192 ||
+        mc_menu_buttons[4].width != 98) return 0;
+    return 1;
+}
+
+void mc_menu_draw(void)
+{
+    int index;
+    int logo_index;
+    mc_menu_draw_background();
+    logo_index = mc_menu_update_counter < 0.0001f ? 1 : 0;
+    narm_half_blit_masked(
+        5, 30, 310, 44,
+        &mc_menu_logo_pixels[logo_index * MC_MENU_LOGO_WORDS],
+        &mc_menu_logo_masks[logo_index * MC_MENU_LOGO_MASK_WORDS]);
+    mc_menu_draw_splash();
+    mc_menu_draw_string("Minecraft 1.0.0", 2, MC_SCREEN_HEIGHT - 10, 0xffffff);
+    mc_menu_draw_string("Copyright Mojang AB. Do not distribute!",
+                        MC_SCREEN_WIDTH -
+                        mc_menu_font_width("Copyright Mojang AB. Do not distribute!") - 2,
+                        MC_SCREEN_HEIGHT - 10, 0xffffff);
+    index = 0;
+    while (index < 5)
+    {
+        mc_menu_draw_button(&mc_menu_buttons[index]);
+        index = index + 1;
+    }
+    mc_menu_draw_pointer();
+    narm_half_present();
+}

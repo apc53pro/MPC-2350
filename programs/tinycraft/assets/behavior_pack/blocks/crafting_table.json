@@ -1,0 +1,29 @@
+{
+  "format_version": "1.21.80",
+  "minecraft:block": {
+    "description": { "identifier": "tinycraft:crafting_table" },
+    "components": {
+      "minecraft:destructible_by_mining": { "seconds_to_destroy": 3.0 },
+      "minecraft:collision_box": true,
+      "minecraft:selection_box": true,
+      "minecraft:geometry": "geometry.tinycraft.crafting_table",
+      "minecraft:loot": "loot_tables/blocks/crafting_table.json",
+      "minecraft:material_instances": {
+        "*": { "texture": "tinycraft:crafting_table_side", "render_method": "opaque" },
+        "up": { "texture": "tinycraft:crafting_table_top", "render_method": "opaque" },
+        "down": { "texture": "tinycraft:crafting_table_side", "render_method": "opaque" }
+      },
+      "tinycraft:runtime": {
+        "block_id": 7,
+        "render_class": "fast_cube",
+        "ui_color": 173,
+        "preferred_tool": "axe",
+        "preferred_break_seconds": 0.75,
+        "icon_texture": "crafting_table_side",
+        "name_label": "crafting_table",
+        "item": "tinycraft:crafting_table",
+        "opens_crafting": true
+      }
+    }
+  }
+}

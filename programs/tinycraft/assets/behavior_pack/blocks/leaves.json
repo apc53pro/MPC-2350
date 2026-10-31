@@ -1,0 +1,24 @@
+{
+  "format_version": "1.21.80",
+  "minecraft:block": {
+    "description": { "identifier": "tinycraft:leaves" },
+    "components": {
+      "minecraft:destructible_by_mining": { "seconds_to_destroy": 0.32 },
+      "minecraft:collision_box": true,
+      "minecraft:selection_box": true,
+      "minecraft:loot": "loot_tables/blocks/leaves.json",
+      "minecraft:material_instances": {
+        "*": { "texture": "tinycraft:leaves", "render_method": "opaque" }
+      },
+      "tinycraft:runtime": {
+        "block_id": 5,
+        "render_class": "fast_cube",
+        "stops_sky": false,
+        "ui_color": 60,
+        "preferred_break_seconds": 0.32,
+        "name_label": "leaves",
+        "item": "tinycraft:leaves"
+      }
+    }
+  }
+}

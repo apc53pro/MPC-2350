@@ -1,0 +1,10 @@
+/* NARM platform storage overlay, not a Minecraft state transition.
+ * Region/NBT decoding owns this arena only while the geometry cache is invalid.
+ * After complete resident publication, cache compilation may reuse it. Item
+ * compounds are already copied into their separate immutable inventory arena.
+ * Never overlap a load with submitted drawing or a live compiled cache. */
+#ifndef MC10_WORLD_WORKSPACE_INCLUDED
+#define MC10_WORLD_WORKSPACE_INCLUDED 1
+#define MC_WORLD_WORKSPACE_BYTES 1048576
+uint mc_world_workspace[MC_WORLD_WORKSPACE_BYTES/4];
+#endif

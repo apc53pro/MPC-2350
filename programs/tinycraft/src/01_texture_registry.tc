@@ -1,0 +1,152 @@
+void clearTextureRegistry()
+{
+    g_i = 0;
+    while (g_i < 32)
+    {
+        textureDefs[g_i].used = 0;
+        textureDefs[g_i].id = g_i;
+        textureDefs[g_i].source_kind = TC_TEXTURE_KIND_NONE;
+        textureDefs[g_i].format = TC_TEXTURE_FORMAT_RGB332_PACKED;
+        textureDefs[g_i].width = 16;
+        textureDefs[g_i].height = 16;
+        textureDefs[g_i].word_count = 64;
+        textureDefs[g_i].alpha_kind = TC_TEXTURE_ALPHA_NONE;
+        textureDefs[g_i].cache_slot = -1;
+        textureDefs[g_i].name_label = TC_NAME_NONE;
+        texturePtrs[g_i] = &tex_dirt[0];
+        asset_cache_mask_i = 0;
+        while (asset_cache_mask_i < TC_TEXTURE_MASK_WORDS)
+        {
+            textureMasks[(g_i * TC_TEXTURE_MASK_WORDS) + asset_cache_mask_i] = (uint)0;
+            asset_cache_mask_i = asset_cache_mask_i + 1;
+        }
+        g_i = g_i + 1;
+    }
+
+    texture_registry_ready = 0;
+    texture_registry_loaded_count = 0;
+}
+
+void defineBuiltinTexture(int id, int width, int height, int word_count, int alpha_kind, int name_label)
+{
+    if (id < 0) return;
+    if (id >= 32) return;
+    textureDefs[id].used = 1;
+    textureDefs[id].id = id;
+    textureDefs[id].source_kind = TC_TEXTURE_KIND_BUILTIN;
+    textureDefs[id].format = TC_TEXTURE_FORMAT_RGB332_PACKED;
+    textureDefs[id].width = width;
+    textureDefs[id].height = height;
+    textureDefs[id].word_count = word_count;
+    textureDefs[id].alpha_kind = alpha_kind;
+    textureDefs[id].cache_slot = -1;
+    textureDefs[id].name_label = name_label;
+    texture_registry_loaded_count = texture_registry_loaded_count + 1;
+}
+
+void initTextureRegistry()
+{
+    clearTextureRegistry();
+
+    defineBuiltinTexture(TC_TEX_MISSING, 16, 16, 64, TC_TEXTURE_ALPHA_NONE, TC_NAME_NONE);
+    texturePtrs[TC_TEX_MISSING] = &tex_dirt[0];
+
+    defineBuiltinTexture(TC_TEX_GRASS_TOP, 16, 16, 64, TC_TEXTURE_ALPHA_NONE, TC_NAME_GRASS);
+    texturePtrs[TC_TEX_GRASS_TOP] = &tex_grass_carried[0];
+
+    defineBuiltinTexture(TC_TEX_GRASS_SIDE, 16, 16, 64, TC_TEXTURE_ALPHA_NONE, TC_NAME_GRASS);
+    texturePtrs[TC_TEX_GRASS_SIDE] = &tex_grass_side[0];
+
+    defineBuiltinTexture(TC_TEX_DIRT, 16, 16, 64, TC_TEXTURE_ALPHA_NONE, TC_NAME_DIRT);
+    texturePtrs[TC_TEX_DIRT] = &tex_dirt[0];
+
+    defineBuiltinTexture(TC_TEX_STONE, 16, 16, 64, TC_TEXTURE_ALPHA_NONE, TC_NAME_STONE);
+    texturePtrs[TC_TEX_STONE] = &tex_stone[0];
+
+    defineBuiltinTexture(TC_TEX_LOG_SIDE, 16, 16, 64, TC_TEXTURE_ALPHA_NONE, TC_NAME_OAK_WOOD);
+    texturePtrs[TC_TEX_LOG_SIDE] = &tex_wood[0];
+
+    defineBuiltinTexture(TC_TEX_LOG_TOP, 16, 16, 64, TC_TEXTURE_ALPHA_NONE, TC_NAME_OAK_WOOD);
+    texturePtrs[TC_TEX_LOG_TOP] = &tex_log_oak_top[0];
+
+    defineBuiltinTexture(TC_TEX_LEAVES, 16, 16, 64, TC_TEXTURE_ALPHA_NONE, TC_NAME_LEAVES);
+    texturePtrs[TC_TEX_LEAVES] = &tex_leaves[0];
+
+    defineBuiltinTexture(TC_TEX_OAK_PLANKS, 16, 16, 64, TC_TEXTURE_ALPHA_NONE, TC_NAME_OAK_PLANKS);
+    texturePtrs[TC_TEX_OAK_PLANKS] = &tex_planks_oak[0];
+
+    defineBuiltinTexture(TC_TEX_CRAFTING_TABLE_TOP, 16, 16, 64, TC_TEXTURE_ALPHA_NONE, TC_NAME_CRAFTING_TABLE);
+    texturePtrs[TC_TEX_CRAFTING_TABLE_TOP] = &tex_crafting_table_top[0];
+
+    defineBuiltinTexture(TC_TEX_CRAFTING_TABLE_SIDE, 16, 16, 64, TC_TEXTURE_ALPHA_NONE, TC_NAME_CRAFTING_TABLE);
+    texturePtrs[TC_TEX_CRAFTING_TABLE_SIDE] = &tex_crafting_table_side[0];
+
+    defineBuiltinTexture(TC_TEX_PIG, 64, 32, 512, TC_TEXTURE_ALPHA_NONE, TC_NAME_NONE);
+    texturePtrs[TC_TEX_PIG] = &tex_pig[0];
+
+    pig_texture_ptr = texturePtrs[TC_TEX_PIG];
+    pig_texture_w = textureDefs[TC_TEX_PIG].width;
+    pig_texture_h = textureDefs[TC_TEX_PIG].height;
+
+    texture_registry_ready = 1;
+}
+
+uint *textureRegistryPtr(int tex_id)
+{
+    if (tex_id >= 0)
+    {
+        if (tex_id < 32)
+        {
+            if (textureDefs[tex_id].used != 0) return texturePtrs[tex_id];
+        }
+    }
+    return texturePtrs[TC_TEX_MISSING];
+}
+
+int textureRegistryWidth(int tex_id)
+{
+    if (tex_id >= 0)
+    {
+        if (tex_id < 32)
+        {
+            if (textureDefs[tex_id].used != 0) return textureDefs[tex_id].width;
+        }
+    }
+    return textureDefs[TC_TEX_MISSING].width;
+}
+
+int textureRegistryHeight(int tex_id)
+{
+    if (tex_id >= 0)
+    {
+        if (tex_id < 32)
+        {
+            if (textureDefs[tex_id].used != 0) return textureDefs[tex_id].height;
+        }
+    }
+    return textureDefs[TC_TEX_MISSING].height;
+}
+
+int textureRegistryWords(int tex_id)
+{
+    if (tex_id >= 0)
+    {
+        if (tex_id < 32)
+        {
+            if (textureDefs[tex_id].used != 0) return textureDefs[tex_id].word_count;
+        }
+    }
+    return textureDefs[TC_TEX_MISSING].word_count;
+}
+
+int textureRegistryAlphaKind(int tex_id)
+{
+    if (tex_id >= 0)
+    {
+        if (tex_id < 32)
+        {
+            if (textureDefs[tex_id].used != 0) return textureDefs[tex_id].alpha_kind;
+        }
+    }
+    return textureDefs[TC_TEX_MISSING].alpha_kind;
+}

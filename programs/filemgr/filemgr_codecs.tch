@@ -1,0 +1,1562 @@
+/* PNG and JPEG decoders for FILEMGR.
+ * Streaming input, fixed work buffers, file-backed JPEG coefficients and
+ * packed 4-bit output. No firmware imports beyond the existing NARM API 1.11.
+ * PNG: W3C PNG specification; DEFLATE: RFC 1950/1951.
+ * JPEG: ITU-T T.81 sequential/progressive Huffman DCT coding.
+ * This implementation is original project code; no third-party decoder code.
+ */
+
+int codecMode = 0;
+int codecStage = 0;
+int codecZeroOffset = 0;
+int codecScratchExists = 0;
+char codecScratchName[12] = {'.','f','m','_','j','p','e','g','.','t','m','p'};
+char codecBank[16384];
+char codecBankPath[128];
+int codecBankPrefix = 0;
+int codecBankSize = 0;
+int codecBankBase[4] = {-1,-1,-1,-1};
+int codecBankBytes[4];
+int codecBankDirty[4];
+uint codecBankAge[4];
+uint codecBankClock = 0;
+int codecBankLast = -1;
+
+int pngBegin();
+void pngStep();
+int jpegBegin();
+void jpegStep();
+
+void codecFail(int reason)
+{
+    if (imageCodecError == 0) imageCodecError = reason;
+}
+
+uint codecSourceByte(int offset)
+{
+    uint value;
+    if (imageCodecError != 0) return 0;
+    value = imageBlockByte(offset);
+    if (imageDrawError != 0) codecFail(3);
+    return value;
+}
+
+void codecBankReset(char path[], int prefix, int bytes)
+{
+    int i;
+    copyBuffer(codecBankPath, path, 128);
+    codecBankPrefix = prefix;
+    codecBankSize = bytes;
+    codecBankLast = -1;
+    codecBankClock = 0;
+    for (i = 0; i < 4; i = i + 1)
+    {
+        codecBankBase[i] = -1;
+        codecBankBytes[i] = 0;
+        codecBankDirty[i] = 0;
+        codecBankAge[i] = 0;
+    }
+}
+
+int codecBankFlushSlot(int slot)
+{
+    int wrote;
+    if (codecBankDirty[slot] == 0) return 1;
+    wrote = narm_file_write(codecBankPath, &codecBank[slot * 4096],
+        (uint)(codecBankPrefix + codecBankBase[slot]), (uint)codecBankBytes[slot], activeStorage);
+    if (wrote != codecBankBytes[slot]) { codecFail(3); return 0; }
+    codecBankDirty[slot] = 0;
+    return 1;
+}
+
+int codecBankFlush()
+{
+    int i;
+    for (i = 0; i < 4; i = i + 1) if (codecBankFlushSlot(i) == 0) return 0;
+    return 1;
+}
+
+int codecBankAddress(int offset)
+{
+    int slot;
+    int i;
+    int base;
+    int bytes;
+    int got;
+    uint age;
+    uint oldest;
+    if (imageCodecError != 0) return -1;
+    if (offset < 0 || offset >= codecBankSize) { codecFail(1); return -1; }
+    slot = codecBankLast;
+    if (slot >= 0 && offset >= codecBankBase[slot] && offset < codecBankBase[slot] + codecBankBytes[slot])
+        return slot * 4096 + offset - codecBankBase[slot];
+    base = (offset / 4096) * 4096;
+    slot = -1;
+    for (i = 0; i < 4; i = i + 1) if (codecBankBase[i] == base) slot = i;
+    if (slot < 0)
+    {
+        slot = 0; oldest = 0;
+        for (i = 0; i < 4; i = i + 1)
+        {
+            if (codecBankBase[i] < 0) { slot = i; break; }
+            age = codecBankClock - codecBankAge[i];
+            if (age >= oldest) { slot = i; oldest = age; }
+        }
+        if (codecBankFlushSlot(slot) == 0) return -1;
+        bytes = codecBankSize - base;
+        if (bytes > 4096) bytes = 4096;
+        got = narm_file_read(codecBankPath, &codecBank[slot * 4096],
+            (uint)(codecBankPrefix + base), (uint)bytes, activeStorage);
+        if (got != bytes) { codecFail(3); return -1; }
+        codecBankBase[slot] = base;
+        codecBankBytes[slot] = bytes;
+        codecBankDirty[slot] = 0;
+    }
+    codecBankClock = codecBankClock + (uint)1;
+    codecBankAge[slot] = codecBankClock;
+    codecBankLast = slot;
+    return slot * 4096 + offset - base;
+}
+
+uint codecBankRead(int offset)
+{
+    int address = codecBankAddress(offset);
+    if (address < 0) return 0;
+    return ((uint)codecBank[address]) & (uint)255;
+}
+
+void codecBankWrite(int offset, uint value)
+{
+    int address = codecBankAddress(offset);
+    if (address < 0) return;
+    codecBank[address] = (char)value;
+    codecBankDirty[codecBankLast] = 1;
+}
+
+void codecOutputPixel(int x, int y, uint color)
+{
+    int offset;
+    uint value;
+    offset = y * imageCacheRowBytes + x / 2;
+    value = codecBankRead(offset);
+    if ((x & 1) == 0) value = (value & (uint)15) | (color << (uint)4);
+    else value = (value & (uint)240) | color;
+    codecBankWrite(offset, value);
+}
+
+void codecOutputRgb(int x, int y, uint red, uint green, uint blue)
+{
+#ifdef FILEMGR_CODEC_TEST_RGB
+    filemgrTestRgb(x, y, red, green, blue);
+#endif
+    codecOutputPixel(x, y, imagePalette[rgb332(red, green, blue)]);
+}
+
+int codecZeroBlock(char path[], int prefix, int total)
+{
+    int bytes;
+    int wrote;
+    if (codecZeroOffset >= total) return 1;
+    bytes = total - codecZeroOffset;
+    if (bytes > 4096) bytes = 4096;
+    wrote = narm_file_write(path, imageCacheWrite, (uint)(prefix + codecZeroOffset), (uint)bytes, activeStorage);
+    if (wrote != bytes) { codecFail(3); return 0; }
+    codecZeroOffset = codecZeroOffset + bytes;
+    return codecZeroOffset >= total;
+}
+
+void codecComplete()
+{
+    if (imageDrawError != 0) codecFail(3);
+    if (imageCodecError == 0) codecBankFlush();
+    if (codecScratchExists != 0) fileDelete(codecScratchPath, activeStorage);
+    codecScratchExists = 0;
+    codecMode = 0;
+    imageDrawError = 0;
+    if (imageCodecError != 0) imageCacheError = 1;
+    finishImageCacheBuild();
+}
+
+void cancelCompressedDecode()
+{
+    if (codecScratchExists != 0) fileDelete(codecScratchPath, activeStorage);
+    codecScratchExists = 0;
+    codecMode = 0;
+}
+
+int startCompressedDecode()
+{
+    codecMode = imageRenderable;
+    codecStage = 0;
+    codecZeroOffset = 0;
+    codecScratchExists = 0;
+    imageCodecError = 0;
+    clearChars(imageCacheWrite, 4096);
+    buildPathFromName(codecScratchPath, codecScratchName, 12);
+    codecBankReset(imageCachePath, 512, imageCachePayloadBytes);
+    if (imageCacheUsesRel != 0) copyBuffer(codecBankPath, imageCacheRelPath, 128);
+    return 1;
+}
+
+void serviceCompressedDecode()
+{
+    if (imageCodecError != 0) { codecComplete(); return; }
+    if (codecStage == 0)
+    {
+        if (codecZeroBlock(codecBankPath, 512, imageCachePayloadBytes) == 0) return;
+        codecStage = 1;
+        return;
+    }
+    if (codecStage == 1)
+    {
+        if (codecMode == 4) pngBegin();
+        else jpegBegin();
+        codecStage = 2;
+        if (imageCodecError != 0) codecComplete();
+        return;
+    }
+    if (codecMode == 4) pngStep();
+    else if (codecMode == 5) jpegStep();
+    if (imageDrawError != 0) codecFail(3);
+    if (imageCodecError != 0 && codecMode != 0) codecComplete();
+}
+
+/* --------------------------- PNG / DEFLATE --------------------------- */
+uint pngCrcTable[256];
+int pngPosition = 8;
+int pngChunkRemaining = 0;
+uint pngChunkType = 0;
+uint pngChunkCrc = 0;
+int pngHadChunk = 0;
+int pngPaletteCount = 0;
+char pngPalette[768];
+char pngPaletteAlpha[256];
+int pngTransparent[3];
+int pngHaveTransparency = 0;
+int pngChannels = 0;
+int pngInterlace = 0;
+int pngPass = 0;
+int pngPassWidth = 0;
+int pngPassHeight = 0;
+int pngPassX = 0;
+int pngPassY = 0;
+int pngPassDx = 1;
+int pngPassDy = 1;
+int pngPassSx = 0;
+int pngPassSy = 0;
+int pngRowBytes = 0;
+int pngFilterBytes = 1;
+char pngRow[16384];
+char pngUpperLeft[8];
+int pngRowY = 0;
+int pngRowIndex = 0;
+int pngFilter = -1;
+int pngPhase = 0;
+uint pngDonePixels = 0;
+int pngStartX[7] = {0,4,0,2,0,1,0};
+int pngStartY[7] = {0,0,4,0,2,0,1};
+int pngStepX[7] = {8,8,4,4,2,2,1};
+int pngStepY[7] = {8,8,8,4,4,2,2};
+char infWindow[32768];
+uint infProduced = 0;
+uint infAdlerA = 1;
+uint infAdlerB = 0;
+uint infBits = 0;
+int infBitCount = 0;
+int infState = 0;
+int infFinal = 0;
+int infStored = 0;
+int infCopy = 0;
+int infDistance = 0;
+int infCount[48];
+int infSymbol[864];
+char infLengths[320];
+int infCodeOrder[19] = {16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15};
+int infLengthBase[29] = {3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258};
+int infLengthExtra[29] = {0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0};
+int infDistanceBase[30] = {1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577};
+int infDistanceExtra[30] = {0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13};
+
+uint pngRaw32(int offset)
+{
+    uint a;
+    uint b;
+    uint c;
+    uint d;
+    if (offset < 0 || (uint)offset > selectedSize - (uint)4) { codecFail(1); return 0; }
+    a = codecSourceByte(offset); b = codecSourceByte(offset + 1);
+    c = codecSourceByte(offset + 2); d = codecSourceByte(offset + 3);
+    return (a << (uint)24) | (b << (uint)16) | (c << (uint)8) | d;
+}
+
+void pngCrcByte(uint value)
+{
+    pngChunkCrc = pngCrcTable[(pngChunkCrc ^ value) & (uint)255] ^ (pngChunkCrc >> (uint)8);
+}
+
+int pngNextChunk()
+{
+    uint length;
+    uint expected;
+    if (imageCodecError != 0) return 0;
+    if (pngHadChunk != 0)
+    {
+        if (pngChunkRemaining != 0) { codecFail(1); return 0; }
+        expected = pngRaw32(pngPosition); pngPosition = pngPosition + 4;
+        if (expected != (pngChunkCrc ^ (uint)0xffffffff)) { codecFail(4); return 0; }
+    }
+    if ((uint)pngPosition > selectedSize - (uint)12) { codecFail(1); return 0; }
+    length = pngRaw32(pngPosition);
+    if (length > selectedSize - (uint)pngPosition - (uint)12) { codecFail(1); return 0; }
+    pngChunkRemaining = (int)length;
+    pngChunkType = pngRaw32(pngPosition + 4);
+    pngPosition = pngPosition + 8;
+    pngChunkCrc = (uint)0xffffffff;
+    pngCrcByte(pngChunkType >> (uint)24);
+    pngCrcByte((pngChunkType >> (uint)16) & (uint)255);
+    pngCrcByte((pngChunkType >> (uint)8) & (uint)255);
+    pngCrcByte(pngChunkType & (uint)255);
+    pngHadChunk = 1;
+    return imageCodecError == 0;
+}
+
+uint pngChunkByte()
+{
+    uint value;
+    if (imageCodecError != 0) return 0;
+    if (pngChunkRemaining <= 0) { codecFail(1); return 0; }
+    value = codecSourceByte(pngPosition);
+    pngPosition = pngPosition + 1;
+    pngChunkRemaining = pngChunkRemaining - 1;
+    pngCrcByte(value);
+    return value;
+}
+
+uint pngCompressedByte()
+{
+    while (pngChunkRemaining == 0 && imageCodecError == 0)
+    {
+        if (pngNextChunk() == 0) return 0;
+        if (pngChunkType != (uint)0x49444154) { codecFail(1); return 0; }
+    }
+    return pngChunkByte();
+}
+
+uint infGetBits(int count)
+{
+    uint value;
+    uint byte;
+    while (infBitCount < count && imageCodecError == 0)
+    {
+        byte = pngCompressedByte();
+        infBits = infBits | (byte << (uint)infBitCount);
+        infBitCount = infBitCount + 8;
+    }
+    if (imageCodecError != 0) return 0;
+    value = infBits & (((uint)1 << (uint)count) - (uint)1);
+    infBits = infBits >> (uint)count;
+    infBitCount = infBitCount - count;
+    return value;
+}
+
+int infBuildTree(int table, char lengths[], int symbols)
+{
+    int i;
+    int length;
+    int left;
+    int next[16];
+    for (i = 0; i < 16; i = i + 1) infCount[table * 16 + i] = 0;
+    for (i = 0; i < symbols; i = i + 1)
+    {
+        length = (int)(((uint)lengths[i]) & (uint)255);
+        if (length > 15) { codecFail(1); return 0; }
+        infCount[table * 16 + length] = infCount[table * 16 + length] + 1;
+    }
+    left = 1;
+    next[0] = 0; next[1] = 0;
+    for (i = 1; i < 16; i = i + 1)
+    {
+        left = left * 2 - infCount[table * 16 + i];
+        if (left < 0) { codecFail(1); return 0; }
+        if (i < 15) next[i + 1] = next[i] + infCount[table * 16 + i];
+    }
+    for (i = 0; i < symbols; i = i + 1)
+    {
+        length = (int)(((uint)lengths[i]) & (uint)255);
+        if (length != 0)
+        {
+            infSymbol[table * 288 + next[length]] = i;
+            next[length] = next[length] + 1;
+        }
+    }
+    return 1;
+}
+
+int infDecode(int table)
+{
+    int length;
+    int code;
+    int first;
+    int index;
+    int count;
+    code = 0; first = 0; index = 0;
+    for (length = 1; length <= 15; length = length + 1)
+    {
+        code = code | (int)infGetBits(1);
+        count = infCount[table * 16 + length];
+        if (code >= first && code < first + count) return infSymbol[table * 288 + index + code - first];
+        index = index + count;
+        first = (first + count) * 2;
+        code = code * 2;
+    }
+    codecFail(1);
+    return 0;
+}
+
+void infDynamicTrees()
+{
+    int literals;
+    int distances;
+    int codes;
+    int i;
+    int symbol;
+    int repeat;
+    int value;
+    char codeLengths[19];
+    literals = 257 + (int)infGetBits(5);
+    distances = 1 + (int)infGetBits(5);
+    codes = 4 + (int)infGetBits(4);
+    if (literals > 286 || distances > 32) { codecFail(1); return; }
+    for (i = 0; i < 19; i = i + 1) codeLengths[i] = 0;
+    for (i = 0; i < codes; i = i + 1) codeLengths[infCodeOrder[i]] = (char)infGetBits(3);
+    if (infBuildTree(2, codeLengths, 19) == 0) return;
+    i = 0;
+    while (i < literals + distances && imageCodecError == 0)
+    {
+        symbol = infDecode(2);
+        if (symbol <= 15) { infLengths[i] = (char)symbol; i = i + 1; }
+        else
+        {
+            value = 0;
+            if (symbol == 16)
+            {
+                if (i == 0) { codecFail(1); return; }
+                value = infLengths[i - 1]; repeat = 3 + (int)infGetBits(2);
+            }
+            else if (symbol == 17) repeat = 3 + (int)infGetBits(3);
+            else if (symbol == 18) repeat = 11 + (int)infGetBits(7);
+            else { codecFail(1); return; }
+            if (repeat > literals + distances - i) { codecFail(1); return; }
+            while (repeat > 0) { infLengths[i] = (char)value; i = i + 1; repeat = repeat - 1; }
+        }
+    }
+    if (infLengths[256] == 0) { codecFail(1); return; }
+    infBuildTree(0, infLengths, literals);
+    infBuildTree(1, &infLengths[literals], distances);
+}
+
+int infEmit(uint value)
+{
+    infWindow[infProduced & (uint)32767] = (char)value;
+    infProduced = infProduced + (uint)1;
+    infAdlerA = (infAdlerA + value) % (uint)65521;
+    infAdlerB = (infAdlerB + infAdlerA) % (uint)65521;
+    return (int)value;
+}
+
+int infNextByte()
+{
+    int kind;
+    int i;
+    int symbol;
+    int distance;
+    int length;
+    uint value;
+    uint check;
+    while (imageCodecError == 0)
+    {
+        if (infCopy > 0)
+        {
+            value = ((uint)infWindow[(infProduced - (uint)infDistance) & (uint)32767]) & (uint)255;
+            infCopy = infCopy - 1;
+            return infEmit(value);
+        }
+        if (infState == 3) return -1;
+        if (infState == 0)
+        {
+            infFinal = (int)infGetBits(1); kind = (int)infGetBits(2);
+            if (kind == 0)
+            {
+                infBits = 0; infBitCount = 0;
+                infStored = (int)infGetBits(16); check = infGetBits(16);
+                if ((((uint)infStored) ^ check) != (uint)65535) { codecFail(1); return -1; }
+                infState = 1;
+            }
+            else if (kind == 1)
+            {
+                for (i = 0; i < 288; i = i + 1)
+                {
+                    if (i < 144) infLengths[i] = 8;
+                    else if (i < 256) infLengths[i] = 9;
+                    else if (i < 280) infLengths[i] = 7;
+                    else infLengths[i] = 8;
+                }
+                infBuildTree(0, infLengths, 288);
+                for (i = 0; i < 32; i = i + 1) infLengths[i] = 5;
+                infBuildTree(1, infLengths, 32); infState = 2;
+            }
+            else if (kind == 2) { infDynamicTrees(); infState = 2; }
+            else { codecFail(1); return -1; }
+        }
+        else if (infState == 1)
+        {
+            if (infStored == 0) { if (infFinal != 0) infState = 3; else infState = 0; }
+            else { infStored = infStored - 1; return infEmit(infGetBits(8)); }
+        }
+        else
+        {
+            symbol = infDecode(0);
+            if (symbol < 256) return infEmit((uint)symbol);
+            if (symbol == 256) { if (infFinal != 0) infState = 3; else infState = 0; }
+            else
+            {
+                if (symbol > 285) { codecFail(1); return -1; }
+                symbol = symbol - 257;
+                length = infLengthBase[symbol] + (int)infGetBits(infLengthExtra[symbol]);
+                distance = infDecode(1);
+                if (distance >= 30) { codecFail(1); return -1; }
+                distance = infDistanceBase[distance] + (int)infGetBits(infDistanceExtra[distance]);
+                if (distance > 32768 || (uint)distance > infProduced) { codecFail(1); return -1; }
+                infCopy = length; infDistance = distance;
+            }
+        }
+    }
+    return -1;
+}
+
+int pngSetupPass()
+{
+    while (pngPass < 7)
+    {
+        if (pngInterlace == 0)
+        {
+            if (pngPass > 0) return 0;
+            pngPassSx = 0; pngPassSy = 0; pngPassDx = 1; pngPassDy = 1;
+        }
+        else
+        {
+            pngPassSx = pngStartX[pngPass]; pngPassSy = pngStartY[pngPass];
+            pngPassDx = pngStepX[pngPass]; pngPassDy = pngStepY[pngPass];
+        }
+        pngPassWidth = 0; pngPassHeight = 0;
+        if (imageWidth > pngPassSx) pngPassWidth = (imageWidth - pngPassSx + pngPassDx - 1) / pngPassDx;
+        if (imageHeight > pngPassSy) pngPassHeight = (imageHeight - pngPassSy + pngPassDy - 1) / pngPassDy;
+        if (pngPassWidth > 0 && pngPassHeight > 0)
+        {
+            pngRowBytes = (pngPassWidth * pngChannels * imageBitDepth + 7) / 8;
+            clearChars(pngRow, pngRowBytes);
+            pngRowY = 0; pngRowIndex = 0; pngFilter = -1; pngPhase = 0;
+            return 1;
+        }
+        pngPass = pngPass + 1;
+    }
+    return 0;
+}
+
+int pngBegin()
+{
+    int i;
+    int j;
+    int length;
+    int header[13];
+    uint value;
+    uint cmf;
+    uint flags;
+    for (i = 0; i < 256; i = i + 1)
+    {
+        value = (uint)i;
+        for (j = 0; j < 8; j = j + 1)
+        {
+            if ((value & (uint)1) != 0) value = (value >> (uint)1) ^ (uint)0xedb88320;
+            else value = value >> (uint)1;
+        }
+        pngCrcTable[i] = value;
+        pngPaletteAlpha[i] = (char)255;
+    }
+    pngPosition = 8; pngHadChunk = 0; pngPaletteCount = 0;
+    pngHaveTransparency = 0;
+    for (i = 0; i < 3; i = i + 1) pngTransparent[i] = -1;
+    if (pngNextChunk() == 0 || pngChunkType != (uint)0x49484452 || pngChunkRemaining != 13) { codecFail(1); return 0; }
+    for (i = 0; i < 13; i = i + 1) header[i] = (int)pngChunkByte();
+    pngInterlace = header[12];
+    if (header[10] != 0 || header[11] != 0 || pngInterlace > 1) { codecFail(2); return 0; }
+    pngChannels = 1;
+    if (imageColorType == 2) pngChannels = 3;
+    if (imageColorType == 4) pngChannels = 2;
+    if (imageColorType == 6) pngChannels = 4;
+    if (imageColorType == 3 && imageBitDepth > 8) { codecFail(1); return 0; }
+    if (imageColorType != 0 && imageColorType != 3 && imageBitDepth < 8) { codecFail(1); return 0; }
+    if (imageWidth > 131072 / (pngChannels * imageBitDepth)) { codecFail(2); return 0; }
+    pngRowBytes = (imageWidth * pngChannels * imageBitDepth + 7) / 8;
+    if (imageHeight > 2147483000 / (pngRowBytes + 8)) { codecFail(2); return 0; }
+    pngFilterBytes = (pngChannels * imageBitDepth + 7) / 8;
+    if (pngFilterBytes < 1) pngFilterBytes = 1;
+    while (imageCodecError == 0)
+    {
+        if (pngNextChunk() == 0) return 0;
+        length = pngChunkRemaining;
+        if (pngChunkType == (uint)0x49444154) break;
+        if (pngChunkType == (uint)0x504c5445)
+        {
+            if (pngPaletteCount != 0 || length == 0 || length > 768 || length % 3 != 0) { codecFail(1); return 0; }
+            pngPaletteCount = length / 3;
+            if (imageColorType == 3 && pngPaletteCount > (1 << imageBitDepth)) { codecFail(1); return 0; }
+            for (i = 0; i < length; i = i + 1) pngPalette[i] = (char)pngChunkByte();
+        }
+        else if (pngChunkType == (uint)0x74524e53)
+        {
+            if (pngHaveTransparency != 0) { codecFail(1); return 0; }
+            pngHaveTransparency = 1;
+            if (imageColorType == 3 && pngPaletteCount > 0 && length <= pngPaletteCount)
+                for (i = 0; i < length; i = i + 1) pngPaletteAlpha[i] = (char)pngChunkByte();
+            else if (imageColorType == 0 && length == 2)
+            { value = pngChunkByte(); pngTransparent[0] = (int)((value << (uint)8) | pngChunkByte()); }
+            else if (imageColorType == 2 && length == 6)
+            {
+                for (i = 0; i < 3; i = i + 1)
+                { value = pngChunkByte(); pngTransparent[i] = (int)((value << (uint)8) | pngChunkByte()); }
+            }
+            else { codecFail(1); return 0; }
+        }
+        else
+        {
+            if ((pngChunkType & (uint)0x20000000) == 0) { codecFail(2); return 0; }
+            while (pngChunkRemaining > 0 && imageCodecError == 0) pngChunkByte();
+        }
+    }
+    if (imageColorType == 3 && pngPaletteCount == 0) { codecFail(1); return 0; }
+    cmf = pngCompressedByte(); flags = pngCompressedByte();
+    if ((cmf & (uint)15) != (uint)8 || (cmf >> (uint)4) > (uint)7 ||
+        ((cmf << (uint)8) | flags) % (uint)31 != 0 || (flags & (uint)32) != 0) { codecFail(1); return 0; }
+    infProduced = 0; infAdlerA = 1; infAdlerB = 0;
+    infBits = 0; infBitCount = 0; infState = 0; infCopy = 0;
+    pngPass = 0; pngDonePixels = 0;
+    return pngSetupPass();
+}
+
+int pngPaeth(int a, int b, int c)
+{
+    int p = a + b - c;
+    int pa = p - a;
+    int pb = p - b;
+    int pc = p - c;
+    if (pa < 0) pa = -pa;
+    if (pb < 0) pb = -pb;
+    if (pc < 0) pc = -pc;
+    if (pa <= pb && pa <= pc) return a;
+    if (pb <= pc) return b;
+    return c;
+}
+
+int pngSample(int index)
+{
+    int bit;
+    uint value;
+    if (imageBitDepth == 8) return (int)(((uint)pngRow[index]) & (uint)255);
+    if (imageBitDepth == 16)
+    {
+        value = ((uint)pngRow[index * 2]) & (uint)255;
+        return (int)((value << (uint)8) | (((uint)pngRow[index * 2 + 1]) & (uint)255));
+    }
+    bit = index * imageBitDepth;
+    value = ((uint)pngRow[bit / 8]) & (uint)255;
+    return (int)((value >> (uint)(8 - imageBitDepth - bit % 8)) & (((uint)1 << (uint)imageBitDepth) - (uint)1));
+}
+
+void pngOutput(int x)
+{
+    int red;
+    int green;
+    int blue;
+    int alpha;
+    int first;
+    int maximum;
+    int index;
+    int y;
+    first = x * pngChannels;
+    alpha = 255;
+    if (imageColorType == 3)
+    {
+        index = pngSample(first);
+        if (index >= pngPaletteCount) { codecFail(1); return; }
+        red = (int)(((uint)pngPalette[index * 3]) & (uint)255);
+        green = (int)(((uint)pngPalette[index * 3 + 1]) & (uint)255);
+        blue = (int)(((uint)pngPalette[index * 3 + 2]) & (uint)255);
+        alpha = (int)(((uint)pngPaletteAlpha[index]) & (uint)255);
+    }
+    else
+    {
+        red = pngSample(first); green = red; blue = red;
+        if (imageColorType == 2 || imageColorType == 6) { green = pngSample(first + 1); blue = pngSample(first + 2); }
+        if (imageColorType == 0 && red == pngTransparent[0]) alpha = 0;
+        if (imageColorType == 2 && red == pngTransparent[0] && green == pngTransparent[1] && blue == pngTransparent[2]) alpha = 0;
+        if (imageColorType == 4 || imageColorType == 6)
+        {
+            alpha = pngSample(first + pngChannels - 1);
+            if (imageBitDepth == 16) alpha = alpha >> 8;
+        }
+        if (imageBitDepth == 16) { red = red >> 8; green = green >> 8; blue = blue >> 8; }
+        else if (imageBitDepth < 8)
+        {
+            maximum = (1 << imageBitDepth) - 1;
+            red = red * 255 / maximum; green = red; blue = red;
+        }
+    }
+    red = (red * alpha + 255 * (255 - alpha) + 127) / 255;
+    green = (green * alpha + 255 * (255 - alpha) + 127) / 255;
+    blue = (blue * alpha + 255 * (255 - alpha) + 127) / 255;
+    y = pngPassSy + pngRowY * pngPassDy;
+    codecOutputRgb(pngPassSx + x * pngPassDx, y, (uint)red, (uint)green, (uint)blue);
+    pngDonePixels = pngDonePixels + (uint)1;
+    imageCacheBuildY = (int)(pngDonePixels / (uint)imageWidth);
+}
+
+void pngFinish()
+{
+    int extra;
+    uint expected;
+    int i;
+    extra = infNextByte();
+    if (extra >= 0 || imageCodecError != 0) { codecFail(1); return; }
+    infBits = 0; infBitCount = 0;
+    expected = 0;
+    for (i = 0; i < 4; i = i + 1) expected = (expected << (uint)8) | pngCompressedByte();
+    if (expected != ((infAdlerB << (uint)16) | infAdlerA)) { codecFail(4); return; }
+    if (pngChunkRemaining != 0) { codecFail(1); return; }
+    while (imageCodecError == 0)
+    {
+        if (pngNextChunk() == 0) return;
+        if (pngChunkType == (uint)0x49454e44)
+        {
+            if (pngChunkRemaining != 0) { codecFail(1); return; }
+            expected = pngRaw32(pngPosition);
+            if (expected != (pngChunkCrc ^ (uint)0xffffffff)) { codecFail(4); return; }
+            if ((uint)(pngPosition + 4) != selectedSize) { codecFail(1); return; }
+            codecComplete(); return;
+        }
+        if (pngChunkType == (uint)0x49444154)
+        {
+            if (pngChunkRemaining != 0) { codecFail(1); return; }
+        }
+        else if ((pngChunkType & (uint)0x20000000) == 0) { codecFail(2); return; }
+        while (pngChunkRemaining > 0 && imageCodecError == 0) pngChunkByte();
+    }
+}
+
+void pngStep()
+{
+    int budget;
+    int value;
+    int up;
+    int left;
+    int upperLeft;
+    int i;
+    budget = 2048;
+    while (budget > 0 && imageCodecError == 0 && codecMode != 0)
+    {
+        if (pngPhase == 0)
+        {
+            value = infNextByte();
+            if (value < 0 || value > 4) { codecFail(1); return; }
+            pngFilter = value; pngRowIndex = 0;
+            for (i = 0; i < 8; i = i + 1) pngUpperLeft[i] = 0;
+            pngPhase = 1; budget = budget - 1;
+        }
+        else if (pngPhase == 1)
+        {
+            value = infNextByte();
+            if (value < 0) { codecFail(1); return; }
+            up = (int)(((uint)pngRow[pngRowIndex]) & (uint)255);
+            left = 0;
+            if (pngRowIndex >= pngFilterBytes) left = (int)(((uint)pngRow[pngRowIndex - pngFilterBytes]) & (uint)255);
+            upperLeft = (int)(((uint)pngUpperLeft[pngRowIndex % pngFilterBytes]) & (uint)255);
+            pngUpperLeft[pngRowIndex % pngFilterBytes] = (char)up;
+            if (pngFilter == 1) value = value + left;
+            else if (pngFilter == 2) value = value + up;
+            else if (pngFilter == 3) value = value + (left + up) / 2;
+            else if (pngFilter == 4) value = value + pngPaeth(left, up, upperLeft);
+            pngRow[pngRowIndex] = (char)(value & 255);
+            pngRowIndex = pngRowIndex + 1; budget = budget - 1;
+            if (pngRowIndex == pngRowBytes) { pngPhase = 2; pngPassX = 0; }
+        }
+        else
+        {
+            pngOutput(pngPassX); pngPassX = pngPassX + 1; budget = budget - 1;
+            if (pngPassX == pngPassWidth)
+            {
+                pngRowY = pngRowY + 1; pngPhase = 0; dirty = 1;
+                if (pngRowY == pngPassHeight)
+                {
+                    pngPass = pngPass + 1;
+                    if (pngSetupPass() == 0) { pngFinish(); return; }
+                }
+            }
+        }
+    }
+}
+
+/* ----------------------- JPEG sequential / progressive ----------------------- */
+int jpegPosition = 0;
+int jpegStage = 0;
+int jpegFrame = 0;
+int jpegProgressive = 0;
+int jpegComponents = 0;
+int jpegId[4];
+int jpegH[4];
+int jpegV[4];
+int jpegQ[4];
+int jpegBlockWidth[4];
+int jpegBlockHeight[4];
+int jpegDataWidth[4];
+int jpegDataHeight[4];
+int jpegPlane[4];
+int jpegHMax = 1;
+int jpegVMax = 1;
+int jpegMcuColumns = 0;
+int jpegMcuRows = 0;
+int jpegQuant[256];
+int jpegQuantPresent[4];
+int jpegComponentQuant[256];
+int jpegComponentQuantSaved[4];
+int jpegHuffCount[136];
+char jpegHuffSymbol[2048];
+int jpegHuffPresent[8];
+int jpegScanComponents = 0;
+int jpegScanComponent[4];
+int jpegTableDC[4];
+int jpegTableAC[4];
+int jpegDC[4];
+int jpegCoefficientState[256];
+int jpegSs = 0;
+int jpegSe = 63;
+int jpegAh = 0;
+int jpegAl = 0;
+int jpegScanColumns = 0;
+int jpegScanRows = 0;
+int jpegScanIndex = 0;
+int jpegScanNumber = 0;
+int jpegRestartInterval = 0;
+int jpegRestartNext = 0;
+int jpegEobRun = 0;
+uint jpegBits = 0;
+int jpegBitCount = 0;
+int jpegAdobe = -1;
+int jpegRenderIndex = 0;
+int jpegCoefficient[64];
+float jpegIdctWork[64];
+char jpegDecoded[1024];
+int jpegDecodedTag[16];
+uint jpegDecodedAge[16];
+uint jpegDecodedClock = 0;
+int jpegDecodedLast[4];
+int jpegZigZag[64] = {
+    0,1,8,16,9,2,3,10,17,24,32,25,18,11,4,5,
+    12,19,26,33,40,48,41,34,27,20,13,6,7,14,21,28,
+    35,42,49,56,57,50,43,36,29,22,15,23,30,37,44,51,
+    58,59,52,45,38,31,39,46,53,60,61,54,47,55,62,63
+};
+float jpegIdctMatrix[64] = {
+    0.3535533906f,0.4903926402f,0.4619397663f,0.4157348062f,0.3535533906f,0.2777851165f,0.1913417162f,0.0975451610f,
+    0.3535533906f,0.4157348062f,0.1913417162f,-0.0975451610f,-0.3535533906f,-0.4903926402f,-0.4619397663f,-0.2777851165f,
+    0.3535533906f,0.2777851165f,-0.1913417162f,-0.4903926402f,-0.3535533906f,0.0975451610f,0.4619397663f,0.4157348062f,
+    0.3535533906f,0.0975451610f,-0.4619397663f,-0.2777851165f,0.3535533906f,0.4157348062f,-0.1913417162f,-0.4903926402f,
+    0.3535533906f,-0.0975451610f,-0.4619397663f,0.2777851165f,0.3535533906f,-0.4157348062f,-0.1913417162f,0.4903926402f,
+    0.3535533906f,-0.2777851165f,-0.1913417162f,0.4903926402f,-0.3535533906f,-0.0975451610f,0.4619397663f,-0.4157348062f,
+    0.3535533906f,-0.4157348062f,0.1913417162f,0.0975451610f,-0.3535533906f,0.4903926402f,-0.4619397663f,0.2777851165f,
+    0.3535533906f,-0.4903926402f,0.4619397663f,-0.4157348062f,0.3535533906f,-0.2777851165f,0.1913417162f,-0.0975451610f
+};
+
+int jpegRawByte()
+{
+    int value;
+    if (imageCodecError != 0) return 0;
+    if ((uint)jpegPosition >= selectedSize) { codecFail(1); return 0; }
+    value = (int)codecSourceByte(jpegPosition);
+    jpegPosition = jpegPosition + 1;
+    return value;
+}
+
+int jpegRawWord()
+{
+    int high = jpegRawByte();
+    int low = jpegRawByte();
+    return high * 256 + low;
+}
+
+int jpegMarker()
+{
+    int marker;
+    if (jpegRawByte() != 255) { codecFail(1); return 0; }
+    marker = jpegRawByte();
+    while (marker == 255 && imageCodecError == 0) marker = jpegRawByte();
+    if (marker == 0) codecFail(1);
+    return marker;
+}
+
+uint jpegGetBits(int count)
+{
+    uint value;
+    int byte;
+    int next;
+    value = 0;
+    while (count > 0 && imageCodecError == 0)
+    {
+        if (jpegBitCount == 0)
+        {
+            byte = jpegRawByte();
+            if (byte == 255)
+            {
+                next = jpegRawByte();
+                while (next == 255 && imageCodecError == 0) next = jpegRawByte();
+                if (next != 0) { codecFail(1); return 0; }
+            }
+            jpegBits = (uint)byte;
+            jpegBitCount = 8;
+        }
+        jpegBitCount = jpegBitCount - 1;
+        value = (value << (uint)1) | ((jpegBits >> (uint)jpegBitCount) & (uint)1);
+        count = count - 1;
+    }
+    return value;
+}
+
+int jpegHuffman(int table)
+{
+    int length;
+    int code;
+    int first;
+    int index;
+    int count;
+    if (jpegHuffPresent[table] == 0) { codecFail(1); return 0; }
+    code = 0; first = 0; index = 0;
+    for (length = 1; length <= 16; length = length + 1)
+    {
+        code = code * 2 + (int)jpegGetBits(1);
+        count = jpegHuffCount[table * 17 + length];
+        if (code >= first && code < first + count)
+            return (int)(((uint)jpegHuffSymbol[table * 256 + index + code - first]) & (uint)255);
+        index = index + count; first = (first + count) * 2;
+    }
+    codecFail(1);
+    return 0;
+}
+
+int jpegReceive(int count)
+{
+    int value;
+    if (count == 0) return 0;
+    if (count > 16) { codecFail(1); return 0; }
+    value = (int)jpegGetBits(count);
+    if (value < (1 << (count - 1))) value = value - ((1 << count) - 1);
+    return value;
+}
+
+void jpegReadQuant(int end)
+{
+    int table;
+    int precision;
+    int info;
+    int i;
+    int value;
+    while (jpegPosition < end && imageCodecError == 0)
+    {
+        info = jpegRawByte(); table = info & 15; precision = info >> 4;
+        if (table > 3 || precision > 1 || end - jpegPosition < 64 * (precision + 1)) { codecFail(1); return; }
+        for (i = 0; i < 64; i = i + 1)
+        {
+            if (precision == 0) value = jpegRawByte(); else value = jpegRawWord();
+            if (value == 0) { codecFail(1); return; }
+            jpegQuant[table * 64 + jpegZigZag[i]] = value;
+        }
+        jpegQuantPresent[table] = 1;
+    }
+}
+
+void jpegReadHuffman(int end)
+{
+    int table;
+    int info;
+    int i;
+    int total;
+    int left;
+    while (jpegPosition < end && imageCodecError == 0)
+    {
+        info = jpegRawByte();
+        if ((info & 15) > 3 || (info >> 4) > 1 || end - jpegPosition < 16) { codecFail(1); return; }
+        table = (info >> 4) * 4 + (info & 15);
+        total = 0; left = 1;
+        for (i = 1; i <= 16; i = i + 1)
+        {
+            jpegHuffCount[table * 17 + i] = jpegRawByte();
+            total = total + jpegHuffCount[table * 17 + i];
+            left = left * 2 - jpegHuffCount[table * 17 + i];
+            if (left < 0) { codecFail(1); return; }
+        }
+        if (total == 0 || total > 256 || total > end - jpegPosition) { codecFail(1); return; }
+        for (i = 0; i < total; i = i + 1) jpegHuffSymbol[table * 256 + i] = (char)jpegRawByte();
+        jpegHuffPresent[table] = 1;
+    }
+}
+
+void jpegReadFrame(int marker, int end)
+{
+    int precision;
+    int width;
+    int height;
+    int i;
+    int j;
+    int sampling;
+    int blocks;
+    int bytes;
+    int total;
+    if (jpegFrame != 0 || end - jpegPosition < 6) { codecFail(1); return; }
+    precision = jpegRawByte(); height = jpegRawWord(); width = jpegRawWord();
+    jpegComponents = jpegRawByte();
+    if (precision != 8 || (marker != 0xc0 && marker != 0xc1 && marker != 0xc2)) { codecFail(2); return; }
+    if (width != imageWidth || height != imageHeight || (jpegComponents != 1 && jpegComponents != 3 && jpegComponents != 4)) { codecFail(2); return; }
+    if (end - jpegPosition != jpegComponents * 3) { codecFail(1); return; }
+    jpegHMax = 1; jpegVMax = 1; blocks = 0;
+    for (i = 0; i < jpegComponents; i = i + 1)
+    {
+        jpegId[i] = jpegRawByte(); sampling = jpegRawByte(); jpegQ[i] = jpegRawByte();
+        for (j = 0; j < i; j = j + 1) if (jpegId[j] == jpegId[i]) { codecFail(1); return; }
+        jpegH[i] = sampling >> 4; jpegV[i] = sampling & 15;
+        if (jpegH[i] < 1 || jpegH[i] > 4 || jpegV[i] < 1 || jpegV[i] > 4 || jpegQ[i] > 3) { codecFail(2); return; }
+        if (jpegH[i] > jpegHMax) jpegHMax = jpegH[i];
+        if (jpegV[i] > jpegVMax) jpegVMax = jpegV[i];
+        blocks = blocks + jpegH[i] * jpegV[i];
+    }
+    if (jpegComponents > 1 && blocks > 10) { codecFail(2); return; }
+    jpegMcuColumns = (imageWidth + 8 * jpegHMax - 1) / (8 * jpegHMax);
+    jpegMcuRows = (imageHeight + 8 * jpegVMax - 1) / (8 * jpegVMax);
+    total = 0;
+    for (i = 0; i < jpegComponents; i = i + 1)
+    {
+        jpegBlockWidth[i] = jpegMcuColumns * jpegH[i];
+        jpegBlockHeight[i] = jpegMcuRows * jpegV[i];
+        jpegDataWidth[i] = (imageWidth * jpegH[i] + 8 * jpegHMax - 1) / (8 * jpegHMax);
+        jpegDataHeight[i] = (imageHeight * jpegV[i] + 8 * jpegVMax - 1) / (8 * jpegVMax);
+        if (jpegBlockWidth[i] > 2147483000 / (jpegBlockHeight[i] * 128)) { codecFail(2); return; }
+        bytes = jpegBlockWidth[i] * jpegBlockHeight[i] * 128;
+        if (bytes > 2147483000 - total) { codecFail(2); return; }
+        jpegPlane[i] = total; total = total + bytes;
+    }
+    codecScratchBytes = total;
+    jpegProgressive = marker == 0xc2;
+    jpegFrame = 1;
+}
+
+void jpegReadScan(int end)
+{
+    int i;
+    int j;
+    int id;
+    int component;
+    int tables;
+    int approximation;
+    int k;
+    jpegScanComponents = jpegRawByte();
+    if (jpegFrame == 0 || jpegScanComponents < 1 || jpegScanComponents > jpegComponents || end - jpegPosition != jpegScanComponents * 2 + 3) { codecFail(1); return; }
+    for (i = 0; i < jpegScanComponents; i = i + 1)
+    {
+        id = jpegRawByte(); tables = jpegRawByte(); component = -1;
+        for (j = 0; j < jpegComponents; j = j + 1) if (jpegId[j] == id) component = j;
+        if (component < 0 || (tables >> 4) > 3 || (tables & 15) > 3) { codecFail(1); return; }
+        for (j = 0; j < i; j = j + 1) if (jpegScanComponent[j] == component) { codecFail(1); return; }
+        jpegScanComponent[i] = component;
+        jpegTableDC[component] = tables >> 4;
+        jpegTableAC[component] = 4 + (tables & 15);
+    }
+    jpegSs = jpegRawByte(); jpegSe = jpegRawByte(); approximation = jpegRawByte();
+    jpegAh = approximation >> 4; jpegAl = approximation & 15;
+    if (jpegSs > jpegSe || jpegSe > 63 || jpegAh > 13 || jpegAl > 13) { codecFail(1); return; }
+    if (jpegProgressive == 0)
+    {
+        if (jpegSs != 0 || jpegSe != 63 || approximation != 0) { codecFail(1); return; }
+    }
+    else if ((jpegSs == 0 && jpegSe != 0) || (jpegSs > 0 && jpegScanComponents != 1) || (jpegAh != 0 && jpegAl != jpegAh - 1)) { codecFail(1); return; }
+    for (i = 0; i < jpegScanComponents; i = i + 1)
+    {
+        component = jpegScanComponent[i];
+        if (jpegQuantPresent[jpegQ[component]] == 0) { codecFail(1); return; }
+        if (jpegComponentQuantSaved[component] == 0)
+        {
+            for (k = 0; k < 64; k = k + 1) jpegComponentQuant[component * 64 + k] = jpegQuant[jpegQ[component] * 64 + k];
+            jpegComponentQuantSaved[component] = 1;
+        }
+        if (jpegSs == 0 && jpegAh == 0 && jpegHuffPresent[jpegTableDC[component]] == 0) { codecFail(1); return; }
+        if ((jpegSs > 0 || jpegProgressive == 0) && jpegHuffPresent[jpegTableAC[component]] == 0) { codecFail(1); return; }
+        for (k = jpegSs; k <= jpegSe; k = k + 1)
+        {
+            if ((jpegAh == 0 && jpegCoefficientState[component * 64 + k] != -1) ||
+                (jpegAh != 0 && jpegCoefficientState[component * 64 + k] != jpegAh)) { codecFail(1); return; }
+            jpegCoefficientState[component * 64 + k] = jpegAl;
+        }
+    }
+    if (jpegScanComponents == 1)
+    {
+        component = jpegScanComponent[0];
+        jpegScanColumns = jpegDataWidth[component]; jpegScanRows = jpegDataHeight[component];
+    }
+    else { jpegScanColumns = jpegMcuColumns; jpegScanRows = jpegMcuRows; }
+    for (i = 0; i < 4; i = i + 1) jpegDC[i] = 0;
+    jpegBits = 0; jpegBitCount = 0; jpegEobRun = 0; jpegRestartNext = 0;
+    jpegScanIndex = 0; jpegScanNumber = jpegScanNumber + 1;
+    imageCacheBuildY = 0; dirty = 1;
+}
+
+int jpegParseMarkers()
+{
+    int marker;
+    int length;
+    int end;
+    int i;
+    while (imageCodecError == 0)
+    {
+        marker = jpegMarker();
+        if (marker == 0xd9)
+        {
+            if (jpegScanNumber == 0) { codecFail(1); return 0; }
+            for (i = 0; i < jpegComponents; i = i + 1)
+                if (jpegCoefficientState[i * 64] < 0) { codecFail(1); return 0; }
+            return 2;
+        }
+        if (marker == 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) { codecFail(1); return 0; }
+        if (marker == 1) continue;
+        length = jpegRawWord();
+        if (length < 2 || (uint)(length - 2) > selectedSize - (uint)jpegPosition) { codecFail(1); return 0; }
+        end = jpegPosition + length - 2;
+        if (marker == 0xdb) jpegReadQuant(end);
+        else if (marker == 0xc4) jpegReadHuffman(end);
+        else if (jpegSofMarker(marker) != 0) jpegReadFrame(marker, end);
+        else if (marker == 0xdd)
+        {
+            if (length != 4) { codecFail(1); return 0; }
+            jpegRestartInterval = jpegRawWord();
+        }
+        else if (marker == 0xda)
+        {
+            jpegReadScan(end);
+            return imageCodecError == 0;
+        }
+        else if (marker == 0xee && length >= 14)
+        {
+            if (codecSourceByte(jpegPosition) == (uint)65 && codecSourceByte(jpegPosition + 1) == (uint)100 &&
+                codecSourceByte(jpegPosition + 2) == (uint)111 && codecSourceByte(jpegPosition + 3) == (uint)98 &&
+                codecSourceByte(jpegPosition + 4) == (uint)101)
+                jpegAdobe = (int)codecSourceByte(jpegPosition + 11);
+        }
+        else if (marker == 0xcc || marker == 0xdc || marker == 0xde || marker == 0xdf) { codecFail(2); return 0; }
+        if (jpegPosition > end) { codecFail(1); return 0; }
+        jpegPosition = end;
+    }
+    return 0;
+}
+
+int jpegBegin()
+{
+    int i;
+    jpegPosition = 0; jpegFrame = 0; jpegScanNumber = 0;
+    jpegRestartInterval = 0; jpegAdobe = -1;
+    for (i = 0; i < 4; i = i + 1) { jpegQuantPresent[i] = 0; jpegComponentQuantSaved[i] = 0; }
+    for (i = 0; i < 8; i = i + 1) jpegHuffPresent[i] = 0;
+    for (i = 0; i < 256; i = i + 1) jpegCoefficientState[i] = -1;
+    if (jpegRawByte() != 255 || jpegRawByte() != 216) { codecFail(1); return 0; }
+    if (jpegParseMarkers() != 1) { codecFail(1); return 0; }
+    fileDelete(codecScratchPath, activeStorage);
+    if (fileMake(codecScratchPath, activeStorage) == 0) { codecFail(3); return 0; }
+    codecScratchExists = 1;
+    codecZeroOffset = 0; jpegStage = 0;
+    return 1;
+}
+
+void jpegLoadCoefficient(int offset)
+{
+    int i;
+    int value;
+    uint low;
+    uint high;
+    for (i = 0; i < 64; i = i + 1)
+    {
+        low = codecBankRead(offset + i * 2); high = codecBankRead(offset + i * 2 + 1);
+        value = (int)(low | (high << (uint)8));
+        if (value >= 32768) value = value - 65536;
+        jpegCoefficient[i] = value;
+    }
+}
+
+void jpegStoreCoefficient(int offset)
+{
+    int i;
+    int value;
+    for (i = 0; i < 64; i = i + 1)
+    {
+        value = jpegCoefficient[i];
+        if (value < -32768 || value > 32767) { codecFail(1); return; }
+        codecBankWrite(offset + i * 2, (uint)value & (uint)255);
+        codecBankWrite(offset + i * 2 + 1, ((uint)value >> (uint)8) & (uint)255);
+    }
+}
+
+void jpegRefineExisting(int index, int bit)
+{
+    int value = jpegCoefficient[index];
+    if (jpegGetBits(1) != 0 && (value & bit) == 0)
+    {
+        if (value >= 0) jpegCoefficient[index] = value + bit;
+        else jpegCoefficient[index] = value - bit;
+    }
+}
+
+void jpegDecodeBlock(int component)
+{
+    int k;
+    int symbol;
+    int run;
+    int size;
+    int value;
+    int bit;
+    int index;
+    int zeros;
+    int inserted;
+    if (jpegSs == 0)
+    {
+        if (jpegAh == 0)
+        {
+            size = jpegHuffman(jpegTableDC[component]);
+            if (size > 11) { codecFail(1); return; }
+            jpegDC[component] = jpegDC[component] + jpegReceive(size);
+            jpegCoefficient[0] = jpegDC[component] * (1 << jpegAl);
+        }
+        else jpegCoefficient[0] = jpegCoefficient[0] | ((int)jpegGetBits(1) << jpegAl);
+        if (jpegProgressive != 0) return;
+    }
+    k = jpegSs;
+    if (k == 0) k = 1;
+    bit = 1 << jpegAl;
+    if (jpegAh == 0)
+    {
+        if (jpegEobRun > 0) { jpegEobRun = jpegEobRun - 1; return; }
+        while (k <= jpegSe && imageCodecError == 0)
+        {
+            symbol = jpegHuffman(jpegTableAC[component]); run = symbol >> 4; size = symbol & 15;
+            if (size != 0)
+            {
+                if (size > 10) { codecFail(1); return; }
+                k = k + run;
+                if (k > jpegSe) { codecFail(1); return; }
+                jpegCoefficient[jpegZigZag[k]] = jpegReceive(size) * bit;
+                k = k + 1;
+            }
+            else if (run == 15)
+            {
+                k = k + 16;
+                if (k > jpegSe + 1) { codecFail(1); return; }
+            }
+            else
+            {
+                if (jpegProgressive != 0) jpegEobRun = (1 << run) + (int)jpegGetBits(run) - 1;
+                else if (run != 0) codecFail(1);
+                return;
+            }
+        }
+        return;
+    }
+    if (jpegEobRun == 0)
+    {
+        while (k <= jpegSe && imageCodecError == 0)
+        {
+            symbol = jpegHuffman(jpegTableAC[component]); run = symbol >> 4; size = symbol & 15;
+            value = 0;
+            if (size != 0)
+            {
+                if (size != 1) { codecFail(1); return; }
+                if (jpegGetBits(1) != 0) value = bit; else value = -bit;
+                zeros = run;
+            }
+            else
+            {
+                if (run != 15) { jpegEobRun = (1 << run) + (int)jpegGetBits(run); break; }
+                zeros = 16;
+            }
+            inserted = 0;
+            while (k <= jpegSe && imageCodecError == 0)
+            {
+                index = jpegZigZag[k];
+                if (jpegCoefficient[index] != 0) jpegRefineExisting(index, bit);
+                else
+                {
+                    if (zeros == 0) { jpegCoefficient[index] = value; inserted = 1; k = k + 1; break; }
+                    zeros = zeros - 1;
+                    if (zeros == 0 && value == 0) { k = k + 1; break; }
+                }
+                k = k + 1;
+            }
+            if (zeros != 0 || (value != 0 && inserted == 0)) { codecFail(1); return; }
+        }
+    }
+    if (jpegEobRun > 0)
+    {
+        while (k <= jpegSe)
+        {
+            index = jpegZigZag[k];
+            if (jpegCoefficient[index] != 0) jpegRefineExisting(index, bit);
+            k = k + 1;
+        }
+        jpegEobRun = jpegEobRun - 1;
+    }
+}
+
+void jpegDecodeMcu()
+{
+    int component;
+    int i;
+    int x;
+    int y;
+    int sx;
+    int sy;
+    int width;
+    int height;
+    int offset;
+    int marker;
+    if (jpegRestartInterval > 0 && jpegScanIndex > 0 && jpegScanIndex % jpegRestartInterval == 0)
+    {
+        jpegBitCount = 0; jpegBits = 0;
+        marker = jpegMarker();
+        if (marker != 0xd0 + jpegRestartNext || jpegEobRun != 0) { codecFail(1); return; }
+        jpegRestartNext = (jpegRestartNext + 1) & 7;
+        for (i = 0; i < 4; i = i + 1) jpegDC[i] = 0;
+        jpegEobRun = 0;
+    }
+    sx = jpegScanIndex % jpegScanColumns; sy = jpegScanIndex / jpegScanColumns;
+    for (i = 0; i < jpegScanComponents; i = i + 1)
+    {
+        component = jpegScanComponent[i]; width = 1; height = 1;
+        if (jpegScanComponents > 1) { width = jpegH[component]; height = jpegV[component]; }
+        for (y = 0; y < height; y = y + 1) for (x = 0; x < width; x = x + 1)
+        {
+            offset = jpegPlane[component] + ((sy * height + y) * jpegBlockWidth[component] + sx * width + x) * 128;
+            jpegLoadCoefficient(offset);
+            jpegDecodeBlock(component);
+            if (imageCodecError != 0) return;
+            jpegStoreCoefficient(offset);
+        }
+    }
+    jpegScanIndex = jpegScanIndex + 1;
+    if (jpegScanIndex % jpegScanColumns == 0)
+    {
+        imageCacheBuildY = (jpegScanIndex / jpegScanColumns) * imageHeight / jpegScanRows;
+        dirty = 1;
+    }
+    if (jpegScanIndex == jpegScanColumns * jpegScanRows)
+    {
+        if (jpegEobRun != 0) { codecFail(1); return; }
+        jpegBitCount = 0; jpegBits = 0; jpegStage = 2;
+    }
+}
+
+int jpegClamp(int value)
+{
+    if (value < 0) return 0;
+    if (value > 255) return 255;
+    return value;
+}
+
+void jpegIdct(int component, int offset, int slot)
+{
+    int i;
+    int x;
+    int y;
+    int u;
+    int v;
+    int value;
+    int ac;
+    uint low;
+    uint high;
+    float sum;
+    ac = 0;
+    for (i = 0; i < 64; i = i + 1)
+    {
+        low = imageBlockByte(offset + i * 2); high = imageBlockByte(offset + i * 2 + 1);
+        value = (int)(low | (high << (uint)8));
+        if (value >= 32768) value = value - 65536;
+        jpegCoefficient[i] = value;
+        if (i != 0 && value != 0) ac = 1;
+    }
+    if (ac == 0)
+    {
+        sum = (float)jpegCoefficient[0] * (float)jpegComponentQuant[component * 64] / 8.0f + 128.0f;
+        value = 0;
+        if (sum >= 255.0f) value = 255;
+        else if (sum > 0.0f) value = (int)(sum + 0.5f);
+        for (i = 0; i < 64; i = i + 1) jpegDecoded[slot * 64 + i] = (char)value;
+        return;
+    }
+    for (v = 0; v < 8; v = v + 1) for (x = 0; x < 8; x = x + 1)
+    {
+        sum = 0.0f;
+        for (u = 0; u < 8; u = u + 1)
+            sum = sum + (float)jpegCoefficient[v * 8 + u] * (float)jpegComponentQuant[component * 64 + v * 8 + u] * jpegIdctMatrix[x * 8 + u];
+        jpegIdctWork[v * 8 + x] = sum;
+    }
+    for (y = 0; y < 8; y = y + 1) for (x = 0; x < 8; x = x + 1)
+    {
+        sum = 128.0f;
+        for (v = 0; v < 8; v = v + 1) sum = sum + jpegIdctMatrix[y * 8 + v] * jpegIdctWork[v * 8 + x];
+        value = 0;
+        if (sum >= 255.0f) value = 255;
+        else if (sum > 0.0f) value = (int)(sum + 0.5f);
+        jpegDecoded[slot * 64 + y * 8 + x] = (char)value;
+    }
+}
+
+int jpegComponentSample(int component, int x, int y)
+{
+    int sx;
+    int sy;
+    int tag;
+    int slot;
+    int i;
+    uint age;
+    uint oldest;
+    sx = x * jpegH[component] / jpegHMax;
+    sy = y * jpegV[component] / jpegVMax;
+    tag = jpegPlane[component] / 128 + (sy / 8) * jpegBlockWidth[component] + sx / 8;
+    slot = jpegDecodedLast[component];
+    if (slot >= 0 && jpegDecodedTag[slot] == tag)
+        return (int)(((uint)jpegDecoded[slot * 64 + (sy & 7) * 8 + (sx & 7)]) & (uint)255);
+    slot = -1;
+    for (i = 0; i < 16; i = i + 1) if (jpegDecodedTag[i] == tag) slot = i;
+    if (slot < 0)
+    {
+        slot = 0; oldest = 0;
+        for (i = 0; i < 16; i = i + 1)
+        {
+            if (jpegDecodedTag[i] < 0) { slot = i; break; }
+            age = jpegDecodedClock - jpegDecodedAge[i];
+            if (age >= oldest) { slot = i; oldest = age; }
+        }
+        jpegIdct(component, tag * 128, slot);
+        jpegDecodedTag[slot] = tag;
+    }
+    jpegDecodedClock = jpegDecodedClock + (uint)1;
+    jpegDecodedAge[slot] = jpegDecodedClock;
+    jpegDecodedLast[component] = slot;
+    return (int)(((uint)jpegDecoded[slot * 64 + (sy & 7) * 8 + (sx & 7)]) & (uint)255);
+}
+
+void jpegOutput(int x, int y)
+{
+    int first;
+    int second;
+    int third;
+    int fourth;
+    int red;
+    int green;
+    int blue;
+    first = jpegComponentSample(0, x, y);
+    red = first; green = first; blue = first;
+    if (jpegComponents > 1)
+    {
+        second = jpegComponentSample(1, x, y);
+        third = jpegComponentSample(2, x, y);
+        if (jpegComponents == 3 && (jpegAdobe == 0 || (jpegId[0] == 82 && jpegId[1] == 71 && jpegId[2] == 66)))
+        { red = first; green = second; blue = third; }
+        else if (jpegComponents == 4 && jpegAdobe != 2)
+        {
+            fourth = jpegComponentSample(3, x, y);
+            if (jpegAdobe == 0)
+            {
+                red = (first * fourth + 127) / 255;
+                green = (second * fourth + 127) / 255;
+                blue = (third * fourth + 127) / 255;
+            }
+            else
+            {
+                red = ((255 - first) * (255 - fourth) + 127) / 255;
+                green = ((255 - second) * (255 - fourth) + 127) / 255;
+                blue = ((255 - third) * (255 - fourth) + 127) / 255;
+            }
+        }
+        else
+        {
+            second = second - 128; third = third - 128;
+            red = jpegClamp(first + ((91881 * third + 32768) >> 16));
+            green = jpegClamp(first + ((-22554 * second - 46802 * third + 32768) >> 16));
+            blue = jpegClamp(first + ((116130 * second + 32768) >> 16));
+            if (jpegComponents == 4)
+            {
+                fourth = jpegComponentSample(3, x, y);
+                red = ((255 - red) * fourth + 127) / 255;
+                green = ((255 - green) * fourth + 127) / 255;
+                blue = ((255 - blue) * fourth + 127) / 255;
+            }
+        }
+    }
+    codecOutputRgb(x, y, (uint)red, (uint)green, (uint)blue);
+}
+
+void jpegRenderMcu()
+{
+    int startX;
+    int startY;
+    int endX;
+    int endY;
+    int x;
+    int y;
+    startX = (jpegRenderIndex % jpegMcuColumns) * jpegHMax * 8;
+    startY = (jpegRenderIndex / jpegMcuColumns) * jpegVMax * 8;
+    endX = startX + jpegHMax * 8; if (endX > imageWidth) endX = imageWidth;
+    endY = startY + jpegVMax * 8; if (endY > imageHeight) endY = imageHeight;
+    for (y = startY; y < endY && imageCodecError == 0; y = y + 1)
+        for (x = startX; x < endX && imageCodecError == 0; x = x + 1) jpegOutput(x, y);
+    jpegRenderIndex = jpegRenderIndex + 1;
+    if (jpegRenderIndex % jpegMcuColumns == 0) { imageCacheBuildY = endY; dirty = 1; }
+    if (jpegRenderIndex == jpegMcuColumns * jpegMcuRows) codecComplete();
+}
+
+void jpegStep()
+{
+    int result;
+    int i;
+    if (jpegStage == 0)
+    {
+        if (codecZeroBlock(codecScratchPath, 0, codecScratchBytes) == 0) return;
+        codecBankReset(codecScratchPath, 0, codecScratchBytes);
+        jpegStage = 1;
+        return;
+    }
+    if (jpegStage == 1)
+    {
+        for (i = 0; i < 8 && jpegStage == 1 && imageCodecError == 0; i = i + 1) jpegDecodeMcu();
+        return;
+    }
+    if (jpegStage == 2)
+    {
+        result = jpegParseMarkers();
+        if (result == 1) { jpegStage = 1; return; }
+        if (result != 2 || imageCodecError != 0) return;
+        if (codecBankFlush() == 0) return;
+        imageReadingSource = 2;
+        invalidateImageBlocks();
+        codecBankReset(imageCachePath, 512, imageCachePayloadBytes);
+        if (imageCacheUsesRel != 0) copyBuffer(codecBankPath, imageCacheRelPath, 128);
+        jpegDecodedClock = 0;
+        for (i = 0; i < 16; i = i + 1) { jpegDecodedTag[i] = -1; jpegDecodedAge[i] = 0; }
+        for (i = 0; i < 4; i = i + 1) jpegDecodedLast[i] = -1;
+        jpegRenderIndex = 0; imageCacheBuildY = 0; dirty = 1;
+        jpegStage = 3;
+        return;
+    }
+    for (i = 0; i < 2 && codecMode != 0 && imageCodecError == 0; i = i + 1) jpegRenderMcu();
+}

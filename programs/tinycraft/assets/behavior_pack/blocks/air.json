@@ -1,0 +1,21 @@
+{
+  "format_version": "1.21.80",
+  "minecraft:block": {
+    "description": { "identifier": "tinycraft:air" },
+    "components": {
+      "minecraft:collision_box": false,
+      "minecraft:selection_box": false,
+      "tinycraft:runtime": {
+        "block_id": 0,
+        "render_class": "none",
+        "placeable": false,
+        "solid": false,
+        "stops_sky": false,
+        "ui_color": 0,
+        "preferred_break_seconds": 0,
+        "name_label": "none",
+        "item": 0
+      }
+    }
+  }
+}

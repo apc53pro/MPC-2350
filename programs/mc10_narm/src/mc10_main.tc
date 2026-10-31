@@ -1,0 +1,122 @@
+void mc_wait_for_return(void)
+{
+    unsigned key;
+    unsigned action;
+    unsigned mods;
+    unsigned character;
+    for (;;)
+    {
+        while (narm_next_key_event(&key, &action, &mods, &character) > 0)
+        {
+            if (action == NARM_KEY_ACTION_PRESS &&
+                (key == NARM_KEY_ESCAPE || key == NARM_KEY_ENTER)) return;
+        }
+        if (narm_poll_system_event() == NARM_EVENT_CLOSE_REQUESTED) return;
+        narm_sleep_ms(16);
+    }
+}
+
+void mc_show_menu_target_placeholder(int button_id)
+{
+    if (button_id == 2) mc_ui_draw_status("MULTIPLAYER PENDING");
+    else mc_ui_draw_status("TEXTURE PACKS PENDING");
+    mc_wait_for_return();
+}
+
+int main(void)
+{
+#ifdef MC10_AUTOPROFILE
+    return mc_benchmark_main();
+#else
+    unsigned key;
+    unsigned action;
+    unsigned mods;
+    unsigned character;
+    unsigned now;
+    unsigned last_tick;
+    int button_id;
+    int event;
+    int dirty;
+
+    mc_blocks_init();
+    mc_boot_blocks_ok = mc_blocks_self_test();
+    mc_boot_u64_ok = mc_u64_self_test();
+    mc_boot_nbt_ok = mc_nbt_self_test();
+    if (mc_boot_nbt_ok) mc_boot_nbt_ok = mc_nbt_fixed_huffman_self_test();
+    mc_boot_random_ok = mc_java_random_self_test();
+    mc_boot_chunk_ok = mc_chunk_self_test();
+    mc_boot_assets_ok = mc_asset_self_test();
+    mc_boot_perlin_ok = mc_noise_perlin_constructor_self_test();
+    if (!mc_menu_init()) mc_boot_assets_ok = 0;
+    else mc_boot_menu_ok = mc_menu_self_test();
+    if (!mc_options_init()) mc_boot_options_ok = 0;
+    else mc_boot_options_ok = mc_options_self_test();
+
+    last_tick = narm_millis();
+    dirty = 1;
+    for (;;)
+    {
+        now = narm_millis();
+        while ((uint)(now - last_tick) >= 50)
+        {
+            mc_menu_update_screen();
+            last_tick = last_tick + 50;
+            dirty = 1;
+        }
+        if (mc_menu_update_pointer_held(now)) dirty = 1;
+
+        while (narm_next_key_event(&key, &action, &mods, &character) > 0)
+        {
+            if (action != NARM_KEY_ACTION_PRESS &&
+                action != NARM_KEY_ACTION_REPEAT) continue;
+
+            if (key == NARM_KEY_ENTER && action == NARM_KEY_ACTION_PRESS)
+            {
+                button_id = mc_menu_mouse_pressed(0);
+                if (button_id == 4) return 0;
+                if (button_id == 1)
+                {
+                    mc_select_world_run();
+                    last_tick = narm_millis();
+                    dirty = 1;
+                    continue;
+                }
+                if (button_id == 0)
+                {
+                    if (mc_options_ready) mc_options_run();
+                    else
+                    {
+                        mc_ui_draw_status("OPTIONS INIT FAILED");
+                        mc_wait_for_return();
+                    }
+                    last_tick = narm_millis();
+                    dirty = 1;
+                    continue;
+                }
+                if (button_id >= 0)
+                {
+                    mc_show_menu_target_placeholder(button_id);
+                    last_tick = narm_millis();
+                    dirty = 1;
+                }
+            }
+            else if (key == NARM_KEY_F1 && action == NARM_KEY_ACTION_PRESS)
+            {
+                mc_ui_draw_status("PLATFORM STATUS");
+                mc_wait_for_return();
+                last_tick = narm_millis();
+                dirty = 1;
+            }
+        }
+
+        event = narm_poll_system_event();
+        if (event == NARM_EVENT_CLOSE_REQUESTED) return 0;
+        if (dirty)
+        {
+            mc_menu_draw();
+            dirty = 0;
+        }
+        narm_sleep_ms(2);
+    }
+#endif
+}

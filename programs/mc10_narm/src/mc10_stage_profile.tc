@@ -1,0 +1,134 @@
+/* Stage attribution is an observer-overhead experiment, not a renderer A/B.
+ * Both sides use exactly the optimized tile renderer. Detailed counters and
+ * full-buffer hashes are collected outside measured frame intervals. */
+#define MC_STAGE_FIELDS 25
+struct MCStageSample {
+    struct MCBenchmarkSample sample;
+    uint counters[10];
+    uint flags;uint sys_hz;uint peri_hz;uint order;
+    uint tile[9];uint stage[MC_STAGE_FIELDS];
+};
+struct MCStageSample mc_stage_samples[40];
+uint mc_stage_warmup[4][MC_STAGE_FIELDS];
+uint mc_stage_pixel_warmup[4][4];
+uint mc_stage_job_warmup[4][2];
+
+int mc_stage_measure_frame(uint flags)
+{
+    mc_render_list_flush();
+    if(mc_render_list_error)return 0;
+    mc_render_list_enabled=1;renderStats(flags);
+    if((uint)(narm_millis()-mc_bench_run_started_ms)>600000)
+    {mc_bench_cancelled=1;return 0;}
+    return mc_bench_measure_frame();
+}
+int mc_stage_collect(void)
+{
+    int view,pair,order,mode,j,index,ok=1,saved_hud=mc_render_show_hud;
+    int saved_mode=mc_render_list_enabled;
+    uint *out,*in;struct MCStageSample *s;
+    mc_bench_cancelled=0;mc_bench_completed=0;mc_render_list_error=0;
+    mc_bench_run_started_ms=narm_millis();
+    mc_bench_saved_yaw=mc_runtime_player.yaw_bits;mc_bench_saved_pitch=mc_runtime_player.pitch_bits;
+    if(renderStat(24)!=0x54420001||renderStat(34)!=0x44530001)return 0;
+    for(view=0;view<4&&ok;view=view+1)
+    {
+        mc_runtime_player.yaw_bits=mc_bench_saved_yaw;
+        mc_runtime_player.pitch_bits=view>=2?0xc2b40000:mc_bench_saved_pitch;
+        mc_render_show_hud=(view&1)==0;mc_profile_valid=0;
+        for(mode=0;mode<2;mode=mode+1)
+        {
+            if(!mc_stage_measure_frame(mode?1537:1)){ok=0;break;}
+            mc_profile_cancel();
+            if(renderStat(20)!=(uint)(mode?1537:1)){ok=0;break;}
+            if(mode)
+            {
+                for(j=0;j<4;j=j+1)mc_stage_pixel_warmup[view][j]=renderStat((uint)j+27);
+                for(j=0;j<2;j=j+1)mc_stage_job_warmup[view][j]=renderStat((uint)j+25);
+                for(j=0;j<MC_STAGE_FIELDS;j=j+1)mc_stage_warmup[view][j]=renderStat((uint)j+35);
+            }
+        }
+        for(pair=0;pair<5&&ok;pair=pair+1)for(order=0;order<2;order=order+1)
+        {
+            mode=(view+pair+order)&1;
+            if(!mc_stage_measure_frame(mode?1025:1)){ok=0;break;}
+            mc_profile_cancel(); /* All diagnostics and hashes are untimed. */
+            index=mode*20+view*5+pair;s=&mc_stage_samples[index];
+            out=(uint *)&s->sample.frame;in=(uint *)&mc_profile_last;
+            for(j=0;j<(int)sizeof(struct MCFrameProfile)/4;j=j+1)out[j]=in[j];
+            s->sample.visited=mc_render_last_visited;s->sample.skipped=mc_render_last_skipped;
+            s->sample.yaw_bits=mc_runtime_player.yaw_bits;s->sample.pitch_bits=mc_runtime_player.pitch_bits;
+            for(j=0;j<10;j=j+1)s->counters[j]=renderStat((uint)j+9);
+            s->flags=renderStat(20);s->sys_hz=renderStat(22);s->peri_hz=renderStat(23);
+            s->order=(uint)order;
+            for(j=0;j<9;j=j+1)s->tile[j]=renderStat((uint)j+25);
+            for(j=0;j<MC_STAGE_FIELDS;j=j+1)s->stage[j]=renderStat((uint)j+35);
+            if(s->flags!=(uint)(mode?1025:1)){ok=0;break;}
+            mc_bench_completed=mc_bench_completed+1;
+        }
+    }
+    mc_render_list_flush();renderStats(0);mc_profile_cancel();
+    mc_runtime_player.yaw_bits=mc_bench_saved_yaw;mc_runtime_player.pitch_bits=mc_bench_saved_pitch;
+    mc_render_show_hud=saved_hud;mc_render_list_enabled=saved_mode;
+    return ok&&mc_bench_completed==40&&!mc_bench_cancelled&&!mc_render_list_error;
+}
+char *mc_stage_field_name(int field)
+{
+    if(field==0)return "service_us";if(field==1)return "validation_us";
+    if(field==2)return "triangle_setup_us";if(field==3)return "tile_flush_us";
+    if(field==4)return "join_wait_us";if(field==5)return "core0_load_us";
+    if(field==6)return "core0_raster_us";if(field==7)return "core0_commit_us";
+    if(field==8)return "core0_active_us";if(field==9)return "core1_load_us";
+    if(field==10)return "core1_raster_us";if(field==11)return "core1_commit_us";
+    if(field==12)return "core1_active_us";if(field==13)return "list_calls";
+    if(field==14)return "occupied_strips";if(field==15)return "triangle_bin_memberships";
+    if(field==16)return "command_bytes";if(field==17)return "staged_pixels";
+    if(field==18)return "valid_depth_loads";if(field==19)return "dirty_depth_stores";
+    if(field==20)return "dirty_words";if(field==21)return "bin_read_bytes";
+    if(field==22)return "bin_reset_bytes";if(field==23)return "core0_strips";
+    return "core1_strips";
+}
+void mc_stage_append_fields(int view,int sample)
+{
+    int j;struct MCStageSample *s=&mc_stage_samples[mc_stage_mode*20+view*5+sample];
+    for(j=0;j<10;j=j+1){mc_bench_char(',');mc_bench_uint(s->counters[j]);}
+    mc_bench_char(',');mc_bench_uint(s->flags);
+    mc_bench_char(',');mc_bench_uint(s->sys_hz);mc_bench_char(',');mc_bench_uint(s->peri_hz);
+    mc_bench_char(',');mc_bench_uint(s->order);mc_bench_text(",1"); /* Optimized tile mode in BOTH sides. */
+    for(j=0;j<9;j=j+1){mc_bench_char(',');mc_bench_uint(s->tile[j]);}
+    mc_bench_char(',');mc_bench_uint((uint)mc_stage_mode);
+    for(j=0;j<MC_STAGE_FIELDS;j=j+1){mc_bench_char(',');mc_bench_uint(s->stage[j]);}
+}
+void mc_stage_format_log(void)
+{
+    int view,pair,j,index;uint *out,*in;
+    mc_bench_format_metadata();
+    mc_bench_meta("stage_warmup","untimed discarded instrumented warm-up only;renderStats(1537);views 1=saved HUD on,2=saved HUD off,3=sky HUD on,4=sky HUD off;warm-up stage times are NOT performance samples");
+    for(view=0;view<4;view=view+1)
+    {
+        mc_world_copy(mc_bench_key,64,"stage_warmup_");mc_world_append_uint(mc_bench_key,64,(uint)view+1);
+        mc_world_append(mc_bench_key,64,"_tile_jobs");mc_bench_meta_uint(mc_bench_key,mc_stage_job_warmup[view][0]);
+        mc_world_copy(mc_bench_key,64,"stage_warmup_");mc_world_append_uint(mc_bench_key,64,(uint)view+1);
+        mc_world_append(mc_bench_key,64,"_queued_triangles");mc_bench_meta_uint(mc_bench_key,mc_stage_job_warmup[view][1]);
+        for(j=0;j<4+MC_STAGE_FIELDS;j=j+1)
+        {
+            mc_world_copy(mc_bench_key,64,"stage_warmup_");
+            mc_world_append_uint(mc_bench_key,64,(uint)view+1);mc_world_append_char(mc_bench_key,64,'_');
+            if(j==0)mc_world_append(mc_bench_key,64,"depth_tests");
+            if(j==1)mc_world_append(mc_bench_key,64,"depth_rejects");
+            if(j==2)mc_world_append(mc_bench_key,64,"mask_tests");
+            if(j==3)mc_world_append(mc_bench_key,64,"pixel_writes");
+            if(j>=4)mc_world_append(mc_bench_key,64,mc_stage_field_name(j-4));
+            mc_bench_meta_uint(mc_bench_key,j<4?mc_stage_pixel_warmup[view][j]:mc_stage_warmup[view][j-4]);
+        }
+    }
+    for(mc_stage_mode=0;mc_stage_mode<2;mc_stage_mode=mc_stage_mode+1)
+        for(view=0;view<4;view=view+1)for(pair=0;pair<5;pair=pair+1)
+        {
+            index=view*5+pair;
+            out=(uint *)&mc_bench_samples[index];in=(uint *)&mc_stage_samples[mc_stage_mode*20+index].sample;
+            for(j=0;j<(int)sizeof(struct MCBenchmarkSample)/4;j=j+1)out[j]=in[j];
+            mc_bench_row("sample",view,pair,0);
+        }
+    mc_bench_meta("complete","1");
+}

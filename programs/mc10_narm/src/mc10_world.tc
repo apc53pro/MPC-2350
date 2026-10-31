@@ -1,0 +1,625 @@
+/*
+ * Minecraft 1.0 World/ChunkProvider read-only bootstrap for NARM.
+ *
+ * The original unbounded ChunkProvider map is adapted to a fixed 3x3
+ * resident window. Missing chunks remain explicit instead of being replaced
+ * by invented terrain; generation, mutation, entities, and ticking are later
+ * source-port milestones.
+ */
+
+#define MC_RUNTIME_RADIUS 1
+#define MC_RUNTIME_SIDE 3
+#define MC_RUNTIME_CHUNKS 9
+#define MC_RUNTIME_OK 0
+#define MC_RUNTIME_ERR_LEVEL -40
+#define MC_RUNTIME_ERR_PLAYER -41
+#define MC_RUNTIME_ERR_DIMENSION -42
+#define MC_RUNTIME_ERR_TRACE -43
+
+void mc_render_static_world_wait(struct MCWorldInfo *world);
+
+struct MCWorldRuntime {
+    struct MCWorldInfo *info;
+    int dimension;
+    int height;
+    int has_no_sky;
+    int is_hell;
+    int multiplayer;
+    float light_brightness[16];
+};
+
+struct MCPlayerState {
+    int present;
+    struct MCJDouble pos_x;
+    struct MCJDouble pos_y;
+    struct MCJDouble pos_z;
+    struct MCJDouble motion_x;
+    struct MCJDouble motion_y;
+    struct MCJDouble motion_z;
+    uint yaw_bits;
+    uint pitch_bits;
+    uint fall_distance_bits;
+    int dimension;
+    int fire;
+    int air;
+    int on_ground;
+    int health;
+    int block_x;
+    int block_y;
+    int block_z;
+    int food;
+    int flying;
+    int mayfly;
+};
+
+struct MCResidentChunk {
+    struct MCChunk chunk;
+    struct MCNibbleArray data;
+    struct MCNibbleArray skylight;
+    struct MCNibbleArray blocklight;
+    int state;
+    int status;
+    int compression;
+    int relocated;
+    uint timestamp;
+    uint raw_bytes;
+};
+
+struct MCPlayerState mc_runtime_player;
+struct MCWorldRuntime mc_runtime_world;
+struct MCResidentChunk mc_runtime_chunks[MC_RUNTIME_CHUNKS];
+char mc_runtime_blocks[MC_RUNTIME_CHUNKS * MC_CHUNK_BLOCK_COUNT];
+char mc_runtime_metadata[MC_RUNTIME_CHUNKS * MC_CHUNK_NIBBLE_BYTES];
+char mc_runtime_skylight[MC_RUNTIME_CHUNKS * MC_CHUNK_NIBBLE_BYTES];
+char mc_runtime_blocklight[MC_RUNTIME_CHUNKS * MC_CHUNK_NIBBLE_BYTES];
+char mc_runtime_heightmap[MC_RUNTIME_CHUNKS * 256];
+int mc_runtime_status;
+int mc_runtime_center_x;
+int mc_runtime_center_z;
+int mc_runtime_loaded;
+int mc_runtime_missing;
+int mc_runtime_invalid;
+int mc_runtime_entities;
+int mc_runtime_tiles;
+int mc_runtime_ticks;
+int mc_runtime_access_ok;
+uint mc_runtime_player_block;
+uint mc_runtime_player_metadata;
+uint mc_runtime_player_sky;
+uint mc_runtime_player_light;
+
+int mc_runtime_list_bits(int compound, char *key, int type, int count,
+                         struct MCJDouble *a, struct MCJDouble *b,
+                         struct MCJDouble *c)
+{
+    int list = mc_nbt_compound_find(compound, key);
+    int tag;
+    if (list < 0 || mc_nbt_tags[list].type != MC_NBT_LIST ||
+        mc_nbt_tags[list].list_type != type ||
+        mc_nbt_list_tag_count(list) < count) return 0;
+    tag = mc_nbt_list_tag_at(list, 0);
+    if (tag < 0 || mc_nbt_tags[tag].type != type) return 0;
+    a->hi = mc_nbt_tags[tag].hi; a->lo = mc_nbt_tags[tag].lo;
+    tag = mc_nbt_list_tag_at(list, 1);
+    if (tag < 0 || mc_nbt_tags[tag].type != type) return 0;
+    b->hi = mc_nbt_tags[tag].hi; b->lo = mc_nbt_tags[tag].lo;
+    if (count > 2)
+    {
+        tag = mc_nbt_list_tag_at(list, 2);
+        if (tag < 0 || mc_nbt_tags[tag].type != type) return 0;
+        c->hi = mc_nbt_tags[tag].hi; c->lo = mc_nbt_tags[tag].lo;
+    }
+    return 1;
+}
+
+int mc_runtime_double_abs_greater(struct MCJDouble *value, uint hi, uint lo)
+{
+    uint magnitude_hi = value->hi & 0x7fffffff;
+    uint exponent = magnitude_hi & 0x7ff00000;
+    if (exponent == 0x7ff00000 &&
+        ((magnitude_hi & 0xfffff) != 0 || value->lo != 0)) return 0;
+    if (magnitude_hi != hi) return magnitude_hi > hi;
+    return value->lo > lo;
+}
+
+void mc_runtime_sanitize_motion(struct MCJDouble *value)
+{
+    /* Entity.readFromNBT clamps finite |motion| > 10.0 to zero. */
+    if (mc_runtime_double_abs_greater(value, 0x40240000, 0))
+    {
+        value->hi = 0;
+        value->lo = 0;
+    }
+}
+
+int mc_runtime_load_player(struct MCWorldInfo *world)
+{
+    int root;
+    int data;
+    int player;
+    int result;
+    struct MCJDouble yaw;
+    struct MCJDouble pitch;
+    struct MCJDouble unused;
+    mc_runtime_player.present = 0;
+#ifdef MC10_PLAYER_FOUNDATION
+    /* Player inventory owns its tag bytes before region reads reuse the NBT pool. */
+    mc_inventory_load_player_nbt(-1);
+#endif
+    mc_runtime_player.food=20;mc_runtime_player.flying=0;mc_runtime_player.mayfly=0;
+    mc_runtime_player.health=20;mc_runtime_player.on_ground=0;
+    mc_runtime_player.yaw_bits=0;mc_runtime_player.pitch_bits=0;
+    mc_runtime_player.motion_x.lo=0;mc_runtime_player.motion_x.hi=0;
+    mc_runtime_player.motion_y.lo=0;mc_runtime_player.motion_y.hi=0;
+    mc_runtime_player.motion_z.lo=0;mc_runtime_player.motion_z.hi=0;
+    mc_runtime_player.fall_distance_bits=0;
+    result = mc_world_load_path(world->folder, "level.dat", &root);
+    if (result >= 0)
+    {
+        data = mc_nbt_compound_find(root, "Data");
+        if (data < 0 || mc_nbt_tags[data].type != MC_NBT_COMPOUND)
+            result = MC_NBT_ERR_TYPE;
+    }
+    if (result < 0)
+    {
+        result = mc_world_load_path(world->folder, "level.dat_old", &root);
+        if (result >= 0)
+        {
+            data = mc_nbt_compound_find(root, "Data");
+            if (data < 0 || mc_nbt_tags[data].type != MC_NBT_COMPOUND)
+                result = MC_NBT_ERR_TYPE;
+        }
+    }
+    if (result < 0) return MC_RUNTIME_ERR_LEVEL;
+    player = mc_nbt_compound_find(data, "Player");
+    if (player < 0) return MC_RUNTIME_OK;
+    if (mc_nbt_tags[player].type != MC_NBT_COMPOUND)
+        return MC_RUNTIME_ERR_PLAYER;
+    if (!mc_runtime_list_bits(player, "Pos", MC_NBT_DOUBLE, 3,
+                              &mc_runtime_player.pos_x,
+                              &mc_runtime_player.pos_y,
+                              &mc_runtime_player.pos_z) ||
+        !mc_runtime_list_bits(player, "Motion", MC_NBT_DOUBLE, 3,
+                              &mc_runtime_player.motion_x,
+                              &mc_runtime_player.motion_y,
+                              &mc_runtime_player.motion_z) ||
+        !mc_runtime_list_bits(player, "Rotation", MC_NBT_FLOAT, 2,
+                              &yaw, &pitch, &unused))
+        return MC_RUNTIME_ERR_PLAYER;
+    mc_runtime_player.yaw_bits = yaw.lo;
+    mc_runtime_player.pitch_bits = pitch.lo;
+    mc_runtime_sanitize_motion(&mc_runtime_player.motion_x);
+    mc_runtime_sanitize_motion(&mc_runtime_player.motion_y);
+    mc_runtime_sanitize_motion(&mc_runtime_player.motion_z);
+    mc_runtime_player.fall_distance_bits = 0;
+    mc_nbt_get_float_bits(player, "FallDistance",
+                          &mc_runtime_player.fall_distance_bits);
+    mc_runtime_player.dimension = mc_world_get_int_default(player,
+                                                            "Dimension", 0);
+    mc_runtime_player.fire = 0;
+    mc_nbt_get_short(player, "Fire", &mc_runtime_player.fire);
+    mc_runtime_player.air = 0;
+    mc_nbt_get_short(player, "Air", &mc_runtime_player.air);
+    mc_runtime_player.on_ground = 0;
+    mc_nbt_get_boolean(player, "OnGround", &mc_runtime_player.on_ground);
+    mc_runtime_player.health = 0;
+    mc_nbt_get_short(player, "Health", &mc_runtime_player.health);
+    mc_runtime_player.food=mc_world_get_int_default(player,"foodLevel",20);
+    result=mc_nbt_compound_find(player,"abilities");
+    if(result>=0 && mc_nbt_tags[result].type==MC_NBT_COMPOUND)
+    {mc_nbt_get_boolean(result,"flying",&mc_runtime_player.flying);mc_nbt_get_boolean(result,"mayfly",&mc_runtime_player.mayfly);}
+    mc_runtime_player.block_x =
+        mc_java_double_floor_i32(&mc_runtime_player.pos_x);
+    mc_runtime_player.block_y =
+        mc_java_double_floor_i32(&mc_runtime_player.pos_y);
+    mc_runtime_player.block_z =
+        mc_java_double_floor_i32(&mc_runtime_player.pos_z);
+#ifdef MC10_PLAYER_FOUNDATION
+    if(!mc_inventory_load_player_nbt(player))return MC_RUNTIME_ERR_PLAYER;
+#endif
+    mc_runtime_player.present = 1;
+    return MC_RUNTIME_OK;
+}
+
+struct MCResidentChunk *mc_runtime_find_chunk(int chunk_x, int chunk_z)
+{
+    int i;
+    for (i = 0; i < MC_RUNTIME_CHUNKS; i = i + 1)
+        if (mc_runtime_chunks[i].state == 1 &&
+            mc_chunk_is_at_location(&mc_runtime_chunks[i].chunk,
+                                    chunk_x, chunk_z))
+            return &mc_runtime_chunks[i];
+    return 0;
+}
+
+int mc_runtime_chunk_exists(int chunk_x, int chunk_z)
+{
+    return mc_runtime_find_chunk(chunk_x, chunk_z) != 0;
+}
+
+int mc_runtime_try_get_block(int x, int y, int z, uint *value)
+{
+    struct MCResidentChunk *resident;
+    *value = 0;
+    if (x < -30000000 || z < -30000000 || x >= 30000000 || z >= 30000000 ||
+        y < 0 || y >= MC_WORLD_HEIGHT) return 1;
+    resident = mc_runtime_find_chunk(mc_region_floor_div(x, 16),
+                                     mc_region_floor_div(z, 16));
+    if (resident == 0) return 0;
+    *value = mc_chunk_get_block_id(&resident->chunk, x & 15, y, z & 15);
+    return 1;
+}
+
+int mc_runtime_try_get_metadata(int x, int y, int z, uint *value)
+{
+    struct MCResidentChunk *resident;
+    *value = 0;
+    if (x < -30000000 || z < -30000000 || x >= 30000000 || z >= 30000000 ||
+        y < 0 || y >= MC_WORLD_HEIGHT) return 1;
+    resident = mc_runtime_find_chunk(mc_region_floor_div(x, 16),
+                                     mc_region_floor_div(z, 16));
+    if (resident == 0) return 0;
+    *value = mc_chunk_get_block_metadata(&resident->chunk,
+                                         x & 15, y, z & 15);
+    return 1;
+}
+
+int mc_runtime_try_get_height(int x, int z, uint *value)
+{
+    struct MCResidentChunk *resident;
+    *value = 0;
+    if (x < -30000000 || z < -30000000 || x >= 30000000 || z >= 30000000)
+        return 1;
+    resident = mc_runtime_find_chunk(mc_region_floor_div(x, 16),
+                                     mc_region_floor_div(z, 16));
+    if (resident == 0) return 0;
+    *value = mc_chunk_get_height_value(&resident->chunk, x & 15, z & 15);
+    return 1;
+}
+
+int mc_runtime_try_get_saved_light(int sky, int x, int y, int z, uint *value)
+{
+    struct MCResidentChunk *resident;
+    *value = sky ? 15 : 0;
+    if (y < 0) y = 0;
+    if (y >= MC_WORLD_HEIGHT) y = MC_WORLD_HEIGHT - 1;
+    if (x < -30000000 || z < -30000000 || x >= 30000000 || z >= 30000000)
+        return 1;
+    resident = mc_runtime_find_chunk(mc_region_floor_div(x, 16),
+                                     mc_region_floor_div(z, 16));
+    if (resident == 0) { *value = 0; return 0; }
+    *value = mc_nibble_array_get(sky ? &resident->skylight :
+                                       &resident->blocklight,
+                                 x & 15, y, z & 15);
+    return 1;
+}
+
+int mc_runtime_verify_access(void)
+{
+    int i;
+    int x;
+    int z;
+    uint actual;
+    uint expected;
+    struct MCResidentChunk *resident;
+    for (i = 0; i < MC_RUNTIME_CHUNKS; i = i + 1)
+    {
+        resident = &mc_runtime_chunks[i];
+        if (resident->state != 1) continue;
+        x = resident->chunk.x_position * 16;
+        z = resident->chunk.z_position * 16;
+        expected = mc_chunk_get_block_id(&resident->chunk, 0, 64, 0);
+        if (!mc_runtime_try_get_block(x, 64, z, &actual) ||
+            actual != expected) return 0;
+        expected = mc_chunk_get_block_metadata(&resident->chunk, 15, 64, 15);
+        if (!mc_runtime_try_get_metadata(x + 15, 64, z + 15, &actual) ||
+            actual != expected) return 0;
+        expected = mc_chunk_get_height_value(&resident->chunk, 0, 15);
+        if (!mc_runtime_try_get_height(x, z + 15, &actual) ||
+            actual != expected) return 0;
+        expected = mc_nibble_array_get(&resident->skylight, 15, 64, 0);
+        if (!mc_runtime_try_get_saved_light(1, x + 15, 64, z, &actual) ||
+            actual != expected) return 0;
+        expected = mc_nibble_array_get(&resident->blocklight, 0, 64, 15);
+        if (!mc_runtime_try_get_saved_light(0, x, 64, z + 15, &actual) ||
+            actual != expected) return 0;
+    }
+    return 1;
+}
+
+void mc_runtime_draw_loading(struct MCWorldInfo *world, int loaded);
+
+int mc_runtime_init_world(struct MCWorldInfo *world)
+{
+    int i;
+    float darkness = 0.0f;
+    float level;
+    mc_runtime_world.info = world;
+    mc_runtime_world.dimension = world->dimension;
+    mc_runtime_world.height = MC_WORLD_HEIGHT;
+    mc_runtime_world.multiplayer = 0;
+    if (world->dimension != 0) return MC_RUNTIME_ERR_DIMENSION;
+    mc_runtime_world.has_no_sky = 0;
+    mc_runtime_world.is_hell = 0;
+    for (i = 0; i <= 15; i = i + 1)
+    {
+        level = 1.0f - (float)i / 15.0f;
+        mc_runtime_world.light_brightness[i] =
+            (1.0f - level) / (level * 3.0f + 1.0f) *
+            (1.0f - darkness) + darkness;
+    }
+    return MC_RUNTIME_OK;
+}
+
+int mc_runtime_bootstrap(struct MCWorldInfo *world)
+{
+    int dx;
+    int dz;
+    int index = 0;
+    int result;
+    struct MCResidentChunk *resident;
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("bootstrap_enter",0))return MC_RUNTIME_ERR_TRACE;
+#endif
+    result = mc_runtime_init_world(world);
+    if (result < 0) return result;
+    result = mc_runtime_load_player(world);
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("player_loaded",result))return MC_RUNTIME_ERR_TRACE;
+#endif
+    if (result < 0) return result;
+    if (mc_runtime_player.present && mc_runtime_player.dimension != 0)
+        return MC_RUNTIME_ERR_DIMENSION;
+    if (mc_runtime_player.present)
+    {
+        mc_runtime_center_x = mc_region_floor_div(mc_runtime_player.block_x, 16);
+        mc_runtime_center_z = mc_region_floor_div(mc_runtime_player.block_z, 16);
+    }
+    else
+    {
+        mc_runtime_player.block_x = world->spawn_x;
+        mc_runtime_player.block_y = world->spawn_y;
+        mc_runtime_player.block_z = world->spawn_z;
+        mc_runtime_center_x = mc_region_floor_div(world->spawn_x, 16);
+        mc_runtime_center_z = mc_region_floor_div(world->spawn_z, 16);
+    }
+    mc_runtime_loaded = 0;
+    mc_runtime_missing = 0;
+    mc_runtime_invalid = 0;
+    mc_runtime_entities = 0;
+    mc_runtime_tiles = 0;
+    mc_runtime_ticks = 0;
+    for (dz = -MC_RUNTIME_RADIUS; dz <= MC_RUNTIME_RADIUS; dz = dz + 1)
+        for (dx = -MC_RUNTIME_RADIUS; dx <= MC_RUNTIME_RADIUS; dx = dx + 1)
+        {
+#ifdef MC10_STARTUP_DIAGNOSTIC
+            mc_startup_chunk=index+1;
+            mc_startup_x=mc_runtime_center_x+dx;mc_startup_z=mc_runtime_center_z+dz;
+            if(!mc_startup_checkpoint("chunk_display_begin",0))return MC_RUNTIME_ERR_TRACE;
+#endif
+            mc_runtime_draw_loading(world, index);
+#ifdef MC10_STARTUP_DIAGNOSTIC
+            if(!mc_startup_checkpoint("chunk_load_begin",0))return MC_RUNTIME_ERR_TRACE;
+#endif
+            resident = &mc_runtime_chunks[index];
+            resident->state = 0;
+            resident->status = mc_region_load_chunk(
+                world, mc_runtime_center_x + dx, mc_runtime_center_z + dz,
+                &resident->chunk, &resident->data, &resident->skylight,
+                &resident->blocklight,
+                &mc_runtime_blocks[index * MC_CHUNK_BLOCK_COUNT],
+                &mc_runtime_metadata[index * MC_CHUNK_NIBBLE_BYTES],
+                &mc_runtime_skylight[index * MC_CHUNK_NIBBLE_BYTES],
+                &mc_runtime_blocklight[index * MC_CHUNK_NIBBLE_BYTES],
+                &mc_runtime_heightmap[index * 256]);
+#ifdef MC10_STARTUP_DIAGNOSTIC
+            if(!mc_startup_checkpoint("chunk_load_return",resident->status))return MC_RUNTIME_ERR_TRACE;
+#endif
+            if (resident->status == MC_REGION_OK)
+            {
+                resident->state = 1;
+                resident->compression = mc_region_compression;
+                resident->relocated = mc_region_relocated;
+                resident->timestamp = mc_region_timestamp;
+                resident->raw_bytes = mc_region_raw_bytes;
+                mc_runtime_loaded = mc_runtime_loaded + 1;
+                mc_runtime_entities = mc_runtime_entities +
+                                      resident->chunk.entity_count;
+                mc_runtime_tiles = mc_runtime_tiles +
+                                   resident->chunk.tile_entity_count;
+                mc_runtime_ticks = mc_runtime_ticks +
+                                   resident->chunk.tile_tick_count;
+            }
+            else if (resident->status == MC_REGION_ERR_MISSING)
+            {
+                resident->state = 2;
+                mc_runtime_missing = mc_runtime_missing + 1;
+            }
+            else
+            {
+                resident->state = 3;
+                mc_runtime_invalid = mc_runtime_invalid + 1;
+            }
+            index = index + 1;
+        }
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("verify_access_begin",mc_runtime_loaded))return MC_RUNTIME_ERR_TRACE;
+#endif
+    mc_runtime_access_ok = mc_runtime_verify_access();
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("verify_access_done",mc_runtime_access_ok))return MC_RUNTIME_ERR_TRACE;
+#endif
+    mc_runtime_player_block = 0;
+    mc_runtime_player_metadata = 0;
+    mc_runtime_player_sky = 0;
+    mc_runtime_player_light = 0;
+    mc_runtime_try_get_block(mc_runtime_player.block_x,
+                             mc_runtime_player.block_y,
+                             mc_runtime_player.block_z,
+                             &mc_runtime_player_block);
+    mc_runtime_try_get_metadata(mc_runtime_player.block_x,
+                                mc_runtime_player.block_y,
+                                mc_runtime_player.block_z,
+                                &mc_runtime_player_metadata);
+    mc_runtime_try_get_saved_light(1, mc_runtime_player.block_x,
+                                   mc_runtime_player.block_y,
+                                   mc_runtime_player.block_z,
+                                   &mc_runtime_player_sky);
+    mc_runtime_try_get_saved_light(0, mc_runtime_player.block_x,
+                                   mc_runtime_player.block_y,
+                                   mc_runtime_player.block_z,
+                                   &mc_runtime_player_light);
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("bootstrap_done",mc_runtime_loaded))return MC_RUNTIME_ERR_TRACE;
+#endif
+    return mc_runtime_loaded > 0 ? MC_RUNTIME_OK : MC_REGION_ERR_MISSING;
+}
+
+void mc_runtime_draw_grid(void)
+{
+    int i;
+    int x;
+    int z;
+    uint color;
+    for (i = 0; i < MC_RUNTIME_CHUNKS; i = i + 1)
+    {
+        x = 226 + (i % MC_RUNTIME_SIDE) * 25;
+        z = 57 + (i / MC_RUNTIME_SIDE) * 25;
+        color = mc_runtime_chunks[i].state == 1 ? MC_COLOR_GREEN :
+                (mc_runtime_chunks[i].state == 2 ? MC_COLOR_DARK :
+                                                   MC_COLOR_RED);
+        narm_half_fill_rect(x, z, x + 21, z + 21, color);
+        if (i == 4)
+        {
+            narm_half_line(x, z, x + 20, z, MC_COLOR_YELLOW);
+            narm_half_line(x, z, x, z + 20, MC_COLOR_YELLOW);
+            narm_half_line(x + 20, z, x + 20, z + 20, MC_COLOR_YELLOW);
+            narm_half_line(x, z + 20, x + 20, z + 20, MC_COLOR_YELLOW);
+        }
+    }
+    mc_menu_draw_string("resident chunks", 220, 137, 0xa0a0a0);
+}
+
+void mc_runtime_draw_loading(struct MCWorldInfo *world, int loaded)
+{
+#ifdef MC10_PLAYER_FOUNDATION
+    /* LoadingScreenRenderer's original layout at this port's 320x240 size.
+     * Keep this image during cache preparation; no separate debug stage. */
+    mc_options_draw_background();
+    mc_menu_draw_centered_string("Loading level",160,100,0xffffff);
+    mc_menu_draw_centered_string("Building terrain",160,124,0xffffff);
+    narm_half_fill_rect(110,136,209,137,mc_menu_rgb888_to_rgb332(0x808080));
+    if(loaded>0)narm_half_fill_rect(110,136,109+loaded*100/9,137,mc_menu_rgb888_to_rgb332(0x80ff80));
+#else
+    mc_world_draw_tiled_background();
+    mc_menu_draw_centered_string(world->level_name, 160, 55, 0xffffff);
+    mc_menu_draw_centered_string("Building terrain", 160, 86, 0xffffff);
+    mc_world_line[0] = 0;
+    mc_world_append(mc_world_line, 160, "Loading resident chunk ");
+    mc_world_append_int(mc_world_line, 160, loaded + 1);
+    mc_world_append(mc_world_line, 160, " of 9");
+    mc_menu_draw_centered_string(mc_world_line, 160, 108, 0xa0a0a0);
+    narm_half_fill_rect(47, 132, 273, 140, MC_COLOR_DARK);
+    narm_half_fill_rect(49, 134, 49 + loaded * 222 / 9, 138,
+                        MC_COLOR_GREEN);
+#endif
+    narm_half_present();
+}
+
+char *mc_runtime_error_text(int status)
+{
+    if(status==-49)return "BLOCK MESH ASSET LOAD FAILED";
+    if (status == MC_RUNTIME_ERR_LEVEL) return "WORLD NBT LOAD FAILED";
+    if (status == MC_RUNTIME_ERR_PLAYER) return "PLAYER NBT INVALID";
+    if (status == MC_RUNTIME_ERR_DIMENSION) return "DIMENSION NOT PORTED";
+    return mc_region_error_text(status);
+}
+
+void mc_runtime_draw_status(struct MCWorldInfo *world)
+{
+    mc_world_draw_tiled_background();
+    mc_menu_draw_centered_string(world->level_name, 160, 9, 0xffffff);
+    if (mc_runtime_status < 0)
+    {
+        mc_menu_draw_centered_string("WORLD BOOTSTRAP FAILED", 160, 34,
+                                     0xff5555);
+        mc_menu_draw_centered_string(mc_runtime_error_text(mc_runtime_status),
+                                     160, 55, 0xffffff);
+    }
+    else
+    {
+        mc_menu_draw_centered_string("WORLD BOOTSTRAP READY", 160, 25,
+                                     0x55ff55);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Player block: ");
+        mc_world_append_int(mc_world_line, 160, mc_runtime_player.block_x);
+        mc_world_append(mc_world_line, 160, ", ");
+        mc_world_append_int(mc_world_line, 160, mc_runtime_player.block_y);
+        mc_world_append(mc_world_line, 160, ", ");
+        mc_world_append_int(mc_world_line, 160, mc_runtime_player.block_z);
+        mc_menu_draw_string(mc_world_line, 8, 47, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Player chunk: ");
+        mc_world_append_int(mc_world_line, 160, mc_runtime_center_x);
+        mc_world_append(mc_world_line, 160, ", ");
+        mc_world_append_int(mc_world_line, 160, mc_runtime_center_z);
+        mc_menu_draw_string(mc_world_line, 8, 61, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Resident: ");
+        mc_world_append_int(mc_world_line, 160, mc_runtime_loaded);
+        mc_world_append(mc_world_line, 160, "/9  Missing: ");
+        mc_world_append_int(mc_world_line, 160, mc_runtime_missing);
+        mc_menu_draw_string(mc_world_line, 8, 75, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Invalid: ");
+        mc_world_append_int(mc_world_line, 160, mc_runtime_invalid);
+        mc_world_append(mc_world_line, 160, "  Access: ");
+        mc_world_append(mc_world_line, 160, mc_runtime_access_ok ? "OK" : "FAIL");
+        mc_menu_draw_string(mc_world_line, 8, 89,
+                            mc_runtime_access_ok ? 0x55ff55 : 0xff5555);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Block: ");
+        mc_world_append_uint(mc_world_line, 160, mc_runtime_player_block);
+        mc_world_append(mc_world_line, 160, ":");
+        mc_world_append_uint(mc_world_line, 160, mc_runtime_player_metadata);
+        mc_world_append(mc_world_line, 160, "  Light S/B: ");
+        mc_world_append_uint(mc_world_line, 160, mc_runtime_player_sky);
+        mc_world_append(mc_world_line, 160, "/");
+        mc_world_append_uint(mc_world_line, 160, mc_runtime_player_light);
+        mc_menu_draw_string(mc_world_line, 8, 103, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Entities: ");
+        mc_world_append_int(mc_world_line, 160, mc_runtime_entities);
+        mc_world_append(mc_world_line, 160, "  Tiles: ");
+        mc_world_append_int(mc_world_line, 160, mc_runtime_tiles);
+        mc_menu_draw_string(mc_world_line, 8, 117, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Ticks: ");
+        mc_world_append_int(mc_world_line, 160, mc_runtime_ticks);
+        mc_world_append(mc_world_line, 160, "  Player NBT: ");
+        mc_world_append(mc_world_line, 160,
+                        mc_runtime_player.present ? "yes" : "spawn fallback");
+        mc_menu_draw_string(mc_world_line, 8, 131, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Yaw bits: ");
+        mc_world_append_hex8(mc_world_line, 160, mc_runtime_player.yaw_bits);
+        mc_menu_draw_string(mc_world_line, 8, 145, 0xa0a0a0);
+        mc_runtime_draw_grid();
+    }
+    mc_menu_draw_centered_string("Read-only world; rendering pending", 160,
+                                 190, 0xffff55);
+    mc_menu_draw_centered_string("Press Escape or Enter", 160, 214, 0xa0a0a0);
+    narm_half_present();
+}
+
+void mc_world_bootstrap_wait(struct MCWorldInfo *world)
+{
+    unsigned key, action, mods, character;
+    mc_runtime_status = mc_runtime_bootstrap(world);
+    if (mc_runtime_status == MC_RUNTIME_OK && mc_runtime_access_ok)
+    {
+        mc_render_static_world_wait(world);
+        return;
+    }
+    mc_runtime_draw_status(world);
+    for (;;)
+    {
+        while (narm_next_key_event(&key, &action, &mods, &character) > 0)
+            if (action == NARM_KEY_ACTION_PRESS &&
+                (key == NARM_KEY_ESCAPE || key == NARM_KEY_ENTER)) return;
+        if (narm_poll_system_event() == NARM_EVENT_CLOSE_REQUESTED) return;
+        narm_sleep_ms(4);
+    }
+}

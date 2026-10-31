@@ -1,0 +1,503 @@
+/* Minecraft 1.0 EntityRenderer.orientCamera, EntityLiving animation,
+ * RenderLiving/RenderPlayer, ModelBiped/ModelBox and GuiInventory presentation.
+ * Native perspective and RGB332 are platform adaptations; state/shape/UV and
+ * tick transitions are derived from the owned source, never proxy gameplay.
+ */
+#ifdef MC10_WORLD_SYSTEMS
+int mc_third_mode,mc_third_frame_mode,mc_third_status,mc_third_faces;
+int mc_third_current_frame_mode(void){return mc_third_frame_mode;}
+float mc_third_distance=4,mc_third_frame_partial;
+float mc_third_current_frame_partial(void){return mc_third_frame_partial;}
+float mc_tp_yaw,mc_tp_previous_yaw,mc_tp_limb,mc_tp_old_limb,mc_tp_limb_phase;
+float mc_tp_ticks,mc_tp_frame_yaw,mc_tp_frame_pitch,mc_tp_frame_head;
+float mc_tp_frame_limb,mc_tp_frame_phase,mc_tp_frame_age,mc_tp_frame_swing;
+float mc_tp_frame_position[3],mc_tp_frame_camera[18];
+float mc_tp_frame_lights[6],mc_tp_frame_light;
+int mc_tp_frame_sneak,mc_tp_frame_armor[4],mc_tp_frame_captured;
+int mc_tp_frame_armor_damage[4];
+struct MCItemStack mc_tp_frame_item;
+struct MCJDouble mc_tp_old_position[3],mc_tp_tick_position[3];
+int mc_third_interpolated_eye_y(float partial)
+{
+    int old,current;
+    current=mc_fp_bits(mc_tp_tick_position[1].lo,mc_tp_tick_position[1].hi);
+    if(partial==1.0f)return current;
+    old=mc_fp_bits(mc_tp_old_position[1].lo,mc_tp_old_position[1].hi);
+    return mc_fp_add(old,mc_fp_mul(mc_fp_sub(current,old),mc_fp_f32(partial)));
+}
+float mc_tp_rot[21],mc_tp_pivot[21],mc_tp_base[16];
+uint mc_tp_armor_pixels[512],mc_tp_armor_masks[64];
+uint mc_tp_inventory_grass332=0xff;
+uint mc_tp_inventory_grass(void){return mc_tp_inventory_grass332;}
+int mc_tp_armor_ready,mc_tp_armor_id=-1,mc_tp_armor_layer;
+int mc_tp_gui_left,mc_tp_gui_top,mc_tp_gui_width,mc_tp_gui_height,mc_tp_gui_output;
+uint *mc_tp_gui_pixels,*mc_tp_gui_masks;
+uint mc_tp_object_atlas[2048],mc_tp_object_mask[256];
+int mc_tp_object_kind,mc_tp_object_width,mc_tp_object_height;
+float mc_tp_object_base[16];
+int mc_tp_object_load(int kind);
+
+/* Finite fdlibm atan2 branches, including signed axes, exponent-ratio
+ * shortcuts and the pi-low correction. atan is the existing fdlibm port. */
+int mc_tp_atan2(int y,int x)
+{
+    int angle,k;uint sy=mc_fp_values[y].hi>>31,sx=mc_fp_values[x].hi>>31;
+    int pi=mc_fp_bits(0x54442d18,0x400921fb);
+    int pi_low=mc_fp_bits(0x33145c07,0x3ca1a626);
+    if(mc_fp_zero(y))return sx?(sy?mc_fp_neg(pi):pi):y;
+    if(mc_fp_zero(x)){angle=mc_fp_bits(0x54442d18,0x3ff921fb);return sy?mc_fp_neg(angle):angle;}
+    k=((int)(mc_fp_values[y].hi&0x7fffffff)-(int)(mc_fp_values[x].hi&0x7fffffff))>>20;
+    if(k>60)angle=mc_fp_add(mc_fp_bits(0x54442d18,0x3ff921fb),mc_fp_mul(D05,pi_low));
+    else if(sx&&k< -60)angle=D0;
+    else angle=mc_fp_atan(mc_fp_abs(mc_fp_div(y,x)));
+    if(!sx)return sy?mc_fp_neg(angle):angle;
+    return sy?mc_fp_sub(mc_fp_sub(angle,pi_low),pi):mc_fp_sub(pi,mc_fp_sub(angle,pi_low));
+}
+float mc_tp_wrap(float x)
+{while(x< -180)x=x+360;while(x>=180)x=x-360;return x;}
+void mc_third_init(void)
+{
+    int i;uint offset;char color;mc_third_mode=0;mc_third_frame_mode=0;mc_third_status=0;mc_third_distance=4;
+    mc_tp_yaw=0;mc_tp_previous_yaw=0;mc_tp_limb=0;mc_tp_old_limb=0;mc_tp_limb_phase=0;mc_tp_ticks=0;
+    mc_tp_frame_captured=0;mc_tp_armor_ready=0;mc_tp_armor_id=-1;
+    mc_tp_object_kind=0;
+    mc_tp_projection_active=0;mc_tp_gui_active=0;
+    for(i=0;i<3;i=i+1){mc_tp_tick_position[i].lo=mc_fp_values[i].lo;mc_tp_tick_position[i].hi=mc_fp_values[i].hi;mc_tp_old_position[i].lo=mc_fp_values[i].lo;mc_tp_old_position[i].hi=mc_fp_values[i].hi;}
+    /* BlockGrass.getBlockColor: ColorizerGrass(temperature=.5,humidity=1).
+     * Consume the already converted RGB332 lookup, not a biome substitute. */
+    if(mc_asset_find("misc/grasscolor.png")){offset=mc_asset_read_u32(&mc_asset_record[0],20)+(uint)(127*256+127);if(narm_file_read(&mc_asset_path[0],&color,offset,1,NARM_STORAGE_SD)==1)mc_tp_inventory_grass332=(uint)color&255;}
+}
+void mc_third_cycle(void)
+{mc_third_mode=mc_third_mode+1;if(mc_third_mode>2)mc_third_mode=0;}
+void mc_tp_camera_lights(float *camera)
+{
+    int i;float length=mc_math_sqrt_float(.2f*.2f+1+.7f*.7f),x,y,z;
+    for(i=0;i<2;i=i+1)
+    {x=(i==0?.2f:-.2f)/length;y=1/length;z=(i==0?-.7f:.7f)/length;
+     mc_vm_lights[i*3]=camera[0]*x+camera[1]*y+camera[2]*z;mc_vm_lights[i*3+1]=camera[4]*x+camera[5]*y+camera[6]*z;mc_vm_lights[i*3+2]=0-camera[8]*x-camera[9]*y-camera[10]*z;}
+}
+void mc_third_begin_tick(void)
+{
+    int i;mc_tp_previous_yaw=mc_tp_yaw;mc_tp_old_limb=mc_tp_limb;
+    for(i=0;i<3;i=i+1){mc_tp_old_position[i].lo=mc_fp_values[i].lo;mc_tp_old_position[i].hi=mc_fp_values[i].hi;}
+}
+void mc_third_tick(void)
+{
+    int dx,dz,angle,i;float distance,target,change,relative;mc_fp_reset();
+    dx=mc_fp_sub(0,mc_fp_bits(mc_tp_old_position[0].lo,mc_tp_old_position[0].hi));
+    dz=mc_fp_sub(2,mc_fp_bits(mc_tp_old_position[2].lo,mc_tp_old_position[2].hi));
+    distance=mc_fp_to_f32(mc_fp_sqrt(mc_fp_add(mc_fp_mul(dx,dx),mc_fp_mul(dz,dz))));
+    target=distance*4;if(target>1)target=1;mc_tp_limb=mc_tp_limb+(target-mc_tp_limb)*.4f;mc_tp_limb_phase=mc_tp_limb_phase+mc_tp_limb;
+    target=mc_tp_yaw;
+    if(distance>.05f){angle=mc_tp_atan2(dz,dx);target=mc_fp_to_f32(angle)*180.0f/3.141592741f-90.0f;}
+    if(mc_vm_swing>0)target=mc_player.yaw;
+    change=mc_tp_wrap(target-mc_tp_yaw);mc_tp_yaw=mc_tp_yaw+change*.3f;
+    relative=mc_tp_wrap(mc_player.yaw-mc_tp_yaw);
+    if(relative< -75)relative=-75;if(relative>=75)relative=75;
+    mc_tp_yaw=mc_player.yaw-relative;if(relative*relative>2500)mc_tp_yaw=mc_tp_yaw+relative*.2f;
+    while(mc_tp_yaw-mc_tp_previous_yaw< -180)mc_tp_previous_yaw=mc_tp_previous_yaw-360;
+    while(mc_tp_yaw-mc_tp_previous_yaw>=180)mc_tp_previous_yaw=mc_tp_previous_yaw+360;
+    for(i=0;i<3;i=i+1){mc_tp_tick_position[i].lo=mc_fp_values[i].lo;mc_tp_tick_position[i].hi=mc_fp_values[i].hi;}
+    mc_tp_ticks=mc_tp_ticks+1;
+}
+
+/* Ray segments are binary64, including plane intersection cutoffs, tie order
+ * and source DDA mutation. Checkpoints reclaim temporaries every cell. */
+int mc_tp_ray_box(int *start,int *end,int bx,int by,int bz,int *hit)
+{
+    uint id=0,metadata=0;float bounds[6];int low[3],high[3],delta[3],local[3],candidate[3];
+    int axis,side,i,j,t,dist,best=0,found=0,ok;int coords[3];coords[0]=bx;coords[1]=by;coords[2]=bz;
+    if(!mc_runtime_try_get_block(bx,by,bz,&id)){mc_third_status=1;return 0;}
+    if(!id)return 0;if(!mc_runtime_try_get_metadata(bx,by,bz,&metadata))return 0;
+    if(!mc_block_ray_collidable((int)id,(int)metadata,0))return 0;
+    mc_block_bounds_at(id,metadata,bx,by,bz,&bounds[0],&bounds[1],&bounds[2],&bounds[3],&bounds[4],&bounds[5]);
+    for(i=0;i<3;i=i+1){low[i]=mc_fp_f32(bounds[i]);high[i]=mc_fp_f32(bounds[i+3]);local[i]=mc_fp_sub(start[i],mc_fp_i32(coords[i]));delta[i]=mc_fp_sub(end[i],start[i]);}
+    for(axis=0;axis<3;axis=axis+1)for(side=0;side<2;side=side+1)
+    {
+        if(mc_fp_lt(mc_fp_mul(delta[axis],delta[axis]),mc_fp_f32(.0000001f)))continue;
+        t=mc_fp_div(mc_fp_sub(side?high[axis]:low[axis],local[axis]),delta[axis]);
+        if(mc_fp_lt(t,D0)||mc_fp_gt(t,D1))continue;
+        for(i=0;i<3;i=i+1)candidate[i]=mc_fp_add(local[i],mc_fp_mul(delta[i],t));
+        ok=1;for(i=0;i<3;i=i+1)if(i!=axis&&(mc_fp_lt(candidate[i],low[i])||mc_fp_gt(candidate[i],high[i])))ok=0;
+        if(!ok)continue;dist=D0;
+        for(i=0;i<3;i=i+1){j=mc_fp_sub(candidate[i],local[i]);dist=mc_fp_add(dist,mc_fp_mul(j,j));}
+        /* Block chooses by Vec3D.distanceTo, whose sqrt is narrowed to float;
+         * compare that value, including source ties, not squared doubles. */
+        dist=mc_fp_f32(mc_fp_to_f32(mc_fp_sqrt(dist)));
+        if(!found||mc_fp_lt(dist,best)){found=1;best=dist;for(i=0;i<3;i=i+1)hit[i]=mc_fp_add(candidate[i],mc_fp_i32(coords[i]));}
+    }
+    return found;
+}
+int mc_tp_ray(int *input,int *end,int *hit)
+{
+    int start[3],cell[3],target[3],plane[3],fraction[3],delta[3],axis,side,i,count=201,mark=mc_fp_next;
+    struct MCJDouble saved[3];for(i=0;i<3;i=i+1){start[i]=input[i];cell[i]=mc_fp_floor(start[i]);target[i]=mc_fp_floor(end[i]);}
+    if(mc_tp_ray_box(start,end,cell[0],cell[1],cell[2],hit))return 1;
+    while(count>0)
+    {
+        count=count-1;if(cell[0]==target[0]&&cell[1]==target[1]&&cell[2]==target[2])return 0;
+        for(i=0;i<3;i=i+1){saved[i].lo=mc_fp_values[start[i]].lo;saved[i].hi=mc_fp_values[start[i]].hi;}
+        mc_fp_next=mark;for(i=0;i<3;i=i+1)start[i]=mc_fp_bits(saved[i].lo,saved[i].hi);
+        for(i=0;i<3;i=i+1)
+        {
+            fraction[i]=mc_fp_i32(999);plane[i]=mc_fp_i32(cell[i]+(target[i]>cell[i]?1:0));delta[i]=mc_fp_sub(end[i],start[i]);
+            if(target[i]!=cell[i])fraction[i]=mc_fp_div(mc_fp_sub(plane[i],start[i]),delta[i]);
+        }
+        axis=mc_fp_lt(fraction[0],fraction[1])&&mc_fp_lt(fraction[0],fraction[2])?0:(mc_fp_lt(fraction[1],fraction[2])?1:2);
+        side=target[axis]>cell[axis]?0:1;
+        for(i=0;i<3;i=i+1)start[i]=i==axis?plane[i]:mc_fp_add(start[i],mc_fp_mul(delta[i],fraction[axis]));
+        for(i=0;i<3;i=i+1)cell[i]=mc_fp_floor(start[i]);if(side)cell[axis]=cell[axis]-1;
+        if(mc_tp_ray_box(start,end,cell[0],cell[1],cell[2],hit))return 1;
+    }
+    return 0;
+}
+void mc_third_adjust_camera(void)
+{
+    float yaw,pitch,sy,cy,sp,cp,offset[3],ray_offset[3],distance=4,dx,dy,dz,hit_distance;
+    int eye[3],start[3],end[3],hit[3],i,ray,mark,delta,total;float camera[3];
+    mc_third_frame_mode=mc_third_mode;mc_third_distance=4;mc_third_status=0;
+    if(!mc_third_mode)return;
+    yaw=mc_render_float_from_bits(mc_runtime_player.yaw_bits);pitch=mc_render_float_from_bits(mc_runtime_player.pitch_bits);
+    if(mc_third_mode==2)pitch=pitch+180;
+    sy=mc_math_sin(yaw/180.0f*3.141592741f);cy=mc_math_cos(yaw/180.0f*3.141592741f);
+    sp=mc_math_sin(pitch/180.0f*3.141592741f);cp=mc_math_cos(pitch/180.0f*3.141592741f);
+    offset[0]=-sy*cp*4;offset[1]=-sp*4;offset[2]=cy*cp*4;
+    mc_fp_reset();eye[0]=mc_fp_bits(mc_runtime_player.pos_x.lo,mc_runtime_player.pos_x.hi);eye[1]=mc_fp_bits(mc_runtime_player.pos_y.lo,mc_runtime_player.pos_y.hi);eye[2]=mc_fp_bits(mc_runtime_player.pos_z.lo,mc_runtime_player.pos_z.hi);mark=mc_fp_next;
+    for(ray=0;ray<8;ray=ray+1)
+    {
+        mc_fp_next=mark;ray_offset[0]=(float)((ray&1)*2-1)*.1f;ray_offset[1]=(float)(((ray>>1)&1)*2-1)*.1f;ray_offset[2]=(float)(((ray>>2)&1)*2-1)*.1f;
+        for(i=0;i<3;i=i+1){start[i]=mc_fp_add(eye[i],mc_fp_f32(ray_offset[i]));end[i]=mc_fp_add(mc_fp_sub(eye[i],mc_fp_mul(mc_fp_f32(i==0?-sy*cp:(i==1?-sp:cy*cp)),mc_fp_i32(4))),mc_fp_f32(ray_offset[i]));}
+        /* Preserve the source's extra Z corner offset on endpoint X. */
+        end[0]=mc_fp_add(end[0],mc_fp_f32(ray_offset[2]));
+        if(mc_tp_ray(start,end,hit))
+        {
+            total=D0;for(i=0;i<3;i=i+1){delta=mc_fp_sub(hit[i],eye[i]);total=mc_fp_add(total,mc_fp_mul(delta,delta));}
+            /* Vec3D.distanceTo returns a MathHelper float sqrt promoted to double. */
+            hit_distance=mc_fp_to_f32(mc_fp_sqrt(total));if(hit_distance<distance)distance=hit_distance;
+        }
+    }
+    mc_third_distance=distance;
+    /* Front mode rotates the view 180 around Y after inverting orbit pitch:
+     * the resulting look is the opposite of the unchanged player direction. */
+    if(mc_third_mode==2){yaw=yaw+180;pitch=0-(pitch-180);}else pitch=mc_render_float_from_bits(mc_runtime_player.pitch_bits);
+    sy=narm_sin(yaw*.017453292519943295f);cy=narm_cos(yaw*.017453292519943295f);sp=narm_sin(pitch*.017453292519943295f);cp=narm_cos(pitch*.017453292519943295f);
+    mc_render_camera[0]=-cy;mc_render_camera[1]=0;mc_render_camera[2]=-sy;
+    mc_render_camera[4]=-sy*sp;mc_render_camera[5]=cp;mc_render_camera[6]=cy*sp;
+    mc_render_camera[8]=-sy*cp;mc_render_camera[9]=-sp;mc_render_camera[10]=cy*cp;
+    /* The ray orbit uses the quantized MathHelper table, but the real camera
+     * translation is GL translate -distance on the continuous view axis. */
+    for(i=0;i<3;i=i+1)camera[i]=mc_render_double_to_float(i==0?&mc_runtime_player.pos_x:(i==1?&mc_runtime_player.pos_y:&mc_runtime_player.pos_z))-mc_render_camera[8+i]*distance;
+    mc_render_view_x=camera[0]-(float)mc_render_origin_x;mc_render_view_y=camera[1];mc_render_view_z=camera[2]-(float)mc_render_origin_z;
+    for(i=0;i<3;i=i+1)mc_render_camera[i*4+3]=0-mc_render_view_x*mc_render_camera[i*4]-mc_render_view_y*mc_render_camera[i*4+1]-mc_render_view_z*mc_render_camera[i*4+2];
+}
+
+/* ModelBiped's seven parts: XYZ angles and XYZ pivots. Riding/bow-use states
+ * remain absent because this read-only player has no corresponding gameplay. */
+void mc_tp_angles(float phase,float amount,float age,float head_yaw,float head_pitch,float swing,int sneak,int held)
+{
+    int i;float body,arc,fall,head;mc_fp_reset();for(i=0;i<21;i=i+1){mc_tp_rot[i]=0;mc_tp_pivot[i]=0;}
+    mc_tp_rot[0]=head_pitch/(180.0f/3.141592741f);mc_tp_rot[1]=head_yaw/(180.0f/3.141592741f);
+    mc_tp_rot[18]=mc_tp_rot[0];mc_tp_rot[19]=mc_tp_rot[1];
+    mc_tp_rot[6]=mc_math_cos(phase*.6662f+3.141592741f)*2*amount*.5f;
+    mc_tp_rot[9]=mc_math_cos(phase*.6662f)*2*amount*.5f;
+    mc_tp_rot[12]=mc_math_cos(phase*.6662f)*1.4f*amount;mc_tp_rot[15]=mc_math_cos(phase*.6662f+3.141592741f)*1.4f*amount;
+    if(held)mc_tp_rot[6]=mc_tp_rot[6]*.5f-3.141592741f*.1f;
+    body=mc_math_sin(mc_math_sqrt_float(swing)*3.141592741f*2)*.2f;mc_tp_rot[4]=body;
+    mc_tp_pivot[6]=-mc_math_cos(body)*5;mc_tp_pivot[8]=mc_math_sin(body)*5;
+    mc_tp_pivot[9]=mc_math_cos(body)*5;mc_tp_pivot[11]=-mc_math_sin(body)*5;mc_tp_pivot[7]=2;mc_tp_pivot[10]=2;
+    mc_tp_rot[7]=body;mc_tp_rot[10]=body;mc_tp_rot[9]=mc_tp_rot[9]+body;
+    fall=1-swing;fall=fall*fall;fall=fall*fall;fall=1-fall;arc=mc_math_sin(fall*3.141592741f);
+    head=mc_math_sin(swing*3.141592741f)*-(mc_tp_rot[0]-.7f)*(12.0f/16.0f);
+    mc_tp_rot[6]=mc_fp_to_f32(mc_fp_sub(mc_fp_f32(mc_tp_rot[6]),mc_fp_add(mc_fp_mul(mc_fp_f32(arc),mc_fp_bits(0x33333333,0x3ff33333)),mc_fp_f32(head))));
+    mc_tp_rot[7]=mc_tp_rot[7]+body*2;mc_tp_rot[8]=mc_math_sin(swing*3.141592741f)*-.4f;
+    mc_tp_pivot[12]=-2;mc_tp_pivot[15]=2;mc_tp_pivot[13]=12;mc_tp_pivot[16]=12;
+    if(sneak){mc_tp_rot[3]=.5f;mc_tp_rot[6]=mc_tp_rot[6]+.4f;mc_tp_rot[9]=mc_tp_rot[9]+.4f;mc_tp_pivot[14]=4;mc_tp_pivot[17]=4;mc_tp_pivot[13]=9;mc_tp_pivot[16]=9;mc_tp_pivot[1]=1;}
+    mc_tp_rot[8]=mc_tp_rot[8]+(mc_math_cos(age*.09f)*.05f+.05f);
+    mc_tp_rot[11]=mc_tp_rot[11]-(mc_math_cos(age*.09f)*.05f+.05f);
+    mc_tp_rot[6]=mc_tp_rot[6]+mc_math_sin(age*.067f)*.05f;mc_tp_rot[9]=mc_tp_rot[9]-mc_math_sin(age*.067f)*.05f;
+}
+void mc_tp_restore_base(void){int i;for(i=0;i<16;i=i+1)mc_vm_matrix[i]=mc_tp_base[i];}
+void mc_tp_part_transform(int part)
+{
+    int p=part*3;mc_vm_translate(mc_tp_pivot[p]/16,mc_tp_pivot[p+1]/16,mc_tp_pivot[p+2]/16);
+    mc_vm_rotate(2,mc_tp_rot[p+2]*(180.0f/3.141592741f));mc_vm_rotate(1,mc_tp_rot[p+1]*(180.0f/3.141592741f));mc_vm_rotate(0,mc_tp_rot[p]*(180.0f/3.141592741f));
+}
+void mc_tp_model_box(int part,float inflation,uint *pixels,uint *mask)
+{
+    int tex_u[7]={0,16,40,40,0,0,32},tex_v[7]={0,16,16,16,16,16,0};
+    int widths[7]={8,8,4,4,4,4,8},heights[7]={8,12,12,12,12,12,8},depths[7]={8,4,4,4,4,4,8};
+    float mins[21]={-4,-8,-4,-4,0,-2,-3,-2,-2,-1,-2,-2,-2,0,-2,-2,0,-2,-4,-8,-4};
+    int indices[24]={5,1,2,6,0,4,7,3,5,4,0,1,2,3,7,6,1,0,3,2,4,5,6,7};
+    float normals[18]={1,0,0,-1,0,0,0,-1,0,0,1,0,0,0,-1,0,0,1};
+    int rect[24],i,side,corner,index,mirror=part==3||part==5,w=widths[part],h=heights[part],d=depths[part],u=tex_u[part],v=tex_v[part];
+    float points[24],x0=mins[part*3]-inflation,y0=mins[part*3+1]-inflation,z0=mins[part*3+2]-inflation;
+    float x1=mins[part*3]+(float)w+inflation,y1=mins[part*3+1]+(float)h+inflation,z1=mins[part*3+2]+(float)d+inflation,swap;
+    if(mirror){swap=x0;x0=x1;x1=swap;}
+    points[0]=x0;points[1]=y0;points[2]=z0;points[3]=x1;points[4]=y0;points[5]=z0;points[6]=x1;points[7]=y1;points[8]=z0;points[9]=x0;points[10]=y1;points[11]=z0;
+    points[12]=x0;points[13]=y0;points[14]=z1;points[15]=x1;points[16]=y0;points[17]=z1;points[18]=x1;points[19]=y1;points[20]=z1;points[21]=x0;points[22]=y1;points[23]=z1;
+    rect[0]=u+d+w;rect[1]=v+d;rect[2]=u+d+w+d;rect[3]=v+d+h;rect[4]=u;rect[5]=v+d;rect[6]=u+d;rect[7]=v+d+h;
+    rect[8]=u+d;rect[9]=v;rect[10]=u+d+w;rect[11]=v+d;rect[12]=u+d+w;rect[13]=v+d;rect[14]=u+d+w+w;rect[15]=v;
+    rect[16]=u+d;rect[17]=v+d;rect[18]=u+d+w;rect[19]=v+d+h;rect[20]=u+d+w+d;rect[21]=v+d;rect[22]=u+d+w+d+w;rect[23]=v+d+h;
+    mc_tp_restore_base();mc_tp_part_transform(part);mc_vm_scale(1.0f/16.0f,1.0f/16.0f,1.0f/16.0f);
+    for(side=0;side<6;side=side+1)
+    {
+        for(corner=0;corner<4;corner=corner+1)
+        {i=mirror?3-corner:corner;index=indices[side*4+i]*3;mc_vm_vertex(corner,points[index],points[index+1],points[index+2],(float)rect[side*4+((i==0||i==3)?2:0)],(float)rect[side*4+(i<2?1:3)]);}
+        mc_vm_submit(&mc_vm_vertices[0],pixels,mask,64,32,normals[side*3]*(mirror?-1.0f:1.0f),normals[side*3+1],normals[side*3+2],0xffffff);
+    }
+}
+int mc_tp_load_armor(int id,int layer)
+{
+    char name[48];char *prefix;uint bytes=0;int i,kind=(id-298)/4;
+    if(id<298||id>317)return 0;if(mc_tp_armor_ready&&mc_tp_armor_id==id&&mc_tp_armor_layer==layer)return 1;
+    mc_tp_armor_ready=0;prefix=kind==0?"cloth":(kind==1?"chain":(kind==2?"iron":(kind==3?"diamond":"gold")));
+    name[0]=0;mc_world_append(name,48,"armor/");mc_world_append(name,48,prefix);mc_world_append(name,48,layer==2?"_2.png":"_1.png");
+    if(!mc_asset_read_payload(name,&mc_tp_armor_pixels[0],2048,&bytes)||bytes!=2048)return 0;
+    for(i=0;i<64;i=i+1)mc_tp_armor_masks[i]=0xffffffff;
+    if(mc_asset_find(name)&&mc_asset_read_u32(&mc_asset_record[0],32)!=0){bytes=0;if(!mc_asset_read_mask(name,&mc_tp_armor_masks[0],256,&bytes)||bytes!=256)return 0;}
+    mc_tp_armor_ready=1;mc_tp_armor_id=id;mc_tp_armor_layer=layer;return 1;
+}
+int mc_tp_full3d(int id)
+{return id==280||id==352||id==346||(id>=256&&id<=258)||id==267||(id>=268&&id<=279)||(id>=283&&id<=286)||(id>=290&&id<=294);}
+void mc_tp_held_item(struct MCItemStack *stack)
+{
+    uint *pixels,*mask;int id=stack->id,type;float scale;
+    if(stack->count<=0)return;type=id<256?mc_vm_block_type(id):-1;
+    if(id<256&&type>=0&&type!=100){if(type==22?!mc_tp_object_load(1):!mc_vm_load_block(id,stack->damage)){mc_third_status=3;return;}}
+    else if(!mc_player_ui_icon(stack,&pixels,&mask)){mc_third_status=3;return;}
+    mc_tp_restore_base();mc_tp_part_transform(2);mc_vm_translate(-1.0f/16.0f,7.0f/16.0f,1.0f/16.0f);
+    if(id<256&&type>=0&&type!=100){mc_vm_translate(0,3.0f/16.0f,-5.0f/16.0f);mc_vm_rotate(0,20);mc_vm_rotate(1,45);mc_vm_scale(.375f,-.375f,.375f);}
+    else if(id==261){mc_vm_translate(0,2.0f/16.0f,5.0f/16.0f);mc_vm_scale(.625f,-.625f,.625f);mc_vm_rotate(0,-100);mc_vm_rotate(1,45);}
+    else if(mc_tp_full3d(id))
+    {if(id==346){mc_vm_rotate(2,180);mc_vm_translate(0,-2.0f/16.0f,0);}mc_vm_translate(0,3.0f/16.0f,0);mc_vm_scale(.625f,-.625f,.625f);mc_vm_rotate(0,-100);mc_vm_rotate(1,45);}
+    else{mc_vm_translate(.25f,3.0f/16.0f,-3.0f/16.0f);mc_vm_scale(.375f,.375f,.375f);mc_vm_rotate(2,60);mc_vm_rotate(0,-90);mc_vm_rotate(2,20);}
+    if(id<256&&type>=0&&type!=100)mc_vm_block(id,stack->damage,type);
+    else{mc_vm_item_tint=mc_item_icon_color(id,stack->damage);mc_vm_sprite(pixels,mask);}
+}
+void mc_tp_render_model(void)
+{
+    int part,pass,id,type;float inflation;
+    if(!mc_vm_skin_ready){mc_third_status=2;return;}
+    for(part=0;part<7;part=part+1)mc_tp_model_box(part,part==6?.5f:0,&mc_vm_skin[0],&mc_vm_skin_mask[0]);
+    for(pass=0;pass<4;pass=pass+1)
+    {
+        id=mc_tp_frame_armor[3-pass];if(id<298||id>317)continue;
+        if(!mc_tp_load_armor(id,pass==2?2:1)){mc_third_status=2;continue;}inflation=pass==2?.5f:1.0f;
+        for(part=0;part<7;part=part+1)
+            if((pass==0&&(part==0||part==6))||(pass==1&&(part==1||part==2||part==3))||(pass==2&&(part==1||part==4||part==5))||(pass==3&&(part==4||part==5)))
+                mc_tp_model_box(part,inflation+(part==6?.5f:0),&mc_tp_armor_pixels[0],&mc_tp_armor_masks[0]);
+    }
+    /* Source RenderPlayer head-slot block path, e.g. a carved pumpkin. Armor
+     * models above intentionally ignore non-ItemArmor entries. */
+    id=mc_tp_frame_armor[3];type=id>0&&id<256?mc_vm_block_type(id):-1;
+    if(id>0&&id<256)
+    {
+        if(type>=0&&type!=100&&(type==22?mc_tp_object_load(1):mc_vm_load_block(id,mc_tp_frame_armor_damage[3])))
+        {mc_tp_restore_base();mc_tp_part_transform(0);mc_vm_translate(0,-.25f,0);mc_vm_rotate(1,180);mc_vm_scale(.625f,-.625f,.625f);mc_vm_block(id,mc_tp_frame_armor_damage[3],type);}
+        else mc_third_status=3;
+    }
+    mc_tp_held_item(&mc_tp_frame_item);
+}
+void mc_third_capture_frame(float partial)
+{
+    int i,old,current,position;mc_third_frame_partial=partial;mc_third_frame_mode=mc_third_mode;mc_fp_reset();
+    mc_tp_frame_yaw=mc_tp_previous_yaw+(mc_tp_yaw-mc_tp_previous_yaw)*partial;
+    mc_tp_frame_head=mc_vm_previous_yaw+(mc_player.yaw-mc_vm_previous_yaw)*partial-mc_tp_frame_yaw;
+    mc_tp_frame_pitch=mc_vm_previous_pitch+(mc_player.pitch-mc_vm_previous_pitch)*partial;
+    mc_tp_frame_limb=mc_tp_old_limb+(mc_tp_limb-mc_tp_old_limb)*partial;if(mc_tp_frame_limb>1)mc_tp_frame_limb=1;
+    mc_tp_frame_phase=mc_tp_limb_phase-mc_tp_limb*(1-partial);mc_tp_frame_age=mc_tp_ticks+partial;mc_tp_frame_swing=mc_vm_swing_progress(partial);mc_tp_frame_sneak=mc_player.sneak;
+    for(i=0;i<3;i=i+1){old=mc_fp_bits(mc_tp_old_position[i].lo,mc_tp_old_position[i].hi);current=mc_fp_bits(mc_tp_tick_position[i].lo,mc_tp_tick_position[i].hi);position=mc_fp_add(old,mc_fp_mul(mc_fp_sub(current,old),mc_fp_f32(partial)));mc_tp_frame_position[i]=mc_fp_to_f32(position);}
+    for(i=0;i<18;i=i+1)mc_tp_frame_camera[i]=mc_render_camera[i];
+    mc_vm_prepare_lights(partial);mc_tp_camera_lights(&mc_tp_frame_camera[0]);for(i=0;i<6;i=i+1)mc_tp_frame_lights[i]=mc_vm_lights[i];mc_tp_frame_light=mc_vm_world_light;
+    for(i=0;i<4;i=i+1){mc_tp_frame_armor[i]=mc_inventory_slots[36+i].count>0?mc_inventory_slots[36+i].id:0;mc_tp_frame_armor_damage[i]=mc_inventory_slots[36+i].damage;}
+    mc_inventory_copy(&mc_tp_frame_item,mc_inventory_current());mc_tp_frame_captured=1;
+}
+void mc_third_draw(void)
+{
+    int i;float x,y,z;mc_third_faces=0;if(!mc_tp_frame_captured||!mc_third_frame_mode)return;mc_vm_identity();
+    for(i=0;i<12;i=i+1)mc_vm_matrix[i]=(i>=8?-1.0f:1.0f)*mc_tp_frame_camera[i];
+    x=mc_tp_frame_position[0]-(float)mc_render_origin_x;y=mc_tp_frame_position[1]-1.62f;z=mc_tp_frame_position[2]-(float)mc_render_origin_z;
+    mc_vm_translate(x,y,z);mc_vm_rotate(1,180-mc_tp_frame_yaw);mc_vm_scale(-.9375f,-.9375f,.9375f);mc_vm_translate(0,-1.5078125f,0);
+    for(i=0;i<16;i=i+1)mc_tp_base[i]=mc_vm_matrix[i];for(i=0;i<6;i=i+1)mc_tp_projection[i]=mc_tp_frame_camera[12+i];
+    mc_tp_projection_active=1;mc_tp_gui_active=0;for(i=0;i<6;i=i+1)mc_vm_lights[i]=mc_tp_frame_lights[i];mc_vm_world_light=mc_tp_frame_light;
+    mc_tp_angles(mc_tp_frame_phase,mc_tp_frame_limb,mc_tp_frame_age,mc_tp_frame_head,mc_tp_frame_pitch,mc_tp_frame_swing,mc_tp_frame_sneak,mc_tp_frame_item.count>0);
+    mc_viewmodel_faces=0;mc_tp_render_model();mc_third_faces=mc_viewmodel_faces;mc_tp_projection_active=0;mc_tp_frame_captured=0;
+}
+
+/* Orthographic GUI adapter. Borrow ONLY the shared asset-pixel scratch, after
+ * all terrain submissions finish. Source GUI does not use camera depth. */
+void mc_tp_gui_begin(int x,int y,int width,int height)
+{
+    int i;float *depth=(float *)&mc_asset_pixels[0];mc_tp_gui_left=x;mc_tp_gui_top=y;mc_tp_gui_width=width;mc_tp_gui_height=height;mc_tp_gui_active=1;mc_tp_gui_output=0;
+    for(i=0;i<width*height;i=i+1)depth[i]=-3.402823466e38f;
+}
+float mc_tp_edge(float ax,float ay,float bx,float by,float px,float py)
+{return (px-ax)*(by-ay)-(py-ay)*(bx-ax);}
+void mc_tp_gui_triangle(float *vertices,int a,int b,int c,uint *texture,uint *mask,int width,int height,float light,uint tint)
+{
+    float *depth=(float *)&mc_asset_pixels[0],area,w0,w1,w2,z,u,v,px,py,minimum,maximum;int x,y,x0,x1,y0,y1,tx,ty,pixel,bit,index;uint color;char *bytes=(char *)texture;
+    a=a*5;b=b*5;c=c*5;area=mc_tp_edge(vertices[a],vertices[a+1],vertices[b],vertices[b+1],vertices[c],vertices[c+1]);if(area==0)return;
+    minimum=vertices[a];if(vertices[b]<minimum)minimum=vertices[b];if(vertices[c]<minimum)minimum=vertices[c];maximum=vertices[a];if(vertices[b]>maximum)maximum=vertices[b];if(vertices[c]>maximum)maximum=vertices[c];x0=(int)minimum-1;x1=(int)maximum+1;
+    minimum=vertices[a+1];if(vertices[b+1]<minimum)minimum=vertices[b+1];if(vertices[c+1]<minimum)minimum=vertices[c+1];maximum=vertices[a+1];if(vertices[b+1]>maximum)maximum=vertices[b+1];if(vertices[c+1]>maximum)maximum=vertices[c+1];y0=(int)minimum-1;y1=(int)maximum+1;
+    if(x0<mc_tp_gui_left)x0=mc_tp_gui_left;if(x1>=mc_tp_gui_left+mc_tp_gui_width)x1=mc_tp_gui_left+mc_tp_gui_width-1;if(y0<mc_tp_gui_top)y0=mc_tp_gui_top;if(y1>=mc_tp_gui_top+mc_tp_gui_height)y1=mc_tp_gui_top+mc_tp_gui_height-1;
+    for(y=y0;y<=y1;y=y+1)for(x=x0;x<=x1;x=x+1)
+    {
+        px=(float)x+.5f;py=(float)y+.5f;
+        w0=mc_tp_edge(vertices[b],vertices[b+1],vertices[c],vertices[c+1],px,py)/area;w1=mc_tp_edge(vertices[c],vertices[c+1],vertices[a],vertices[a+1],px,py)/area;w2=1-w0-w1;
+        if(w0<0||w1<0||w2<0)continue;
+        z=w0*vertices[a+2]+w1*vertices[b+2]+w2*vertices[c+2];index=(y-mc_tp_gui_top)*mc_tp_gui_width+x-mc_tp_gui_left;if(z<depth[index])continue;
+        u=w0*vertices[a+3]+w1*vertices[b+3]+w2*vertices[c+3];v=w0*vertices[a+4]+w1*vertices[b+4]+w2*vertices[c+4];
+        tx=(int)u;ty=(int)v;if(tx<0)tx=0;if(tx>=width)tx=width-1;if(ty<0)ty=0;if(ty>=height)ty=height-1;
+        bit=ty*width+tx;if(mask&&!(mask[bit>>5]&((uint)1<<(31-(bit&31)))))continue;
+        color=mc_vm_tint_pixel((uint)bytes[ty*((width+3)&~3)+tx]&255,tint,light);depth[index]=z;
+        if(mc_tp_gui_output)
+        {pixel=(y-mc_tp_gui_top)*mc_tp_gui_width+x-mc_tp_gui_left;((char *)mc_tp_gui_pixels)[pixel]=(char)color;mc_tp_gui_masks[pixel>>5]=mc_tp_gui_masks[pixel>>5]|((uint)1<<(31-(pixel&31)));}
+        else if(x>=0&&x<320&&y>=0&&y<240)narm_half_pixel((uint)(y*320+x),color);
+    }
+}
+void mc_tp_gui_quad(float *v,uint *texture,uint *mask,int width,int height,float light,uint tint)
+{
+    float vertices[20],x,y,z;int corner,axis,p;
+    for(corner=0;corner<4;corner=corner+1)
+    {
+        p=corner*5;x=v[p];y=v[p+1];z=v[p+2];
+        for(axis=0;axis<3;axis=axis+1)vertices[p+axis]=mc_vm_matrix[axis*4]*x+mc_vm_matrix[axis*4+1]*y+mc_vm_matrix[axis*4+2]*z+mc_vm_matrix[axis*4+3];
+        vertices[p+3]=v[p+3];vertices[p+4]=v[p+4];
+    }
+    mc_tp_gui_triangle(&vertices[0],0,1,2,texture,mask,width,height,light,tint);mc_tp_gui_triangle(&vertices[0],0,2,3,texture,mask,width,height,light,tint);
+}
+void mc_third_inventory_preview(int left,int top,int mouse_x,int mouse_y)
+{
+    float horizontal,vertical,body_yaw,head_yaw,pitch,length,x,y,z,c,s;int i;struct MCItemStack item;
+    if(!mc_vm_skin_ready)return;mc_fp_reset();horizontal=(float)(left+51-mouse_x)/40;vertical=(float)(top+25-mouse_y)/40;
+    body_yaw=mc_fp_to_f32(mc_fp_atan(mc_fp_f32(horizontal)))*20;head_yaw=body_yaw*2;pitch=0-mc_fp_to_f32(mc_fp_atan(mc_fp_f32(vertical)))*20;
+    mc_tp_gui_begin(left+20,top-2,64,80);mc_vm_identity();mc_vm_translate((float)(left+51),(float)(top+75),50);mc_vm_scale(-30,30,30);mc_vm_rotate(2,180);mc_vm_rotate(0,pitch);mc_vm_translate(0,1.62f,0);
+    mc_vm_translate(0,-1.62f,0);mc_vm_rotate(1,180-body_yaw);mc_vm_scale(-.9375f,-.9375f,.9375f);mc_vm_translate(0,-1.5078125f,0);
+    for(i=0;i<16;i=i+1)mc_tp_base[i]=mc_vm_matrix[i];
+    mc_tp_angles(mc_tp_limb_phase,mc_tp_limb,mc_tp_ticks+1,head_yaw-body_yaw,pitch,mc_vm_swing_progress(1),mc_player.sneak,mc_inventory_current()->count>0);
+    for(i=0;i<4;i=i+1){mc_tp_frame_armor[i]=mc_inventory_slots[36+i].count>0?mc_inventory_slots[36+i].id:0;mc_tp_frame_armor_damage[i]=mc_inventory_slots[36+i].damage;}
+    mc_inventory_copy(&item,&mc_tp_frame_item);mc_inventory_copy(&mc_tp_frame_item,mc_inventory_current());
+    /* RenderHelper GUI lighting is set while yaw135 is on the matrix. */
+    mc_vm_world_light=1;length=mc_math_sqrt_float(.2f*.2f+1+.7f*.7f);c=narm_cos(135*(3.141592741f/180));s=narm_sin(135*(3.141592741f/180));
+    for(i=0;i<2;i=i+1){x=(i==0?.2f:-.2f)/length;y=1/length;z=(i==0?-.7f:.7f)/length;mc_vm_lights[i*3]=c*x+s*z;mc_vm_lights[i*3+1]=-y;mc_vm_lights[i*3+2]=c*z-s*x;}
+    mc_tp_render_model();mc_inventory_copy(&mc_tp_frame_item,&item);mc_tp_gui_active=0;
+}
+int mc_third_block_icon(struct MCItemStack *stack,int x,int y)
+{
+    int index,i,type=mc_vm_block_type(stack->id);float length,light_x,light_y,light_z;
+    if(stack->count<=0||stack->id<=0||stack->id>=256||type<0||type==100)return 0;
+    for(index=0;index<mc_ui_icon_used;index=index+1)if(mc_ui_icon_ids[index]==stack->id&&mc_ui_icon_damage[index]==stack->damage)
+    {narm_half_blit_masked(x,y,16,16,&mc_ui_icon_pixels[index*64],&mc_ui_icon_masks[index*8]);return 1;}
+    if(mc_ui_icon_used>=MC_UI_ICON_COUNT||(type==22?!mc_tp_object_load(1):!mc_vm_load_block(stack->id,stack->damage)))return 0;
+    index=mc_ui_icon_used;mc_tp_gui_begin(0,0,16,16);mc_tp_gui_output=1;mc_tp_gui_pixels=&mc_ui_icon_pixels[index*64];mc_tp_gui_masks=&mc_ui_icon_masks[index*8];
+    for(i=0;i<64;i=i+1)mc_tp_gui_pixels[i]=0;for(i=0;i<8;i=i+1)mc_tp_gui_masks[i]=0;
+    /* GuiContainer RenderHelper.func_41089_c: directional lights are fixed
+     * while Ry(-30),Rx(165) is active, then that matrix is popped. */
+    mc_vm_identity();mc_vm_rotate(1,-30);mc_vm_rotate(0,165);length=mc_math_sqrt_float(.2f*.2f+1+.7f*.7f);
+    for(i=0;i<2;i=i+1)
+    {light_x=(i==0?.2f:-.2f)/length;light_y=1/length;light_z=(i==0?-.7f:.7f)/length;
+     mc_vm_lights[i*3]=mc_vm_matrix[0]*light_x+mc_vm_matrix[1]*light_y+mc_vm_matrix[2]*light_z;mc_vm_lights[i*3+1]=mc_vm_matrix[4]*light_x+mc_vm_matrix[5]*light_y+mc_vm_matrix[6]*light_z;mc_vm_lights[i*3+2]=mc_vm_matrix[8]*light_x+mc_vm_matrix[9]*light_y+mc_vm_matrix[10]*light_z;}
+    mc_vm_world_light=1;mc_vm_identity();mc_vm_translate(-2,3,-3);mc_vm_scale(10,10,10);mc_vm_translate(1,.5f,1);mc_vm_scale(1,1,-1);mc_vm_rotate(0,210);mc_vm_rotate(1,45);mc_vm_rotate(1,-90);
+    mc_vm_block(stack->id,stack->damage,type);mc_tp_gui_active=0;mc_tp_gui_output=0;
+    mc_ui_icon_ids[index]=stack->id;mc_ui_icon_damage[index]=stack->damage;mc_ui_icon_used=index+1;
+    narm_half_blit_masked(x,y,16,16,&mc_ui_icon_pixels[index*64],&mc_ui_icon_masks[index*8]);return 1;
+}
+
+/* Static tile models share ModelBox winding/UV and the same native world
+ * depth. One small raw-atlas LRU avoids 16 permanent lighting atlases; each
+ * face is cropped into the existing armor scratch before RGB332 shading. */
+int mc_tp_object_load(int kind)
+{
+    char *name=kind==1?"item/chest.png":(kind==2?"item/largechest.png":"item/sign.png");uint bytes=0;int i;
+    if(mc_tp_object_kind==kind)return 1;mc_tp_object_kind=0;
+    if(!mc_asset_find(name))return 0;mc_tp_object_width=(int)mc_asset_read_u32(&mc_asset_record[0],8);mc_tp_object_height=(int)mc_asset_read_u32(&mc_asset_record[0],12);
+    if(mc_tp_object_width!=(kind==2?128:64)||mc_tp_object_height!=(kind==3?32:64))return 0;
+    if(!mc_asset_read_payload(name,&mc_tp_object_atlas[0],8192,&bytes)||bytes!=(uint)(mc_tp_object_width*mc_tp_object_height))return 0;
+    for(i=0;i<256;i=i+1)mc_tp_object_mask[i]=0xffffffff;
+    if(mc_asset_find(name)&&mc_asset_read_u32(&mc_asset_record[0],32)!=0)
+    {bytes=0;if(!mc_asset_read_mask(name,&mc_tp_object_mask[0],1024,&bytes)||bytes!=(uint)((mc_tp_object_width*mc_tp_object_height+31)/32*4))return 0;}
+    mc_tp_object_kind=kind;return 1;
+}
+void mc_tp_object_quad(float nx,float ny,float nz)
+{
+    float minimum_u=mc_vm_vertices[3],minimum_v=mc_vm_vertices[4],maximum_u=minimum_u,maximum_v=minimum_v;
+    int i,x,y,u,v,width,height,bit,source;char *input=(char *)&mc_tp_object_atlas[0],*output=(char *)&mc_tp_armor_pixels[0];
+    for(i=1;i<4;i=i+1){if(mc_vm_vertices[i*5+3]<minimum_u)minimum_u=mc_vm_vertices[i*5+3];if(mc_vm_vertices[i*5+3]>maximum_u)maximum_u=mc_vm_vertices[i*5+3];if(mc_vm_vertices[i*5+4]<minimum_v)minimum_v=mc_vm_vertices[i*5+4];if(mc_vm_vertices[i*5+4]>maximum_v)maximum_v=mc_vm_vertices[i*5+4];}
+    u=(int)minimum_u;v=(int)minimum_v;width=((int)maximum_u-u+4)&~3;height=(int)maximum_v-v+1;
+    if(width<=0||height<=0||width*height>2048){mc_third_status=2;return;}
+    mc_tp_armor_ready=0;for(i=0;i<64;i=i+1)mc_tp_armor_masks[i]=0;
+    for(y=0;y<height;y=y+1)for(x=0;x<width;x=x+1)
+    {
+        bit=y*width+x;output[bit]=0;if(u+x>=mc_tp_object_width||v+y>=mc_tp_object_height)continue;source=(v+y)*mc_tp_object_width+u+x;output[bit]=input[source];
+        if(mc_tp_object_mask[source>>5]&((uint)1<<(31-(source&31))))mc_tp_armor_masks[bit>>5]=mc_tp_armor_masks[bit>>5]|((uint)1<<(31-(bit&31)));
+    }
+    for(i=0;i<4;i=i+1){mc_vm_vertices[i*5+3]=mc_vm_vertices[i*5+3]-(float)u;mc_vm_vertices[i*5+4]=mc_vm_vertices[i*5+4]-(float)v;}
+    mc_vm_submit(&mc_vm_vertices[0],&mc_tp_armor_pixels[0],&mc_tp_armor_masks[0],width,height,nx,ny,nz,0xffffff);
+}
+void mc_tp_object_box(int u,int v,float x0,float y0,float z0,int w,int h,int d,float pivot_x,float pivot_y,float pivot_z)
+{
+    float points[24],x1=x0+(float)w,y1=y0+(float)h,z1=z0+(float)d;
+    int indices[24]={5,1,2,6,0,4,7,3,5,4,0,1,2,3,7,6,1,0,3,2,4,5,6,7};float normals[18]={1,0,0,-1,0,0,0,-1,0,0,1,0,0,0,-1,0,0,1};
+    int rect[24],side,corner,index,i;
+    points[0]=x0;points[1]=y0;points[2]=z0;points[3]=x1;points[4]=y0;points[5]=z0;points[6]=x1;points[7]=y1;points[8]=z0;points[9]=x0;points[10]=y1;points[11]=z0;points[12]=x0;points[13]=y0;points[14]=z1;points[15]=x1;points[16]=y0;points[17]=z1;points[18]=x1;points[19]=y1;points[20]=z1;points[21]=x0;points[22]=y1;points[23]=z1;
+    rect[0]=u+d+w;rect[1]=v+d;rect[2]=u+d+w+d;rect[3]=v+d+h;rect[4]=u;rect[5]=v+d;rect[6]=u+d;rect[7]=v+d+h;rect[8]=u+d;rect[9]=v;rect[10]=u+d+w;rect[11]=v+d;rect[12]=u+d+w;rect[13]=v+d;rect[14]=u+d+w+w;rect[15]=v;rect[16]=u+d;rect[17]=v+d;rect[18]=u+d+w;rect[19]=v+d+h;rect[20]=u+d+w+d;rect[21]=v+d;rect[22]=u+d+w+d+w;rect[23]=v+d+h;
+    for(i=0;i<16;i=i+1)mc_vm_matrix[i]=mc_tp_object_base[i];mc_vm_translate(pivot_x/16,pivot_y/16,pivot_z/16);mc_vm_scale(1.0f/16.0f,1.0f/16.0f,1.0f/16.0f);
+    for(side=0;side<6;side=side+1)
+    {for(corner=0;corner<4;corner=corner+1){index=indices[side*4+corner]*3;mc_vm_vertex(corner,points[index],points[index+1],points[index+2],(float)rect[side*4+((corner==0||corner==3)?2:0)],(float)rect[side*4+(corner<2?1:3)]);}mc_tp_object_quad(normals[side*3],normals[side*3+1],normals[side*3+2]);}
+}
+void mc_tp_chest_model(int large)
+{
+    int i;for(i=0;i<16;i=i+1)mc_tp_object_base[i]=mc_vm_matrix[i];
+    mc_tp_object_box(0,0,0,-5,-14,large?30:14,5,14,1,7,15);
+    mc_tp_object_box(0,0,-1,-2,-15,2,4,1,large?16:8,7,15);
+    mc_tp_object_box(0,19,0,0,0,large?30:14,10,14,1,6,1);
+}
+void mc_tp_inventory_chest(void)
+{
+    if(!mc_tp_object_load(1)){mc_third_status=2;return;}
+    /* ChestItemRenderHelper uses a world-less TileEntityChest (metadata0). */
+    mc_vm_translate(0,1,1);mc_vm_scale(1,-1,-1);mc_vm_translate(.5f,.5f,.5f);mc_vm_translate(-.5f,-.5f,-.5f);mc_tp_chest_model(0);
+}
+uint mc_tp_neighbor(int x,int y,int z)
+{uint id=0;if(!mc_runtime_try_get_block(x,y,z,&id))mc_third_status=1;return id;}
+int mc_tp_chest_direction(int metadata,int x,int y,int z,uint north,uint south,uint west,uint east)
+{
+    uint a,b,m=0;int result,other;
+    if(metadata)return metadata;
+    if(north!=54&&south!=54)
+    {
+        if(west!=54&&east!=54)
+        {result=3;if(mc_block_is_opaque(north)&&!mc_block_is_opaque(south))result=3;if(mc_block_is_opaque(south)&&!mc_block_is_opaque(north))result=2;if(mc_block_is_opaque(west)&&!mc_block_is_opaque(east))result=5;if(mc_block_is_opaque(east)&&!mc_block_is_opaque(west))result=4;return result;}
+        other=west==54?x-1:x+1;a=mc_tp_neighbor(other,y,z-1);b=mc_tp_neighbor(other,y,z+1);mc_runtime_try_get_metadata(other,y,z,&m);result=m==2?2:3;
+        if((mc_block_is_opaque(north)||mc_block_is_opaque(a))&&!mc_block_is_opaque(south)&&!mc_block_is_opaque(b))result=3;
+        if((mc_block_is_opaque(south)||mc_block_is_opaque(b))&&!mc_block_is_opaque(north)&&!mc_block_is_opaque(a))result=2;return result;
+    }
+    other=north==54?z-1:z+1;a=mc_tp_neighbor(x-1,y,other);b=mc_tp_neighbor(x+1,y,other);mc_runtime_try_get_metadata(x,y,other,&m);result=m==4?4:5;
+    if((mc_block_is_opaque(west)||mc_block_is_opaque(a))&&!mc_block_is_opaque(east)&&!mc_block_is_opaque(b))result=5;
+    if((mc_block_is_opaque(east)||mc_block_is_opaque(b))&&!mc_block_is_opaque(west)&&!mc_block_is_opaque(a))result=4;return result;
+}
+int mc_tp_world_tesr(int id,int metadata,int x,int y,int z,float partial)
+{
+    uint north,south,west,east,sky=15,block=0;int i,large=0,level;float angle=0;
+    if(id!=54&&id!=63&&id!=68)return 0;
+    if(id==54)
+    {north=mc_tp_neighbor(x,y,z-1);south=mc_tp_neighbor(x,y,z+1);west=mc_tp_neighbor(x-1,y,z);east=mc_tp_neighbor(x+1,y,z);if(north==54||west==54)return 1;large=south==54||east==54;metadata=mc_tp_chest_direction(metadata,x,y,z,north,south,west,east);}
+    if(!mc_tp_object_load(id==54?(large?2:1):3)){mc_third_status=2;return 0;}
+    mc_vm_identity();for(i=0;i<12;i=i+1)mc_vm_matrix[i]=(i>=8?-1.0f:1.0f)*mc_render_camera[i];for(i=0;i<6;i=i+1)mc_tp_projection[i]=mc_render_camera[12+i];mc_tp_projection_active=1;mc_tp_gui_active=0;
+    mc_vm_prepare_lights(partial);mc_tp_camera_lights(&mc_render_camera[0]);mc_runtime_try_get_saved_light(1,x,y,z,&sky);mc_runtime_try_get_saved_light(0,x,y,z,&block);level=(int)sky-mc_render_sky_subtracted;if(level<0)level=0;if((int)block>level)level=(int)block;if(level>15)level=15;mc_vm_world_light=(float)mc_render_light_lookup[(level<<3)|1]/15;
+    if(id==54)
+    {
+        mc_vm_translate((float)(x-mc_render_origin_x),(float)y+1,(float)(z-mc_render_origin_z)+1);mc_vm_scale(1,-1,-1);mc_vm_translate(.5f,.5f,.5f);angle=metadata==2?180:(metadata==4?90:(metadata==5?-90:0));
+        if(metadata==2&&east==54)mc_vm_translate(1,0,0);if(metadata==5&&south==54)mc_vm_translate(0,0,-1);mc_vm_rotate(1,angle);mc_vm_translate(-.5f,-.5f,-.5f);mc_tp_chest_model(large);
+    }
+    else
+    {
+        mc_vm_translate((float)(x-mc_render_origin_x)+.5f,(float)y+(12.0f/16.0f)*(2.0f/3.0f),(float)(z-mc_render_origin_z)+.5f);angle=id==63?(float)(metadata*360)/16:(metadata==2?180:(metadata==4?90:(metadata==5?-90:0)));mc_vm_rotate(1,-angle);
+        if(id==68)mc_vm_translate(0,-5.0f/16.0f,-7.0f/16.0f);mc_vm_scale(2.0f/3.0f,-2.0f/3.0f,-2.0f/3.0f);for(i=0;i<16;i=i+1)mc_tp_object_base[i]=mc_vm_matrix[i];mc_tp_object_box(0,0,-12,-14,-1,24,12,2,0,0,0);if(id==63)mc_tp_object_box(0,14,-1,-2,-1,2,14,2,0,0,0);
+        /* SignText NBT and editing are a named active-tile dependency. The
+         * exact board/post model does not fabricate an empty text payload. */
+    }
+    mc_tp_projection_active=0;return 1;
+}
+#endif
+

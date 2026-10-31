@@ -1,0 +1,23 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "TinyCraft Behavior",
+    "description": "Gameplay definitions for TinyCraft.",
+    "uuid": "a5d86317-b5f7-4fd5-ae8d-0d7db6b45003",
+    "version": [1, 0, 0],
+    "min_engine_version": [1, 0, 0]
+  },
+  "modules": [
+    {
+      "type": "data",
+      "uuid": "a5d86317-b5f7-4fd5-ae8d-0d7db6b45004",
+      "version": [1, 0, 0]
+    }
+  ],
+  "dependencies": [
+    {
+      "uuid": "a5d86317-b5f7-4fd5-ae8d-0d7db6b45001",
+      "version": [1, 0, 0]
+    }
+  ]
+}

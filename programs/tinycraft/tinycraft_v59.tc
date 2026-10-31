@@ -1,0 +1,21 @@
+/* TinyCraft v59 NARM build entry.
+   Keep files included in this order; NARMCC compiles them as one translation unit. */
+
+#include "narm.tch"
+#include "narm_compat.tch"
+
+#include "src/00_globals_assets.tc"
+#include "src/01_asset_cache.tc"
+#include "src/01_texture_registry.tc"
+#include "src/03_block_registry.tc"
+#include "src/02_item_registry.tc"
+#include "src/02_entity_registry.tc"
+#include "src/01_asset_runtime_tables.tc"
+#include "src/01_terrain_world_config.tc"
+#include "src/02_generation_player_physics.tc"
+#include "src/03_inventory_crafting_drops_player.tc"
+#include "src/04_render_mesh_world.tc"
+#include "src/05_entities.tc"
+#include "src/06_first_person_environment.tc"
+#include "src/07_hud_text_ui.tc"
+#include "src/08_loading_frontend_main.tc"

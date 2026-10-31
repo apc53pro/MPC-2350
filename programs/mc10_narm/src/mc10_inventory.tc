@@ -1,0 +1,156 @@
+/* InventoryPlayer / ItemStack / supported ContainerPlayer slots.
+ * Item compounds are immutable private serialized copies; global NBT pools are
+ * reused immediately by chunk loading and are never retained here. */
+#ifdef MC10_PLAYER_FOUNDATION
+#define MC_INVENTORY_TAG_BYTES 16384
+struct MCItemStack mc_inventory_slots[40];
+struct MCItemStack mc_inventory_carried;
+struct MCItemStack mc_inventory_none;
+unsigned char mc_inventory_tags[MC_INVENTORY_TAG_BYTES];
+int mc_inventory_tag_used;
+int mc_inventory_selected;
+int mc_inventory_ready;
+int mc_inventory_error;
+int mc_inventory_changed;
+int mc_inventory_health,mc_inventory_food,mc_inventory_air,mc_inventory_xp_level,mc_inventory_xp_total;
+float mc_inventory_xp_progress,mc_inventory_food_saturation;
+int mc_inventory_creative;
+void mc_inventory_empty(struct MCItemStack *stack)
+{stack->id=0;stack->count=0;stack->damage=0;stack->tag_offset=0;stack->tag_bytes=0;}
+void mc_inventory_copy(struct MCItemStack *to,struct MCItemStack *from)
+{to->id=from->id;to->count=from->count;to->damage=from->damage;to->tag_offset=from->tag_offset;to->tag_bytes=from->tag_bytes;}
+struct MCItemStack *mc_inventory_current(void)
+{if(mc_inventory_selected<0||mc_inventory_selected>8)return &mc_inventory_none;return &mc_inventory_slots[mc_inventory_selected];}
+void mc_inventory_reset(void)
+{
+    int i;for(i=0;i<40;i=i+1)mc_inventory_empty(&mc_inventory_slots[i]);
+    mc_inventory_empty(&mc_inventory_carried);mc_inventory_empty(&mc_inventory_none);mc_inventory_tag_used=0;mc_inventory_selected=0;
+    mc_inventory_ready=0;mc_inventory_error=0;mc_inventory_changed=0;
+    mc_inventory_health=20;mc_inventory_food=20;mc_inventory_air=300;
+    mc_inventory_xp_level=0;mc_inventory_xp_total=0;mc_inventory_xp_progress=0;
+    mc_inventory_food_saturation=5.0f;mc_inventory_creative=0;
+}
+int mc_inventory_read_stack(int tag,struct MCItemStack *stack)
+{
+    int id,count,damage,compound;uint bytes;
+    mc_inventory_empty(stack);
+    if(mc_nbt_get_short(tag,"id",&id)<0||mc_nbt_get_byte(tag,"Count",&count)<0||mc_nbt_get_short(tag,"Damage",&damage)<0)return -1;
+    /* Vanilla ignores unknown Item registrations. Keep valid signed byte
+     * counts exactly, including over-stacks; slot placement enforces limits. */
+    if(!mc_item_valid(id))return 0;
+    if(count<=0)return 0;
+    stack->id=id;stack->count=count;stack->damage=damage;
+    compound=-1;if(mc_nbt_compound_find(tag,"tag")>=0)
+    {compound=mc_nbt_get_compound(tag,"tag");if(compound<0)return -1;}
+    if(compound>=0)
+    {
+        if(mc_nbt_write(compound,&mc_inventory_tags[mc_inventory_tag_used],MC_INVENTORY_TAG_BYTES-(uint)mc_inventory_tag_used,&bytes)<0)return -2;
+        stack->tag_offset=mc_inventory_tag_used;stack->tag_bytes=(int)bytes;mc_inventory_tag_used=mc_inventory_tag_used+(int)bytes;
+    }
+    return 1;
+}
+int mc_inventory_load_player_nbt(int player)
+{
+    int list,i,tag,slot,result,capabilities;uint bits;struct MCItemStack stack;
+    mc_inventory_reset();
+    if(player==-1){mc_inventory_ready=1;return 1;} /* Source constructor / spawn fallback. */
+    if(player<0||player>=mc_nbt_tag_used||mc_nbt_tags[player].type!=MC_NBT_COMPOUND){mc_inventory_error=-1;return 0;}
+    list=mc_nbt_get_list(player,"Inventory");
+    if(list<0){mc_inventory_error=-1;return 0;}
+    if(list>=0)
+    {
+        if(mc_nbt_tags[list].list_type!=MC_NBT_COMPOUND&&mc_nbt_list_tag_count(list)>0){mc_inventory_error=-1;return 0;}
+        for(i=0;i<mc_nbt_list_tag_count(list);i=i+1)
+        {
+            tag=mc_nbt_list_tag_at(list,i);slot=0;
+            if(mc_nbt_get_byte(tag,"Slot",&slot)<0){mc_inventory_error=-1;return 0;}
+            slot=slot&255;if(slot>=100&&slot<104)slot=slot-64;else if(slot>=36)continue;
+            result=mc_inventory_read_stack(tag,&stack);
+            if(result<0){mc_inventory_error=result;return 0;}
+            if(result)mc_inventory_copy(&mc_inventory_slots[slot],&stack);
+        }
+    }
+    if(mc_nbt_compound_find(player,"Health")>=0&&mc_nbt_get_short(player,"Health",&mc_inventory_health)<0){mc_inventory_error=-1;return 0;}
+    if(mc_nbt_compound_find(player,"foodLevel")>=0)
+    {
+        if(mc_nbt_get_int(player,"foodLevel",&mc_inventory_food)<0||mc_nbt_get_float_bits(player,"foodSaturationLevel",&bits)<0||(bits&0x7f800000)==0x7f800000){mc_inventory_error=-1;return 0;}
+        mc_inventory_food_saturation=*(float *)&bits;
+    }
+    if(mc_nbt_get_short(player,"Air",&mc_inventory_air)<0){mc_inventory_error=-1;return 0;}
+    if(mc_nbt_get_int(player,"XpLevel",&mc_inventory_xp_level)<0||mc_nbt_get_int(player,"XpTotal",&mc_inventory_xp_total)<0||mc_nbt_get_float_bits(player,"XpP",&bits)<0||(bits&0x7f800000)==0x7f800000){mc_inventory_error=-1;return 0;}
+    mc_inventory_xp_progress=*(float *)&bits;
+    capabilities=-1;if(mc_nbt_compound_find(player,"abilities")>=0)
+    {capabilities=mc_nbt_get_compound(player,"abilities");if(capabilities<0||mc_nbt_get_boolean(capabilities,"instabuild",&mc_inventory_creative)<0){mc_inventory_error=-1;return 0;}}
+    /* 1.0 does not serialize currentItem / modern SelectedItemSlot. */
+    mc_inventory_ready=1;return 1;
+}
+int mc_inventory_armor_value(void)
+{int i,value=0;for(i=36;i<40;i=i+1)if(mc_inventory_slots[i].count>0)value=value+mc_item_armor_points(mc_inventory_slots[i].id);return value;}
+void mc_inventory_select(int index)
+{if(index>=0&&index<9)mc_inventory_selected=index;}
+int mc_inventory_slot_valid(int slot,struct MCItemStack *stack)
+{if(slot<0||slot>=40)return 0;if(slot<36)return 1;return mc_item_armor_type(stack->id)==39-slot||(slot==39&&stack->id==86);}
+int mc_inventory_slot_limit(int slot)
+{return slot>=36?1:64;}
+int mc_inventory_same_kind(struct MCItemStack *a,struct MCItemStack *b)
+{return a->id==b->id&&(!mc_item_subtypes(a->id)||a->damage==b->damage);}
+/* Return -1 for the excluded outside-drop/crafting action, zero for no-op. */
+int mc_inventory_click(int slot,int right)
+{
+    struct MCItemStack *target,*held;struct MCItemStack temporary;int amount,limit;
+    if(slot<0||slot>=40){mc_inventory_error=-3;return -1;}
+    target=&mc_inventory_slots[slot];held=&mc_inventory_carried;
+    if(target->count<=0)
+    {
+        if(held->count<=0||!mc_inventory_slot_valid(slot,held))return 0;
+        amount=right?1:held->count;limit=mc_inventory_slot_limit(slot);if(amount>limit)amount=limit;
+        mc_inventory_copy(target,held);target->count=amount;held->count=held->count-amount;
+    }
+    else if(held->count<=0)
+    {
+        amount=right?(target->count+1)/2:target->count;
+        mc_inventory_copy(held,target);held->count=amount;target->count=target->count-amount;
+    }
+    else if(mc_inventory_slot_valid(slot,held))
+    {
+        if(!mc_inventory_same_kind(target,held))
+        {
+            if(held->count>mc_inventory_slot_limit(slot))return 0;
+            mc_inventory_copy(&temporary,target);mc_inventory_copy(target,held);mc_inventory_copy(held,&temporary);
+        }
+        else
+        {
+            amount=right?1:held->count;limit=mc_inventory_slot_limit(slot)-target->count;
+            if(amount>limit)amount=limit;limit=mc_item_limit(held->id)-target->count;if(amount>limit)amount=limit;
+            if(amount<=0)return 0;held->count=held->count-amount;target->count=target->count+amount;
+        }
+    }
+    else if(mc_inventory_same_kind(target,held)&&mc_item_limit(held->id)>1&&held->count+target->count<=mc_item_limit(held->id))
+    {held->count=held->count+target->count;target->count=0;}
+    else return 0;
+    if(target->count<=0)mc_inventory_empty(target);if(held->count<=0)mc_inventory_empty(held);
+    mc_inventory_changed=1;mc_inventory_error=0;return 1;
+}
+int mc_inventory_quick_transfer(int slot)
+{
+    int first,last,i,amount,changed=0;struct MCItemStack *source,*target;
+    if(slot<0||slot>=40)return 0;source=&mc_inventory_slots[slot];if(source->count<=0)return 0;
+    if(slot<9){first=9;last=36;}else if(slot<36){first=0;last=9;}else{first=9;last=45;}
+    /* Container order is main 9..35 followed by hotbar 0..8. Armor uses both. */
+    if(mc_item_stackable(source))for(i=first;i<last;i=i+1)
+    {
+        target=&mc_inventory_slots[i>=36?i-36:i];
+        if(target->count>0&&mc_inventory_same_kind(source,target))
+        {amount=mc_item_limit(source->id)-target->count;if(amount>source->count)amount=source->count;
+         if(amount>0){target->count=target->count+amount;source->count=source->count-amount;changed=1;}}
+    }
+    for(i=first;i<last&&source->count>0;i=i+1)
+    {
+        target=&mc_inventory_slots[i>=36?i-36:i];
+        if(target->count<=0){mc_inventory_copy(target,source);source->count=0;changed=1;break;}
+    }
+    if(source->count<=0)mc_inventory_empty(source);if(changed)mc_inventory_changed=1;return changed;
+}
+int mc_inventory_can_close(void)
+{if(mc_inventory_carried.count>0){mc_inventory_error=-4;return 0;}return 1;}
+#endif

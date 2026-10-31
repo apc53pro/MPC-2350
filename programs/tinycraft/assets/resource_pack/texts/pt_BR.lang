@@ -1,0 +1,16 @@
+tile.tinycraft:grass.name=Bloco de Grama
+tile.tinycraft:dirt.name=Terra
+tile.tinycraft:stone.name=Pedra
+tile.tinycraft:cobblestone.name=Pedregulho
+tile.tinycraft:oak_wood.name=Madeira de Carvalho
+tile.tinycraft:leaves.name=Folhas
+tile.tinycraft:oak_planks.name=Tabuas de Carvalho
+tile.tinycraft:crafting_table.name=Mesa de Trabalho
+item.tinycraft:stick.name=Graveto
+item.tinycraft:wooden_pickaxe.name=Picareta de Madeira
+item.tinycraft:wooden_sword.name=Espada de Madeira
+item.tinycraft:wooden_shovel.name=Pa de Madeira
+item.tinycraft:wooden_axe.name=Machado de Madeira
+item.tinycraft:raw_porkchop.name=Costeleta de Porco Crua
+entity.tinycraft:pig.name=Porco
+entity.tinycraft:zombie.name=Zumbi

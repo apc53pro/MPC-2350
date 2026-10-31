@@ -1,0 +1,132 @@
+/*
+ * Two-word modulo-2^64 arithmetic for Java long compatibility.
+ * NARMCC exposes 32-bit integers, so world seeds, world time, chunk seed
+ * formulas, and save fields use this explicit representation.
+ */
+
+struct MCU64 {
+    uint lo;
+    uint hi;
+};
+
+struct MCU64 mc_u64_test_a;
+struct MCU64 mc_u64_test_b;
+struct MCU64 mc_u64_test_result;
+
+void mc_u64_set(struct MCU64 *value, uint lo, uint hi)
+{
+    value->lo = lo;
+    value->hi = hi;
+}
+
+void mc_u64_from_i32(struct MCU64 *value, int input)
+{
+    value->lo = (uint)input;
+    value->hi = input < 0 ? 0xffffffff : 0;
+}
+
+void mc_u64_add(struct MCU64 *result, struct MCU64 *a, struct MCU64 *b)
+{
+    uint lo = a->lo + b->lo;
+    uint carry = lo < a->lo;
+    result->lo = lo;
+    result->hi = a->hi + b->hi + carry;
+}
+
+void mc_u64_xor(struct MCU64 *result, struct MCU64 *a, struct MCU64 *b)
+{
+    result->lo = a->lo ^ b->lo;
+    result->hi = a->hi ^ b->hi;
+}
+
+void mc_u32_multiply_full(uint a, uint b, uint *lo_out, uint *hi_out)
+{
+    uint a0 = a & 0xffff;
+    uint a1 = a >> 16;
+    uint b0 = b & 0xffff;
+    uint b1 = b >> 16;
+    uint t;
+    uint w0;
+    uint w1;
+    uint w2;
+    uint carry;
+
+    t = a0 * b0;
+    w0 = t & 0xffff;
+    carry = t >> 16;
+
+    t = a1 * b0 + carry;
+    w1 = t & 0xffff;
+    w2 = t >> 16;
+
+    t = a0 * b1 + w1;
+    carry = t >> 16;
+
+    *lo_out = (t << 16) | w0;
+    *hi_out = a1 * b1 + w2 + carry;
+}
+
+void mc_u64_multiply(struct MCU64 *result, struct MCU64 *a, struct MCU64 *b)
+{
+    uint low_lo;
+    uint low_hi;
+    uint cross_a_lo;
+    uint cross_a_hi;
+    uint cross_b_lo;
+    uint cross_b_hi;
+
+    mc_u32_multiply_full(a->lo, b->lo, &low_lo, &low_hi);
+    mc_u32_multiply_full(a->lo, b->hi, &cross_a_lo, &cross_a_hi);
+    mc_u32_multiply_full(a->hi, b->lo, &cross_b_lo, &cross_b_hi);
+
+    result->lo = low_lo;
+    result->hi = low_hi + cross_a_lo + cross_b_lo;
+}
+
+int mc_u64_equal(struct MCU64 *a, struct MCU64 *b)
+{
+    return a->lo == b->lo && a->hi == b->hi;
+}
+
+void mc_u64_shift_left(struct MCU64 *result, struct MCU64 *value, int bits)
+{
+    uint lo = value->lo;
+    uint hi = value->hi;
+    if (bits <= 0)
+    {
+        result->lo = lo;
+        result->hi = hi;
+    }
+    else if (bits < 32)
+    {
+        result->lo = lo << bits;
+        result->hi = (hi << bits) | (lo >> (32 - bits));
+    }
+    else if (bits < 64)
+    {
+        result->lo = 0;
+        result->hi = lo << (bits - 32);
+    }
+    else
+    {
+        result->lo = 0;
+        result->hi = 0;
+    }
+}
+
+
+int mc_u64_self_test(void)
+{
+    mc_u64_set(&mc_u64_test_a, 0x12345678, 0);
+    mc_u64_set(&mc_u64_test_b, 0x9abcdef0, 0);
+    mc_u64_multiply(&mc_u64_test_result, &mc_u64_test_a, &mc_u64_test_b);
+    if (mc_u64_test_result.lo != 0x242d2080) return 0;
+    if (mc_u64_test_result.hi != 0x0b00ea4e) return 0;
+
+    mc_u64_from_i32(&mc_u64_test_a, -123456789);
+    mc_u64_set(&mc_u64_test_b, 0x9939f508, 0x0000004f);
+    mc_u64_multiply(&mc_u64_test_result, &mc_u64_test_a, &mc_u64_test_b);
+    if (mc_u64_test_result.lo != 0xb32f7e58) return 0;
+    if (mc_u64_test_result.hi != 0xb6442e77) return 0;
+    return 1;
+}

@@ -1,0 +1,245 @@
+/* Exact Overworld base-density and biome-surface generation phase.
+ * Deliberately NOT a complete provideChunk/populate implementation. These
+ * outputs must remain isolated until caves, ravines, map features, population,
+ * source lighting and safe chunk persistence are implemented and verified.
+ */
+#ifdef MC10_WORLD_SYSTEMS
+#define MC_GEN_PHASE_BASE_SURFACE 2
+#define MC_GEN_PHASE_CAVES 3
+#define MC_GEN_PHASE_RAVINES 4
+#define MC_GEN_READY_BIOMES 1
+#define MC_GEN_READY_NOISE 2
+#define MC_GEN_READY_BASE 4
+#define MC_GEN_READY_SURFACE 8
+#define MC_GEN_READY_CAVES 16
+#define MC_GEN_READY_RAVINES 32
+#define MC_GEN_READY_STRUCTURES 64
+#define MC_GEN_READY_POPULATION 128
+#define MC_GEN_READY_LIGHTING 256
+#define MC_GEN_READY_PERSISTENCE 512
+#define MC_GEN_READY_COMPLETE 1023
+int mc_gen_capabilities(void)
+{
+    int ready=MC_GEN_READY_BIOMES|MC_GEN_READY_NOISE|MC_GEN_READY_BASE|MC_GEN_READY_SURFACE;
+#ifdef MC10_GENERATION_CARVERS
+    ready=ready|MC_GEN_READY_CAVES|MC_GEN_READY_RAVINES;
+#endif
+    return ready;
+}
+int mc_gen_ready_for_play(void)
+{return mc_gen_capabilities()==MC_GEN_READY_COMPLETE;}
+struct MCGenPerlin mc_gen_generators[78];
+struct MCJavaRandom mc_gen_random;
+struct MCJDouble mc_gen_noise1[425];
+struct MCJDouble mc_gen_noise2[425];
+struct MCJDouble mc_gen_noise3[425];
+struct MCJDouble mc_gen_noise6[25];
+struct MCJDouble mc_gen_density[425];
+struct MCJDouble mc_gen_stone_noise[256];
+int mc_gen_biomes[256];
+int mc_gen_temperatures[256];
+int mc_gen_low_biomes[100];
+float mc_gen_biome_weights[25];
+int mc_gen_initialized;
+int mc_gen_phase;
+struct MCU64 mc_gen_seed;
+int mc_gen_caves(struct MCU64 *world_seed,int cx,int cz,char *blocks);
+int mc_gen_ravines(struct MCU64 *world_seed,int cx,int cz,char *blocks);
+
+float mc_gen_biome_height(int biome,int maximum)
+{
+    float low[16]={-1.0f,0.1f,0.1f,0.2f,0.1f,0.1f,-0.2f,-0.5f,
+                   0.1f,0.1f,-1.0f,-0.5f,0.1f,0.2f,0.2f,-1.0f};
+    float high[16]={0.4f,0.3f,0.2f,1.8f,0.3f,0.4f,0.1f,0.0f,
+                    0.3f,0.3f,0.5f,0.0f,0.3f,1.8f,1.0f,0.1f};
+    return maximum?high[biome&15]:low[biome&15];
+}
+void mc_gen_initialize(struct MCU64 *seed)
+{
+    int i;int j;
+    mc_java_random_seed_u64(&mc_gen_random,seed);
+    /* Constructor order: 16,16,8,4,10,16,8 octaves, including unused noise5
+     * and mobSpawnerNoise so all source random consumption remains exact. */
+    mc_gen_octaves_init(mc_gen_generators,78,&mc_gen_random);
+    for(i=-2;i<=2;i=i+1)for(j=-2;j<=2;j=j+1)
+    {
+        mc_fp_reset();mc_gen_biome_weights[i+2+(j+2)*5]=
+            10.0f/mc_fp_to_f32(mc_fp_sqrt(mc_fp_f32((float)(i*i+j*j)+0.2f)));
+    }
+    mc_biome_seed(seed);mc_gen_initialized=1;mc_gen_phase=0;
+    mc_gen_seed.lo=seed->lo;mc_gen_seed.hi=seed->hi;
+}
+void mc_gen_scale(struct MCJDouble *scales,int x,int y,int z)
+{mc_gen_store(scales,x);mc_gen_store(scales+1,y);mc_gen_store(scales+2,z);}
+int mc_gen_density_field(int cx,int cz)
+{
+    struct MCJDouble scales[3];struct MCJDouble depth_value;
+    int x;int z;int y;int dx;int dz;int biome;int center;int column=0;int at=0;
+    int n;int low;int high;int blend;int slope;int result;int depth;int level;int height;int top;
+    float maximum;float minimum;float total;float weight;float local_low;float local_high;float center_low;
+    if(!mc_gen_initialized)return 0;
+    if(!mc_biome_region(0,cx*4-2,cz*4-2,10,10,mc_gen_low_biomes,mc_biome_scratch,3072))return 0;
+    mc_fp_reset();mc_gen_scale(scales,mc_fp_i32(200),D1,mc_fp_i32(200));
+    mc_gen_octaves(mc_gen_generators+54,16,mc_gen_noise6,cx*4,10,cz*4,5,1,5,scales);
+    /* Source noise5's samples are unused by initializeNoiseField. Evaluating
+     * them has no state or PRNG side effects; omit that dead array/work. */
+    mc_fp_reset();n=mc_fp_bits(0xc6a7ef9e,0x4085634b);
+    mc_gen_scale(scales,mc_fp_div(n,mc_fp_i32(80)),mc_fp_div(n,mc_fp_i32(160)),mc_fp_div(n,mc_fp_i32(80)));
+    mc_gen_octaves(mc_gen_generators+32,8,mc_gen_noise3,cx*4,0,cz*4,5,17,5,scales);
+    mc_fp_reset();n=mc_fp_bits(0xc6a7ef9e,0x4085634b);mc_gen_scale(scales,n,n,n);
+    mc_gen_octaves(mc_gen_generators,16,mc_gen_noise1,cx*4,0,cz*4,5,17,5,scales);
+    mc_gen_octaves(mc_gen_generators+16,16,mc_gen_noise2,cx*4,0,cz*4,5,17,5,scales);
+    for(x=0;x<5;x=x+1)for(z=0;z<5;z=z+1)
+    {
+        maximum=0.0f;minimum=0.0f;total=0.0f;
+        center=mc_gen_low_biomes[x+2+(z+2)*10];center_low=mc_gen_biome_height(center,0);
+        for(dx=-2;dx<=2;dx=dx+1)for(dz=-2;dz<=2;dz=dz+1)
+        {
+            biome=mc_gen_low_biomes[x+dx+2+(z+dz+2)*10];
+            local_low=mc_gen_biome_height(biome,0);local_high=mc_gen_biome_height(biome,1);
+            weight=mc_gen_biome_weights[dx+2+(dz+2)*5]/(local_low+2.0f);
+            if(local_low>center_low)weight=weight/2.0f;
+            maximum=maximum+local_high*weight;minimum=minimum+local_low*weight;total=total+weight;
+        }
+        maximum=maximum/total;minimum=minimum/total;
+        maximum=maximum*0.9f+0.1f;minimum=(minimum*4.0f-1.0f)/8.0f;
+        mc_fp_reset();depth=mc_fp_div(mc_gen_load(mc_gen_noise6+column),mc_fp_i32(8000));
+        if(mc_fp_lt(depth,D0))depth=mc_fp_mul(mc_fp_neg(depth),mc_fp_bits(0x33333333,0x3fd33333));
+        depth=mc_fp_sub(mc_fp_mul(depth,mc_fp_i32(3)),mc_fp_i32(2));
+        if(mc_fp_lt(depth,D0))
+        {
+            depth=mc_fp_div(depth,mc_fp_i32(2));if(mc_fp_lt(depth,mc_fp_neg(D1)))depth=mc_fp_neg(D1);
+            depth=mc_fp_div(mc_fp_div(depth,mc_fp_bits(0x66666666,0x3ff66666)),mc_fp_i32(2));
+        }
+        else{if(mc_fp_gt(depth,D1))depth=D1;depth=mc_fp_div(depth,mc_fp_i32(8));}
+        mc_gen_store(&depth_value,depth);column=column+1;
+        for(y=0;y<17;y=y+1)
+        {
+            mc_fp_reset();height=mc_fp_f32(maximum);
+            level=mc_fp_add(mc_fp_f32(minimum),mc_fp_mul(mc_gen_load(&depth_value),mc_fp_bits(0x9999999a,0x3fc99999)));
+            level=mc_fp_div(mc_fp_mul(level,mc_fp_i32(17)),mc_fp_i32(16));
+            level=mc_fp_add(mc_fp_div(mc_fp_i32(17),mc_fp_i32(2)),mc_fp_mul(level,mc_fp_i32(4)));
+            slope=mc_fp_div(mc_fp_div(mc_fp_mul(mc_fp_mul(mc_fp_sub(mc_fp_i32(y),level),mc_fp_i32(12)),mc_fp_i32(128)),mc_fp_i32(128)),height);
+            if(mc_fp_lt(slope,D0))slope=mc_fp_mul(slope,mc_fp_i32(4));
+            low=mc_fp_div(mc_gen_load(mc_gen_noise1+at),mc_fp_i32(512));
+            high=mc_fp_div(mc_gen_load(mc_gen_noise2+at),mc_fp_i32(512));
+            blend=mc_fp_div(mc_fp_add(mc_fp_div(mc_gen_load(mc_gen_noise3+at),mc_fp_i32(10)),D1),mc_fp_i32(2));
+            if(mc_fp_lt(blend,D0))result=low;
+            else if(mc_fp_gt(blend,D1))result=high;
+            else result=mc_fp_add(low,mc_fp_mul(mc_fp_sub(high,low),blend));
+            result=mc_fp_sub(result,slope);
+            if(y>13)
+            {
+                top=mc_fp_f32((float)(y-13)/3.0f);
+                result=mc_fp_add(mc_fp_mul(result,mc_fp_sub(D1,top)),mc_fp_mul(mc_fp_i32(-10),top));
+            }
+            mc_gen_store(mc_gen_density+at,result);at=at+1;
+        }
+    }
+    return mc_fp_error==0;
+}
+void mc_gen_terrain_blocks(char *blocks)
+{
+    int x;int z;int y;int sy;int sx;int sz;int k;int index;int value;
+    int corners[4];int delta[4];int a;int b;int da;int db;int along;int step;int v;
+    for(x=0;x<4;x=x+1)for(z=0;z<4;z=z+1)for(y=0;y<16;y=y+1)
+    {
+        mc_fp_reset();
+        for(k=0;k<4;k=k+1)
+        {
+            index=(((x+(k>>1))*5+z+(k&1))*17)+y;
+            corners[k]=mc_gen_load(mc_gen_density+index);
+            delta[k]=mc_fp_mul(mc_fp_sub(mc_gen_load(mc_gen_density+index+1),corners[k]),mc_fp_bits(0,0x3fc00000));
+        }
+        for(sy=0;sy<8;sy=sy+1)
+        {
+            a=corners[0];b=corners[1];
+            da=mc_fp_mul(mc_fp_sub(corners[2],a),mc_fp_bits(0,0x3fd00000));
+            db=mc_fp_mul(mc_fp_sub(corners[3],b),mc_fp_bits(0,0x3fd00000));
+            for(sx=0;sx<4;sx=sx+1)
+            {
+                step=mc_fp_mul(mc_fp_sub(b,a),mc_fp_bits(0,0x3fd00000));along=mc_fp_sub(a,step);
+                for(sz=0;sz<4;sz=sz+1)
+                {
+                    along=mc_fp_add(along,step);v=y*8+sy;
+                    value=mc_fp_gt(along,D0)?1:(v<63?9:0);
+                    blocks[((x*4+sx)*16+z*4+sz)*128+v]=(char)value;
+                }
+                a=mc_fp_add(a,da);b=mc_fp_add(b,db);
+            }
+            for(k=0;k<4;k=k+1)corners[k]=mc_fp_add(corners[k],delta[k]);
+        }
+    }
+}
+int mc_gen_surface_blocks(int cx,int cz,char *blocks)
+{
+    int z;int x;int y;int biome;int top;int filler;int thickness;int remaining;int at;int value;int n;
+    float temperature;struct MCJDouble random_double;struct MCJDouble scales[3];
+    struct MCU64 xs;struct MCU64 zs;struct MCU64 factor;struct MCU64 seed;
+    mc_u64_from_i32(&xs,cx);mc_u64_from_i32(&zs,cz);
+    mc_u64_set(&factor,0x9939f508,0x0000004f);mc_u64_multiply(&xs,&xs,&factor);
+    mc_u64_set(&factor,0xf1565bd5,0x0000001e);mc_u64_multiply(&zs,&zs,&factor);
+    mc_u64_add(&seed,&xs,&zs);mc_java_random_seed_u64(&mc_gen_random,&seed);
+    if(!mc_biome_region(1,cx*16,cz*16,16,16,mc_gen_biomes,mc_biome_scratch,3072))return 0;
+    if(!mc_biome_region(2,cx*16,cz*16,16,16,mc_gen_temperatures,mc_biome_scratch,3072))return 0;
+    mc_fp_reset();n=mc_fp_bits(0,0x3fb00000);mc_gen_scale(scales,n,n,n);
+    mc_gen_octaves(mc_gen_generators+40,4,mc_gen_stone_noise,cx*16,cz*16,0,16,16,1,scales);
+    for(z=0;z<16;z=z+1)for(x=0;x<16;x=x+1)
+    {
+        temperature=(float)mc_gen_temperatures[x+z*16]/65536.0f;if(temperature>1.0f)temperature=1.0f;
+        biome=mc_gen_biomes[x+z*16];top=(biome==2)?12:((biome==14 || biome==15)?110:2);
+        filler=biome==2?12:3;remaining=-1;
+        mc_java_random_next_double_bits(&mc_gen_random,&random_double);mc_fp_reset();
+        n=mc_fp_add(mc_fp_add(mc_fp_div(mc_gen_load(mc_gen_stone_noise+z+x*16),mc_fp_i32(3)),mc_fp_i32(3)),
+                    mc_fp_mul(mc_gen_load(&random_double),mc_fp_bits(0,0x3fd00000)));
+        thickness=mc_fp_trunc(n);
+        for(y=127;y>=0;y=y-1)
+        {
+            at=(x*16+z)*128+y;
+            if(y<=mc_java_random_next_int_bound(&mc_gen_random,5))blocks[at]=7;
+            else
+            {
+                value=blocks[at]&255;
+                if(value==0)remaining=-1;
+                else if(value==1)
+                {
+                    if(remaining==-1)
+                    {
+                        if(thickness<=0){top=0;filler=1;}
+                        else if(y>=59 && y<=64)
+                        {top=(biome==2)?12:((biome==14 || biome==15)?110:2);filler=biome==2?12:3;}
+                        if(y<63 && top==0)top=temperature<0.15f?79:9;
+                        remaining=thickness;blocks[at]=(char)(y>=62?top:filler);
+                    }
+                    else if(remaining>0)
+                    {
+                        remaining=remaining-1;blocks[at]=(char)filler;
+                        if(remaining==0 && filler==12){remaining=mc_java_random_next_int_bound(&mc_gen_random,4);filler=24;}
+                    }
+                }
+            }
+        }
+    }
+    return mc_fp_error==0;
+}
+int mc_gen_base_surface(int cx,int cz,char *blocks)
+{
+    mc_gen_phase=0;
+    if(!mc_gen_density_field(cx,cz))return 0;
+    mc_gen_terrain_blocks(blocks);if(mc_fp_error)return 0;
+    if(!mc_gen_surface_blocks(cx,cz,blocks))return 0;
+    mc_gen_phase=MC_GEN_PHASE_BASE_SURFACE;return 1;
+}
+#ifdef MC10_GENERATION_CARVERS
+int mc_gen_base_carved(struct MCU64 *seed,int cx,int cz,char *blocks)
+{
+    if(!mc_gen_initialized || !mc_u64_equal(seed,&mc_gen_seed))return 0;
+    if(!mc_gen_base_surface(cx,cz,blocks))return 0;
+    if(!mc_gen_caves(seed,cx,cz,blocks))return 0;
+    mc_gen_phase=MC_GEN_PHASE_CAVES;
+    if(!mc_gen_ravines(seed,cx,cz,blocks))return 0;
+    mc_gen_phase=MC_GEN_PHASE_RAVINES;return 1;
+}
+#endif
+#endif
+

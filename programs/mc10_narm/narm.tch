@@ -1,0 +1,350 @@
+#ifndef NARM_TCH
+#define NARM_TCH
+
+// Stable NARMCC source-level runtime surface.  These are compiler built-ins;
+// programs do not link against firmware symbols or an RP2350 SDK.
+void renderStats(unsigned flags);
+unsigned renderStat(unsigned index);
+// Synchronous textured list: seven words per command: packed x,y,z,u,v
+// float vertices, texture, optional mask, width, height, flags, vertex count.
+// At most 256 commands. Mode 0 immediate; 1 one tile worker; 2 two workers.
+// Modes 257/258 add conservative occlusion to tiled workers 1/2;
+// require renderStat(70)==0x43550001. Inputs remain synchronous.
+int drawTexturedList(const unsigned *commands, unsigned count,
+                     const float *transform, unsigned mode);
+int narm_yield(void);
+unsigned narm_millis(void);
+unsigned narm_micros(void);
+unsigned narm_random_u32(void);
+int narm_sleep_ms(unsigned milliseconds);
+void narm_exit(int status);
+int narm_run_program(const char *path, unsigned storage);
+// Starts a focused child and preserves this process. Returns child PID or a
+// negative load/service error. Requires firmware API 1.11 or newer.
+int narm_spawn_program(const char *path, unsigned storage);
+float narm_sin(float value);
+float narm_cos(float value);
+
+// Process identity, focus and scheduler state (firmware API 1.10+).
+#define NARM_RUN_MODE_AUTO 0
+#define NARM_RUN_MODE_FOREGROUND 1
+#define NARM_RUN_MODE_BACKGROUND 2
+#define NARM_EVENT_NONE 0
+#define NARM_EVENT_FOCUS_GAINED 1
+#define NARM_EVENT_FOCUS_LOST 2
+#define NARM_EVENT_CLOSE_REQUESTED 3
+#define NARM_EVENT_MODE_CHANGED 4
+unsigned narm_get_pid(void);
+int narm_has_focus(void);
+int narm_get_run_mode(void);
+int narm_get_effective_run_mode(void);
+int narm_poll_system_event(void);
+
+// Explicit foreground USB mass-storage mode (firmware API 1.12+). Enabling
+// disconnects firmware access to the internal flash volume and exposes it to
+// the PC. Disable only succeeds after the PC has safely ejected the drive.
+#define NARM_USB_STORAGE_DISABLED 0
+#define NARM_USB_STORAGE_ENABLED 1
+#define NARM_USB_STORAGE_HOST_OWNED 2
+#define NARM_USB_STORAGE_EJECTED 3
+#define NARM_USB_STORAGE_ERROR 4
+int narm_usb_storage_enable(void);
+int narm_usb_storage_disable(void);
+int narm_usb_storage_status(void);
+
+// Shared firmware audio mixer: 8 voices, 48 kHz output. WAV paths address SD
+// files and PCM arrays contain signed 16-bit interleaved mono/stereo samples.
+// PCM storage must remain valid until the voice finishes or is stopped.
+#define NARM_AUDIO_VOICE_COUNT 8
+#define NARM_AUDIO_OUTPUT_RATE 48000
+#define NARM_AUDIO_RUNTIME_READY 1
+#define NARM_AUDIO_OUTPUT_READY 2
+unsigned narm_audio_status(void);
+int narm_audio_ready(void);
+int narm_audio_play_wav(unsigned voice, const char *path);
+int narm_audio_play_wav_from(unsigned voice, const char *path,
+                             unsigned start_frame);
+int narm_audio_play_pcm(unsigned voice, const short *samples,
+                        unsigned frame_count, unsigned sample_rate,
+                        unsigned channel_count);
+int narm_audio_play_pcm_from(unsigned voice, const short *samples,
+                             unsigned frame_count, unsigned start_frame,
+                             unsigned sample_rate, unsigned channel_count);
+int narm_audio_stop(unsigned voice);
+int narm_audio_stop_all(void);
+int narm_audio_active(unsigned voice);
+#define NARM_AUDIO_POSITION_ACTIVE 1
+#define NARM_AUDIO_POSITION_PAUSED 2
+// Source PCM-frame position (including any start_frame seek), total frame
+// count and native source sample rate. Output pointers must be non-null.
+int narm_audio_position(unsigned voice, unsigned *current_frame,
+                         unsigned *total_frames, unsigned *sample_rate,
+                         unsigned *flags);
+int narm_audio_pause(unsigned voice, unsigned paused);
+unsigned narm_audio_underflows(void);
+unsigned narm_audio_starvations(void);
+
+// Runtime-neutral file I/O. Storage 0 is the FAT flash volume and storage 1
+// is SD. The old LITTLEFS spelling remains as a source-compatibility alias.
+#define NARM_STORAGE_FLASH 0
+#define NARM_STORAGE_LITTLEFS NARM_STORAGE_FLASH
+#define NARM_STORAGE_SD 1
+#define NARM_FILE_ENTRY 0
+#define NARM_DIRECTORY_ENTRY 1
+int narm_storage_mount(unsigned storage);
+int narm_file_exists(const char *path, unsigned storage);
+int narm_file_create(const char *path, unsigned storage);
+int narm_file_delete(const char *path, unsigned storage);
+int narm_file_rename(const char *from, const char *to, unsigned storage);
+int narm_file_size(const char *path, unsigned storage, unsigned *size_out);
+int narm_file_read(const char *path, void *buffer, unsigned file_offset,
+                   unsigned byte_count, unsigned storage);
+int narm_file_write(const char *path, const void *buffer, unsigned file_offset,
+                    unsigned byte_count, unsigned storage);
+int narm_dir_make(const char *path, unsigned storage);
+int narm_dir_delete(const char *path, unsigned storage);
+int narm_dir_entry(const char *path, unsigned index, char *name_out,
+                   unsigned name_capacity, unsigned *name_length_out,
+                   unsigned *type_out, unsigned storage);
+
+#define sin(value) narm_sin((value))
+#define cos(value) narm_cos((value))
+
+// VMCC-compatible explicit-byte spellings. NARM pointers are ordinary byte
+// addresses, so the VM-only packed-memory address variants are unnecessary.
+#define sdMount() narm_storage_mount(NARM_STORAGE_SD)
+#define sdFileExists(path) narm_file_exists((path), NARM_STORAGE_SD)
+#define sdFileMake(path) narm_file_create((path), NARM_STORAGE_SD)
+#define sdFileCreate(path) narm_file_create((path), NARM_STORAGE_SD)
+#define sdFileDelete(path) narm_file_delete((path), NARM_STORAGE_SD)
+#define sdFileSize(path, out) narm_file_size((path), NARM_STORAGE_SD, (out))
+#define sdFileReadBytes(path, ptr, off, len) narm_file_read((path), (ptr), (off), (len), NARM_STORAGE_SD)
+#define sdFileWriteBytes(path, ptr, off, len) narm_file_write((path), (ptr), (off), (len), NARM_STORAGE_SD)
+#define sdDirMake(path) narm_dir_make((path), NARM_STORAGE_SD)
+#define sdDirDelete(path) narm_dir_delete((path), NARM_STORAGE_SD)
+#define fsFileExists(path) narm_file_exists((path), NARM_STORAGE_LITTLEFS)
+#define fsFileMake(path) narm_file_create((path), NARM_STORAGE_LITTLEFS)
+#define fsFileCreate(path) narm_file_create((path), NARM_STORAGE_LITTLEFS)
+#define fsFileDelete(path) narm_file_delete((path), NARM_STORAGE_LITTLEFS)
+#define fsFileSize(path, out) narm_file_size((path), NARM_STORAGE_LITTLEFS, (out))
+#define fsFileReadBytes(path, ptr, off, len) narm_file_read((path), (ptr), (off), (len), NARM_STORAGE_LITTLEFS)
+#define fsFileWriteBytes(path, ptr, off, len) narm_file_write((path), (ptr), (off), (len), NARM_STORAGE_LITTLEFS)
+#define fsDirMake(path) narm_dir_make((path), NARM_STORAGE_LITTLEFS)
+#define fsDirDelete(path) narm_dir_delete((path), NARM_STORAGE_LITTLEFS)
+
+// Keyboard key IDs are the stable USB HID Keyboard/Keypad usage values. They
+// are independent of the physical keyboard transport used by the firmware.
+#define NARM_KEY_A 0x04
+#define NARM_KEY_B 0x05
+#define NARM_KEY_C 0x06
+#define NARM_KEY_D 0x07
+#define NARM_KEY_E 0x08
+#define NARM_KEY_F 0x09
+#define NARM_KEY_G 0x0a
+#define NARM_KEY_H 0x0b
+#define NARM_KEY_I 0x0c
+#define NARM_KEY_J 0x0d
+#define NARM_KEY_K 0x0e
+#define NARM_KEY_L 0x0f
+#define NARM_KEY_M 0x10
+#define NARM_KEY_N 0x11
+#define NARM_KEY_O 0x12
+#define NARM_KEY_P 0x13
+#define NARM_KEY_Q 0x14
+#define NARM_KEY_R 0x15
+#define NARM_KEY_S 0x16
+#define NARM_KEY_T 0x17
+#define NARM_KEY_U 0x18
+#define NARM_KEY_V 0x19
+#define NARM_KEY_W 0x1a
+#define NARM_KEY_X 0x1b
+#define NARM_KEY_Y 0x1c
+#define NARM_KEY_Z 0x1d
+#define NARM_KEY_ENTER 0x28
+#define NARM_KEY_ESCAPE 0x29
+#define NARM_KEY_BACKSPACE 0x2a
+#define NARM_KEY_TAB 0x2b
+#define NARM_KEY_SPACE 0x2c
+#define NARM_KEY_F1 0x3a
+#define NARM_KEY_F2 0x3b
+#define NARM_KEY_F3 0x3c
+#define NARM_KEY_F4 0x3d
+#define NARM_KEY_F5 0x3e
+#define NARM_KEY_F6 0x3f
+#define NARM_KEY_F7 0x40
+#define NARM_KEY_F8 0x41
+#define NARM_KEY_F9 0x42
+#define NARM_KEY_F10 0x43
+#define NARM_KEY_F11 0x44
+#define NARM_KEY_F12 0x45
+#define NARM_KEY_RIGHT 0x4f
+#define NARM_KEY_LEFT 0x50
+#define NARM_KEY_DOWN 0x51
+#define NARM_KEY_UP 0x52
+#define NARM_KEY_LEFT_CONTROL 0xe0
+#define NARM_KEY_LEFT_SHIFT 0xe1
+#define NARM_KEY_LEFT_ALT 0xe2
+#define NARM_KEY_RIGHT_CONTROL 0xe4
+#define NARM_KEY_RIGHT_SHIFT 0xe5
+#define NARM_KEY_RIGHT_ALT 0xe6
+
+#define NARM_KEY_ACTION_PRESS 1
+#define NARM_KEY_ACTION_RELEASE 2
+#define NARM_KEY_ACTION_REPEAT 3
+#define NARM_KEY_MOD_SHIFT 0x01
+#define NARM_KEY_MOD_CONTROL 0x02
+#define NARM_KEY_MOD_ALT 0x04
+#define NARM_KEY_MOD_GUI 0x08
+#define NARM_KEY_MOD_CAPS_LOCK 0x10
+#define NARM_KEY_MOD_NUM_LOCK 0x20
+
+// State queries are immediate. Event polling returns one normalized event,
+// zero when the queue is empty, or a negative service error.
+int narm_key_down(unsigned key);
+int narm_ps2_key_down(unsigned scan_code, unsigned extended);
+int narm_next_key_event(unsigned *key, unsigned *action,
+                        unsigned *modifiers, unsigned *character);
+
+int narm_clear(unsigned color_index);
+int narm_pixel(int x, int y, unsigned color_index);
+int narm_fill_rect(int x0, int y0, int x1, int y1, unsigned color_index);
+int narm_line(int x0, int y0, int x1, int y1, unsigned color_index);
+int narm_present(void);
+
+// Shared 320x240 RGB332 framebuffer. These calls never allocate framebuffer
+// memory in the process; every foreground NARM program uses the firmware's
+// existing color, depth, and depth-stamp buffers.
+int narm_half_present(void);
+int narm_half_clear(unsigned color);
+// Generic depth-only render-pass boundary; preserves the completed color.
+// Requires firmware renderStat(76)==0x44430001 before use.
+int narm_half_clear_depth(void);
+int narm_half_pixel(unsigned pixel_index, unsigned color);
+int narm_half_fill_rect(int x0, int y0, int x1, int y1, unsigned color);
+int narm_half_line(int x0, int y0, int x1, int y1, unsigned color);
+int narm_half_fill_triangle(int x0, int y0, int x1, int y1,
+                            int x2, int y2, unsigned color);
+int narm_half_blit(int x, int y, int width, int height,
+                   const unsigned *texture);
+int narm_half_blit_masked(int x, int y, int width, int height,
+                          const unsigned *texture, const unsigned *mask);
+int narm_half_glyph(int x, int y, int width, int height,
+                    const unsigned *glyph, unsigned color);
+int narm_vga4_glyph(int x, int y, int width, int height,
+                    const unsigned *glyph, unsigned palette_index);
+
+// VMCC-compatible graphics spellings. Existing Tiny-C rendering code can be
+// compiled by NARMCC without acquiring private buffers or firmware addresses.
+void drawBuffer(void);
+void present(void);
+void clearBuffer(unsigned color);
+void clear(unsigned color);
+void putPixel(unsigned pixel_index, unsigned color);
+void fillRect2D(int x0, int y0, int x1, int y1, unsigned color);
+void fillRect2DTex(int x, int y, int width, int height,
+                   const unsigned *texture);
+void fillRect2DTexMasking(int x, int y, int width, int height,
+                          const unsigned *texture, const unsigned *mask);
+void putFont(int x, int y, int width, int height,
+             const unsigned *glyph, unsigned color);
+void putGlyph(int x, int y, int width, int height,
+              const unsigned *glyph, unsigned color);
+void drawLine(int x0, int y0, int x1, int y1, unsigned color);
+void fillTri(int x0, int y0, int x1, int y1,
+             int x2, int y2, unsigned color);
+
+void presentVga4(void);
+void clearVga4(unsigned palette_index);
+void putPixelVga4(int x, int y, unsigned palette_index);
+void fillRectVga4(int x0, int y0, int x1, int y1, unsigned palette_index);
+void drawLineVga4(int x0, int y0, int x1, int y1, unsigned palette_index);
+void putFontVga4(int x, int y, int width, int height,
+                 const unsigned *glyph, unsigned palette_index);
+void putGlyphVga4(int x, int y, int width, int height,
+                  const unsigned *glyph, unsigned palette_index);
+
+void fillTriGouraud(int x0, int y0, unsigned z0, unsigned color0,
+                    int x1, int y1, unsigned z1, unsigned color1,
+                    int x2, int y2, unsigned z2, unsigned color2);
+void fillTri3DZ(float x0, float y0, float z0,
+                 float x1, float y1, float z1,
+                 float x2, float y2, float z2,
+                 unsigned color, const float *transform);
+void fillQuad3DZ(float x0, float y0, float z0,
+                  float x1, float y1, float z1,
+                  float x2, float y2, float z2,
+                  float x3, float y3, float z3,
+                  unsigned color, const float *transform);
+void fillTri3DGouraudZ(float x0, float y0, float z0, unsigned color0,
+                        float x1, float y1, float z1, unsigned color1,
+                        float x2, float y2, float z2, unsigned color2,
+                        const float *transform);
+void fillTri3DShadedZ(float x0, float y0, float z0, unsigned color0,
+                       float x1, float y1, float z1, unsigned color1,
+                       float x2, float y2, float z2, unsigned color2,
+                       const float *transform);
+void fillQuad3DGouraudZ(float x0, float y0, float z0, unsigned color0,
+                         float x1, float y1, float z1, unsigned color1,
+                         float x2, float y2, float z2, unsigned color2,
+                         float x3, float y3, float z3, unsigned color3,
+                         const float *transform);
+void fillQuad3DShadedZ(float x0, float y0, float z0, unsigned color0,
+                        float x1, float y1, float z1, unsigned color1,
+                        float x2, float y2, float z2, unsigned color2,
+                        float x3, float y3, float z3, unsigned color3,
+                        const float *transform);
+void fillTri3DTexZ(float x0, float y0, float z0, float u0, float v0,
+                    float x1, float y1, float z1, float u1, float v1,
+                    float x2, float y2, float z2, float u2, float v2,
+                    const unsigned *texture, unsigned width, unsigned height,
+                    unsigned flags, const float *transform);
+void fillQuad3DTexZ(float x0, float y0, float z0, float u0, float v0,
+                     float x1, float y1, float z1, float u1, float v1,
+                     float x2, float y2, float z2, float u2, float v2,
+                     float x3, float y3, float z3, float u3, float v3,
+                     const unsigned *texture, unsigned width, unsigned height,
+                     unsigned flags, const float *transform);
+void fillQuad3DTexZTiled(float x0, float y0, float z0, float u0, float v0,
+                          float x1, float y1, float z1, float u1, float v1,
+                          float x2, float y2, float z2, float u2, float v2,
+                          float x3, float y3, float z3, float u3, float v3,
+                          const unsigned *texture, unsigned width, unsigned height,
+                          unsigned flags, const float *transform);
+void fillTri3DTexZMask(float x0, float y0, float z0, float u0, float v0,
+                        float x1, float y1, float z1, float u1, float v1,
+                        float x2, float y2, float z2, float u2, float v2,
+                        const unsigned *texture, unsigned width, unsigned height,
+                        unsigned flags, const float *transform,
+                        const unsigned *mask);
+void fillTri3DTexZMasked(float x0, float y0, float z0, float u0, float v0,
+                          float x1, float y1, float z1, float u1, float v1,
+                          float x2, float y2, float z2, float u2, float v2,
+                          const unsigned *texture, unsigned width, unsigned height,
+                          unsigned flags, const float *transform,
+                          const unsigned *mask);
+void fillQuad3DTexZMask(float x0, float y0, float z0, float u0, float v0,
+                         float x1, float y1, float z1, float u1, float v1,
+                         float x2, float y2, float z2, float u2, float v2,
+                         float x3, float y3, float z3, float u3, float v3,
+                         const unsigned *texture, unsigned width, unsigned height,
+                         unsigned flags, const float *transform,
+                         const unsigned *mask);
+void fillQuad3DTexZMasked(float x0, float y0, float z0, float u0, float v0,
+                           float x1, float y1, float z1, float u1, float v1,
+                           float x2, float y2, float z2, float u2, float v2,
+                           float x3, float y3, float z3, float u3, float v3,
+                           const unsigned *texture, unsigned width, unsigned height,
+                           unsigned flags, const float *transform,
+                           const unsigned *mask);
+void fillPackedTerrainMeshList(int head,
+                               const unsigned *p0, const unsigned *p1,
+                               const int *next, unsigned mesh_limit,
+                               const float *config,
+                               const unsigned **top_textures,
+                               const unsigned **bottom_textures,
+                               const unsigned **side_textures,
+                               const float *transform);
+void renderStats(unsigned enabled);
+unsigned renderStat(unsigned index);
+
+#endif

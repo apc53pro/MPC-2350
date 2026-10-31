@@ -1,0 +1,171 @@
+/*
+ * Java Random compatibility without NARMCC 64-bit integers.
+ *
+ * The 48-bit state is stored as four little-endian base-4096 limbs. The Java
+ * multiplier 0x5DEECE66D is [0x66d, 0xece, 0x5de, 0x000] in that base.
+ * Each schoolbook accumulation stays below 2^32.
+ */
+
+struct MCJavaRandom {
+    uint d0;
+    uint d1;
+    uint d2;
+    uint d3;
+};
+
+struct MCJavaRandom mc_random_test_state;
+
+void mc_java_random_seed_parts(struct MCJavaRandom *random, uint seed_low32,
+                               uint seed_high16)
+{
+    random->d0 = (seed_low32 & 0xfff) ^ 0x66d;
+    random->d1 = ((seed_low32 >> 12) & 0xfff) ^ 0xece;
+    random->d2 = (((seed_low32 >> 24) & 0xff) |
+                  ((seed_high16 & 0xf) << 8)) ^ 0x5de;
+    random->d3 = (seed_high16 >> 4) & 0xfff;
+}
+
+void mc_java_random_seed_u32(struct MCJavaRandom *random, uint seed)
+{
+    mc_java_random_seed_parts(random, seed, 0);
+}
+
+void mc_java_random_seed_u64(struct MCJavaRandom *random, struct MCU64 *seed)
+{
+    mc_java_random_seed_parts(random, seed->lo, seed->hi & 0xffff);
+}
+
+void mc_java_random_advance(struct MCJavaRandom *random)
+{
+    uint a0 = random->d0;
+    uint a1 = random->d1;
+    uint a2 = random->d2;
+    uint a3 = random->d3;
+    uint carry;
+    uint sum;
+    uint o0;
+    uint o1;
+    uint o2;
+    uint o3;
+
+    sum = a0 * 0x66d + 11;
+    o0 = sum & 0xfff;
+    carry = sum >> 12;
+
+    sum = carry + a0 * 0xece + a1 * 0x66d;
+    o1 = sum & 0xfff;
+    carry = sum >> 12;
+
+    sum = carry + a0 * 0x5de + a1 * 0xece + a2 * 0x66d;
+    o2 = sum & 0xfff;
+    carry = sum >> 12;
+
+    sum = carry + a1 * 0x5de + a2 * 0xece + a3 * 0x66d;
+    o3 = sum & 0xfff;
+
+    random->d0 = o0;
+    random->d1 = o1;
+    random->d2 = o2;
+    random->d3 = o3;
+}
+
+uint mc_java_random_next_bits(struct MCJavaRandom *random, int bits)
+{
+    int shift;
+    uint low24;
+    uint high24;
+
+    if (bits < 1 || bits > 32) return 0;
+    mc_java_random_advance(random);
+
+    low24 = random->d0 | (random->d1 << 12);
+    high24 = random->d2 | (random->d3 << 12);
+    shift = 48 - bits;
+    if (shift >= 24) return high24 >> (shift - 24);
+    return (low24 >> shift) | (high24 << (24 - shift));
+}
+
+uint mc_java_random_next_u32(struct MCJavaRandom *random)
+{
+    return mc_java_random_next_bits(random, 32);
+}
+
+void mc_java_random_next_long(struct MCJavaRandom *random, struct MCU64 *result)
+{
+    uint high = mc_java_random_next_bits(random, 32);
+    uint low = mc_java_random_next_bits(random, 32);
+    /* java.util.Random adds a signed low int to (signed high << 32). */
+    if (low & 0x80000000) high = high - 1;
+    result->lo = low;
+    result->hi = high;
+}
+
+int mc_java_random_next_int_bound(struct MCJavaRandom *random, int bound)
+{
+    uint bits;
+    uint value;
+    uint rejection_sum;
+    int log2_bound;
+    int test_bound;
+
+    if (bound <= 0) return -1;
+
+    if ((bound & (bound - 1)) == 0)
+    {
+        log2_bound = 0;
+        test_bound = bound;
+        while (test_bound > 1)
+        {
+            test_bound = test_bound >> 1;
+            log2_bound = log2_bound + 1;
+        }
+        bits = mc_java_random_next_bits(random, 31);
+        return (int)(bits >> (31 - log2_bound));
+    }
+
+    for (;;)
+    {
+        bits = mc_java_random_next_bits(random, 31);
+        value = bits % (uint)bound;
+        rejection_sum = bits - value + (uint)(bound - 1);
+        if ((rejection_sum & 0x80000000) == 0) return (int)value;
+    }
+}
+
+float mc_java_random_next_float(struct MCJavaRandom *random)
+{
+    return (float)mc_java_random_next_bits(random, 24) / 16777216.0f;
+}
+
+void mc_java_random_next_double_bits(struct MCJavaRandom *random,
+                                     struct MCJDouble *result)
+{
+    uint upper26 = mc_java_random_next_bits(random, 26);
+    uint lower27 = mc_java_random_next_bits(random, 27);
+    uint integer_low = (upper26 << 27) | lower27;
+    uint integer_high = upper26 >> 5;
+    mc_java_double_from_fraction53(result, integer_low, integer_high);
+}
+
+
+int mc_java_random_self_test(void)
+{
+    mc_java_random_seed_u32(&mc_random_test_state, 0);
+    if (mc_java_random_next_u32(&mc_random_test_state) != 0xbb20b460) return 0;
+    if (mc_java_random_next_u32(&mc_random_test_state) != 0xd4d95138) return 0;
+    if (mc_java_random_next_u32(&mc_random_test_state) != 0x3d93cb7a) return 0;
+    if (mc_java_random_next_u32(&mc_random_test_state) != 0x9b3970be) return 0;
+
+    mc_java_random_seed_u32(&mc_random_test_state, 0);
+    if (mc_java_random_next_int_bound(&mc_random_test_state, 100) != 60) return 0;
+    if (mc_java_random_next_int_bound(&mc_random_test_state, 100) != 48) return 0;
+    if (mc_java_random_next_int_bound(&mc_random_test_state, 100) != 29) return 0;
+    if (mc_java_random_next_int_bound(&mc_random_test_state, 100) != 47) return 0;
+
+    mc_java_random_seed_u32(&mc_random_test_state, 0);
+    mc_java_random_next_long(&mc_random_test_state, &mc_u64_test_result);
+    if (mc_u64_test_result.lo != 0xd4d95138) return 0;
+    if (mc_u64_test_result.hi != 0xbb20b45f) return 0;
+    return 1;
+}
+

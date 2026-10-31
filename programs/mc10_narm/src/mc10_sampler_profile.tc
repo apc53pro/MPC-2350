@@ -1,0 +1,76 @@
+/* Diagnostic only. One binary and one firmware image alternate the retained
+ * original sampler and the clamped specialization. All reads/logging happen
+ * outside measured frames. Counters are covered candidates, NOT texel fetches.
+ */
+struct MCSamplerSample {
+    struct MCBenchmarkSample sample;
+    uint counters[10];
+    uint flags;uint sys_hz;uint peri_hz;uint order;
+};
+struct MCSamplerSample mc_sampler_samples[40];
+
+int mc_sampler_collect(void)
+{
+    int view,pair,order,mode,j,index,ok=1,saved_hud=mc_render_show_hud;
+    uint flags,*out,*in;struct MCSamplerSample *s;
+    mc_bench_cancelled=0;mc_bench_completed=0;
+    mc_bench_run_started_ms=narm_millis();
+    mc_bench_saved_yaw=mc_runtime_player.yaw_bits;mc_bench_saved_pitch=mc_runtime_player.pitch_bits;
+    if(renderStat(19)!=0x53500001)return 0;
+    for(view=0;view<4&&ok;view=view+1)
+    {
+        mc_runtime_player.yaw_bits=mc_bench_saved_yaw;
+        mc_runtime_player.pitch_bits=view>=2?0xc2b40000:mc_bench_saved_pitch;
+        mc_render_show_hud=(view&1)==0;mc_profile_valid=0;
+        for(mode=0;mode<2;mode=mode+1)
+        {
+            renderStats(mode?1:257);
+            if(!mc_bench_measure_frame()){ok=0;break;}
+        }
+        for(pair=0;pair<5&&ok;pair=pair+1)for(order=0;order<2;order=order+1)
+        {
+            mode=(view+pair+order)&1;flags=mode?1:257;
+            renderStats(flags);
+            if(!mc_bench_measure_frame()){ok=0;break;}
+            index=mode*20+view*5+pair;s=&mc_sampler_samples[index];
+            out=(uint *)&s->sample.frame;in=(uint *)&mc_profile_last;
+            for(j=0;j<(int)sizeof(struct MCFrameProfile)/4;j=j+1)out[j]=in[j];
+            s->sample.visited=mc_render_last_visited;s->sample.skipped=mc_render_last_skipped;
+            s->sample.yaw_bits=mc_runtime_player.yaw_bits;s->sample.pitch_bits=mc_runtime_player.pitch_bits;
+            for(j=0;j<10;j=j+1)s->counters[j]=renderStat((uint)j+9);
+            s->flags=renderStat(20);s->sys_hz=renderStat(22);s->peri_hz=renderStat(23);
+            s->order=(uint)order;
+            if(s->flags!=flags){ok=0;break;}
+            mc_bench_completed=mc_bench_completed+1;
+        }
+    }
+    renderStats(0);mc_profile_cancel();
+    mc_runtime_player.yaw_bits=mc_bench_saved_yaw;mc_runtime_player.pitch_bits=mc_bench_saved_pitch;
+    mc_render_show_hud=saved_hud;
+    return ok&&mc_bench_completed==40&&!mc_bench_cancelled;
+}
+
+void mc_sampler_append_fields(int view,int sample)
+{
+    int j;struct MCSamplerSample *s=&mc_sampler_samples[mc_sampler_mode*20+view*5+sample];
+    for(j=0;j<10;j=j+1){mc_bench_char(',');mc_bench_uint(s->counters[j]);}
+    mc_bench_char(',');mc_bench_uint(s->flags);
+    mc_bench_char(',');mc_bench_uint(s->sys_hz);
+    mc_bench_char(',');mc_bench_uint(s->peri_hz);
+    mc_bench_char(',');mc_bench_uint(s->order);
+}
+
+void mc_sampler_format_log(void)
+{
+    int view,pair,j,index;uint *out,*in;
+    mc_bench_format_metadata();
+    for(mc_sampler_mode=0;mc_sampler_mode<2;mc_sampler_mode=mc_sampler_mode+1)
+        for(view=0;view<4;view=view+1)for(pair=0;pair<5;pair=pair+1)
+        {
+            index=view*5+pair;
+            out=(uint *)&mc_bench_samples[index];in=(uint *)&mc_sampler_samples[mc_sampler_mode*20+index].sample;
+            for(j=0;j<(int)sizeof(struct MCBenchmarkSample)/4;j=j+1)out[j]=in[j];
+            mc_bench_row("sample",view,pair,0);
+        }
+    mc_bench_meta("complete","1");
+}

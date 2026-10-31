@@ -1,0 +1,4 @@
+{
+  "tinycraft:required_tool": "pickaxe",
+  "pools": [{ "rolls": 1, "entries": [{ "type": "item", "name": "tinycraft:cobblestone", "weight": 1 }] }]
+}

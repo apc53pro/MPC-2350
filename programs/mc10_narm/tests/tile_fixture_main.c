@@ -1,0 +1,48 @@
+int main(void)
+{
+ int view,pair,order,index,mode,stop;struct MCPlayerState saved;
+ reset_view();saved=mc_runtime_player;
+ assert(mc_tile_collect()&&frames==48&&mc_bench_completed==40);
+ assert(!memcmp(&saved,&mc_runtime_player,sizeof(saved))&&mc_render_show_hud==1&&!fixture_flags&&!mc_profile_active&&mc_render_list_enabled==1);
+ for(view=0;view<4;view++)
+ {
+  index=view*12;assert(frame_mode[index]==0&&frame_mode[index+1]==1);
+  assert(frame_flags[index]==1&&frame_flags[index+1]==513);
+  assert(mc_tile_warmup[view][0]==1060&&mc_tile_warmup[view][1]==200);
+  assert(mc_tile_warmup[view][2]==40&&mc_tile_warmup[view][3]==800);
+  for(pair=0;pair<5;pair++)for(order=0;order<2;order++)
+  {
+   mode=(view+pair+order)&1;index=view*12+2+pair*2+order;
+   assert(frame_mode[index]==(uint)mode&&frame_flags[index]==1);
+   assert(frame_pitch[index]==(view>=2?0xc2b40000:saved.pitch_bits));
+   assert(frame_yaw[index]==saved.yaw_bits&&frame_hud[index]==((view&1)==0));
+   assert(mc_tile_samples[mode*20+view*5+pair].order==(uint)order);
+   assert(mc_tile_samples[mode*20+view*5+pair].flags==1);
+   assert(!mc_tile_samples[mode*20+view*5+pair].tile[3]);
+   assert(!mc_tile_samples[mode*20+view*5+pair].tile[4]);
+   assert(!mc_tile_samples[mode*20+view*5+pair].tile[5]);
+  }
+ }
+ mc_tile_format_log();assert(!mc_bench_full&&mc_bench_length<MC_BENCH_LOG_CAP);
+ max_write=17;assert(mc_bench_write_log()&&io_writes>1&&!strcmp(created_path,FIXTURE_SECOND_PATH));
+ assert(file_length==mc_bench_length&&!memcmp(file_data,mc_bench_log,file_length));
+ corrupt_read=1;assert(!mc_bench_write_log());corrupt_read=0;
+ write_zero=1;assert(!mc_bench_write_log());write_zero=0;
+ for(stop=0;stop<48;stop++)
+ {
+  reset_view();saved=mc_runtime_player;cancel_after=stop;
+  assert(!mc_tile_collect()&&!fixture_flags&&!mc_profile_active&&mc_render_list_enabled==1);
+  assert(!memcmp(&saved,&mc_runtime_player,sizeof(saved))&&mc_render_show_hud==1);
+  reset_view();saved=mc_runtime_player;fixture_service_failure=stop;
+  assert(!mc_tile_collect()&&mc_render_list_error==-4&&!fixture_flags&&!mc_profile_active);
+  assert(!memcmp(&saved,&mc_runtime_player,sizeof(saved))&&mc_render_show_hud==1&&mc_render_list_enabled==1);
+  fixture_service_failure=-1;
+ }
+ reset_view();forced_event=NARM_EVENT_FOCUS_LOST;assert(!mc_tile_collect()&&!fixture_flags);
+ reset_view();fixture_bad_mode=1;assert(!mc_tile_collect()&&!fixture_flags);fixture_bad_mode=0;
+ reset_view();fixture_old_firmware=1;assert(!mc_tile_collect()&&!frames);
+ assert(mc_benchmark_main()==1&&!frames);fixture_old_firmware=0;
+ fixture_test_result_handoff(48,40);
+ reset_view();max_write=100000;assert(mc_benchmark_main()==0&&frames==48&&mc_bench_completed==40&&!fixture_flags&&!game_calls);
+ mc_tile_format_log();fwrite(mc_bench_log,1,mc_bench_length,stdout);return 0;
+}

@@ -1,0 +1,16 @@
+tile.tinycraft:grass.name=Grass Block
+tile.tinycraft:dirt.name=Dirt
+tile.tinycraft:stone.name=Stone
+tile.tinycraft:cobblestone.name=Cobblestone
+tile.tinycraft:oak_wood.name=Oak Wood
+tile.tinycraft:leaves.name=Leaves
+tile.tinycraft:oak_planks.name=Oak Planks
+tile.tinycraft:crafting_table.name=Crafting Table
+item.tinycraft:stick.name=Stick
+item.tinycraft:wooden_pickaxe.name=Wooden Pickaxe
+item.tinycraft:wooden_sword.name=Wooden Sword
+item.tinycraft:wooden_shovel.name=Wooden Shovel
+item.tinycraft:wooden_axe.name=Wooden Axe
+item.tinycraft:raw_porkchop.name=Raw Porkchop
+entity.tinycraft:pig.name=Pig
+entity.tinycraft:zombie.name=Zombie

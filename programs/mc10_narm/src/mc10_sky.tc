@@ -1,0 +1,216 @@
+/* World/WorldProvider/RenderGlobal overworld sky. Owned textures and the exact
+ * deterministic RenderGlobal star mesh are host converted into sky10.dat.
+ * Platform adapter: CPU RGB888 blending, perspective clipping/rasterization,
+ * then one RGB332 quantization/blit. No runtime PNG and no terrain depth writes.
+ * Clouds, lightning and weather simulation remain separate explicit ports. */
+#ifdef MC10_WORLD_SYSTEMS
+uint mc_sky_texture[9216];
+float mc_sky_stars[1500*12];
+uint mc_sky_canvas[76800];
+int mc_sky_count,mc_sky_ready;
+float mc_sky_red,mc_sky_green,mc_sky_blue,mc_sky_angle,mc_sky_sin,mc_sky_cos;
+struct MCSkyVertex {float x;float y;float z;float u;float v;float a;};
+struct MCSkyVertex mc_sky_input[4];
+struct MCSkyVertex mc_sky_clip[8];
+struct MCSkyVertex mc_sky_projected[8];
+int mc_third_interpolated_eye_y(float partial);
+uint mc_sky_crc(uint crc,char *bytes,int length)
+{int i,b;for(i=0;i<length;i=i+1){crc=crc^((uint)bytes[i]&255);for(b=0;b<8;b=b+1)crc=(crc>>1)^((crc&1)?0xedb88320:0);}return crc;}
+int mc_sky_init(void)
+{
+    uint header[8],crc;mc_sky_ready=0;
+    if(narm_file_read("/MC10/sky10.dat",header,0,32,NARM_STORAGE_SD)!=32)return 0;
+    if(header[0]!=0x4b53434d||header[1]!=1||header[2]>1500||header[3]!=32||header[4]!=36864||header[5]!=36864+header[2]*48)return 0;
+    if(narm_file_read("/MC10/sky10.dat",mc_sky_texture,32,36864,NARM_STORAGE_SD)!=36864)return 0;
+    if(narm_file_read("/MC10/sky10.dat",mc_sky_stars,36896,header[2]*48,NARM_STORAGE_SD)!=(int)(header[2]*48))return 0;
+    crc=mc_sky_crc(0xffffffff,(char *)mc_sky_texture,36864);
+    crc=mc_sky_crc(crc,(char *)mc_sky_stars,header[2]*48)^0xffffffff;
+    if(crc!=header[6])return 0;mc_sky_count=(int)header[2];mc_sky_ready=1;return 1;
+}
+uint mc_sky_rgb(float r,float g,float b)
+{
+    int ri=(int)(r*255.0f+.5f),gi=(int)(g*255.0f+.5f),bi=(int)(b*255.0f+.5f);
+    if(ri<0)ri=0;if(ri>255)ri=255;if(gi<0)gi=0;if(gi>255)gi=255;if(bi<0)bi=0;if(bi>255)bi=255;
+    return (uint)ri|((uint)gi<<8)|((uint)bi<<16);
+}
+/* java.awt.Color.HSBtoRGB, only the biome's source input domain is needed. */
+uint mc_sky_biome_color(float temperature)
+{
+    float h,s,f,p,q,t;int sector;temperature=temperature/3.0f;
+    if(temperature< -1)temperature=-1;if(temperature>1)temperature=1;
+    h=(224.0f/360.0f-temperature*.05f)*6.0f;s=.5f+temperature*.1f;
+    sector=(int)h;f=h-(float)sector;p=1.0f-s;q=1.0f-s*f;t=1.0f-s*(1.0f-f);
+    if(sector==0)return mc_sky_rgb(1,t,p);if(sector==1)return mc_sky_rgb(q,1,p);
+    if(sector==2)return mc_sky_rgb(p,1,t);if(sector==3)return mc_sky_rgb(p,q,1);
+    if(sector==4)return mc_sky_rgb(t,p,1);return mc_sky_rgb(1,p,q);
+}
+void mc_sky_colors(float partial)
+{
+    struct MCBiomeSample sample;uint rgb;float value,gray,weight,rain,thunder,r,g,b;
+    int x=mc_runtime_player.block_x,z=mc_runtime_player.block_z;
+    /* A failed/cancelled source query is not replaced by an invented biome. */
+    if(!mc_biome_query(x,z,&sample)){mc_sky_red=0;mc_sky_green=0;mc_sky_blue=0;return;}
+    rgb=mc_sky_biome_color(sample.temperature);
+    value=mc_math_cos(mc_sky_angle*3.141592741f*2.0f)*2.0f+.5f;
+    if(value<0)value=0;if(value>1)value=1;
+    r=(float)(rgb&255)/255.0f*value;g=(float)((rgb>>8)&255)/255.0f*value;b=(float)((rgb>>16)&255)/255.0f*value;
+    rain=mc_world_rain_strength;thunder=mc_world_weighted_thunder();
+    if(rain>0){gray=(r*.3f+g*.59f+b*.11f)*.6f;weight=1.0f-rain*(12.0f/16.0f);r=r*weight+gray*(1-weight);g=g*weight+gray*(1-weight);b=b*weight+gray*(1-weight);}
+    if(thunder>0){gray=(r*.3f+g*.59f+b*.11f)*.2f;weight=1.0f-thunder*(12.0f/16.0f);r=r*weight+gray*(1-weight);g=g*weight+gray*(1-weight);b=b*weight+gray*(1-weight);}
+    if(mc_options.anaglyph){value=(r*30+g*59+b*11)/100;weight=(r*30+g*70)/100;b=(r*30+b*70)/100;r=value;g=weight;}
+    mc_sky_red=r;mc_sky_green=g;mc_sky_blue=b;
+}
+void mc_sky_vertex(int index,float x,float y,float z,float u,float v,float a,int rotation)
+{
+    float tx,ty,tz,sign;
+    if(rotation==1){tx=-(y*mc_sky_sin+z*mc_sky_cos);ty=y*mc_sky_cos-z*mc_sky_sin;tz=x;x=tx;y=ty;z=tz;}
+    else if(rotation==2){sign=mc_math_sin(mc_sky_angle*3.141592741f*2.0f)<0?-1.0f:1.0f;tx=-sign*y;ty=-z;tz=sign*x;x=tx;y=ty;z=tz;}
+    mc_sky_input[index].x=x*mc_render_camera[0]+y*mc_render_camera[1]+z*mc_render_camera[2];
+    mc_sky_input[index].y=x*mc_render_camera[4]+y*mc_render_camera[5]+z*mc_render_camera[6];
+    mc_sky_input[index].z=x*mc_render_camera[8]+y*mc_render_camera[9]+z*mc_render_camera[10];
+    mc_sky_input[index].u=u;mc_sky_input[index].v=v;mc_sky_input[index].a=a;
+}
+float mc_sky_edge(struct MCSkyVertex *a,struct MCSkyVertex *b,float x,float y)
+{return (b->x-a->x)*(y-a->y)-(b->y-a->y)*(x-a->x);}
+int mc_sky_top_left(struct MCSkyVertex *a,struct MCSkyVertex *b)
+{return b->y<a->y||(b->y==a->y&&b->x>a->x);}
+void mc_sky_triangle(int ia,int ib,int ic,int texture,uint color,int additive)
+{
+    struct MCSkyVertex *a=&mc_sky_projected[ia],*b=&mc_sky_projected[ib],*c=&mc_sky_projected[ic],*swap;
+    float area=mc_sky_edge(a,b,c->x,c->y),left,right,top,bottom,w0,w1,w2,reciprocal,alpha,px,py;
+    int x,y,x0,x1,y0,y1,u,v,tl0,tl1,tl2;uint src,dst;float sr,sg,sb,dr,dg,db;
+    if(area==0)return;if(area<0){swap=b;b=c;c=swap;area=-area;}
+    left=a->x;if(b->x<left)left=b->x;if(c->x<left)left=c->x;
+    right=a->x;if(b->x>right)right=b->x;if(c->x>right)right=c->x;
+    top=a->y;if(b->y<top)top=b->y;if(c->y<top)top=c->y;
+    bottom=a->y;if(b->y>bottom)bottom=b->y;if(c->y>bottom)bottom=c->y;
+    if(left>=320||right<0||top>=240||bottom<0)return;
+    x0=left<0?0:(int)left;x1=right>=319?319:(int)right;y0=top<0?0:(int)top;y1=bottom>=239?239:(int)bottom;
+    tl0=mc_sky_top_left(b,c);tl1=mc_sky_top_left(c,a);tl2=mc_sky_top_left(a,b);
+    for(y=y0;y<=y1;y=y+1)for(x=x0;x<=x1;x=x+1)
+    {
+        px=(float)x+.5f;py=(float)y+.5f;w0=mc_sky_edge(b,c,px,py);w1=mc_sky_edge(c,a,px,py);w2=mc_sky_edge(a,b,px,py);
+        if(w0<0||w1<0||w2<0||(!tl0&&w0==0)||(!tl1&&w1==0)||(!tl2&&w2==0))continue;
+        w0=w0/area;w1=w1/area;w2=w2/area;reciprocal=w0*a->z+w1*b->z+w2*c->z;
+        alpha=(w0*a->a+w1*b->a+w2*c->a)/reciprocal;if(alpha<=0)continue;if(alpha>1)alpha=1;
+        src=color;
+        if(texture>=0)
+        {
+            u=(int)((w0*a->u+w1*b->u+w2*c->u)/reciprocal);v=(int)((w0*a->v+w1*b->v+w2*c->v)/reciprocal);
+            if(texture==0){u=u&31;v=v&31;src=mc_sky_texture[v*32+u];}
+            else {u=u&127;v=v&63;src=mc_sky_texture[1024+v*128+u];}
+            alpha=alpha*(float)(src>>24)/255.0f;
+        }
+        dst=mc_sky_canvas[y*320+x];sr=(float)(src&255);sg=(float)((src>>8)&255);sb=(float)((src>>16)&255);
+        dr=(float)(dst&255);dg=(float)((dst>>8)&255);db=(float)((dst>>16)&255);
+        if(additive){dr=dr+sr*alpha;dg=dg+sg*alpha;db=db+sb*alpha;}
+        else {dr=dr*(1-alpha)+sr*alpha;dg=dg*(1-alpha)+sg*alpha;db=db*(1-alpha)+sb*alpha;}
+        if(dr>255)dr=255;if(dg>255)dg=255;if(db>255)db=255;
+        mc_sky_canvas[y*320+x]=(uint)(dr+.5f)|((uint)(dg+.5f)<<8)|((uint)(db+.5f)<<16);
+    }
+}
+void mc_sky_polygon(int input_count,int texture,uint color,int additive)
+{
+    int i,previous=input_count-1,count=0;float t,inv;struct MCSkyVertex *p,*q,*out;
+    for(i=0;i<input_count;i=i+1)
+    {
+        p=&mc_sky_input[previous];q=&mc_sky_input[i];
+        if((p->z>=.05f)!=(q->z>=.05f))
+        {
+            t=(.05f-p->z)/(q->z-p->z);out=&mc_sky_clip[count];count=count+1;
+            out->x=p->x+(q->x-p->x)*t;out->y=p->y+(q->y-p->y)*t;out->z=.05f;
+            out->u=p->u+(q->u-p->u)*t;out->v=p->v+(q->v-p->v)*t;out->a=p->a+(q->a-p->a)*t;
+        }
+        if(q->z>=.05f)
+        {
+            out=&mc_sky_clip[count];out->x=q->x;out->y=q->y;out->z=q->z;
+            out->u=q->u;out->v=q->v;out->a=q->a;count=count+1;
+        }
+        previous=i;
+    }
+    for(i=0;i<count;i=i+1)
+    {
+        p=&mc_sky_clip[i];q=&mc_sky_projected[i];inv=1.0f/p->z;
+        q->x=mc_render_camera[14]+p->x*mc_render_camera[12]*inv;q->y=mc_render_camera[15]-p->y*mc_render_camera[13]*inv;
+        q->z=inv;q->u=p->u*inv;q->v=p->v*inv;q->a=p->a*inv;
+    }
+    for(i=1;i<count-1;i=i+1)mc_sky_triangle(0,i,i+1,texture,color,additive);
+}
+void mc_sky_plane(float y,uint color)
+{
+    mc_sky_vertex(0,-384,y,-384,0,0,1,0);mc_sky_vertex(1,448,y,-384,0,0,1,0);
+    mc_sky_vertex(2,448,y,448,0,0,1,0);mc_sky_vertex(3,-384,y,448,0,0,1,0);mc_sky_polygon(4,-1,color,0);
+}
+/* Source lower display list is y=-16, translated using the player's
+ * interpolated binary64 getPosition(partial). Keep the cast AFTER subtraction.
+ * The underground black plane/box precede the always-present tinted plane. */
+void mc_sky_lower(float partial)
+{
+    int delta;float bottom,translation;uint color;
+    mc_fp_reset();delta=mc_fp_sub(mc_third_interpolated_eye_y(partial),mc_fp_i32(63));
+    translation=0-mc_fp_to_f32(mc_fp_sub(delta,mc_fp_i32(16)));
+    if(mc_fp_lt(delta,D0))
+    {
+        bottom=0-mc_fp_to_f32(mc_fp_add(delta,mc_fp_i32(65)));
+        mc_sky_plane(-4,0);
+        mc_sky_vertex(0,-1,bottom,1,0,0,1,0);mc_sky_vertex(1,1,bottom,1,0,0,1,0);
+        mc_sky_vertex(2,1,-1,1,0,0,1,0);mc_sky_vertex(3,-1,-1,1,0,0,1,0);mc_sky_polygon(4,-1,0,0);
+        mc_sky_vertex(0,-1,-1,-1,0,0,1,0);mc_sky_vertex(1,1,-1,-1,0,0,1,0);
+        mc_sky_vertex(2,1,bottom,-1,0,0,1,0);mc_sky_vertex(3,-1,bottom,-1,0,0,1,0);mc_sky_polygon(4,-1,0,0);
+        mc_sky_vertex(0,1,-1,-1,0,0,1,0);mc_sky_vertex(1,1,-1,1,0,0,1,0);
+        mc_sky_vertex(2,1,bottom,1,0,0,1,0);mc_sky_vertex(3,1,bottom,-1,0,0,1,0);mc_sky_polygon(4,-1,0,0);
+        mc_sky_vertex(0,-1,bottom,-1,0,0,1,0);mc_sky_vertex(1,-1,bottom,1,0,0,1,0);
+        mc_sky_vertex(2,-1,-1,1,0,0,1,0);mc_sky_vertex(3,-1,-1,-1,0,0,1,0);mc_sky_polygon(4,-1,0,0);
+        mc_sky_vertex(0,-1,-1,-1,0,0,1,0);mc_sky_vertex(1,-1,-1,1,0,0,1,0);
+        mc_sky_vertex(2,1,-1,1,0,0,1,0);mc_sky_vertex(3,1,-1,-1,0,0,1,0);mc_sky_polygon(4,-1,0,0);
+    }
+    color=mc_sky_rgb(mc_sky_red*.2f+.04f,mc_sky_green*.2f+.04f,mc_sky_blue*.6f+.1f);
+    mc_sky_plane(-16.0f+translation,color);
+}
+void mc_sky_draw(float partial)
+{
+    int i,j,phase,col,row;float value,alpha,r,g,b,s,c,old_s,old_c,size;uint color;unsigned char *packed;
+    if(!mc_sky_ready)return;
+    mc_sky_angle=mc_world_celestial_angle(partial);value=mc_sky_angle*6.283185482f;mc_sky_sin=narm_sin(value);mc_sky_cos=narm_cos(value);
+    mc_sky_colors(partial);color=mc_sky_rgb(mc_sky_red,mc_sky_green,mc_sky_blue);
+    for(i=0;i<76800;i=i+1)mc_sky_canvas[i]=color;
+    /* Source sunrise triangle fan, same 16 rim vertices and alpha falloff. */
+    value=mc_math_cos(mc_sky_angle*3.141592741f*2.0f);
+    if(value>=-.4f&&value<=.4f)
+    {
+        value=value/.4f*.5f+.5f;alpha=1.0f-(1.0f-mc_math_sin(value*3.141592741f))*.99f;alpha=alpha*alpha;
+        r=value*.3f+.7f;g=value*value*.7f+.2f;b=.2f;
+        if(mc_options.anaglyph){s=(r*30+g*59+b*11)/100;c=(r*30+g*70)/100;b=(r*30+b*70)/100;r=s;g=c;}
+        color=mc_sky_rgb(r,g,b);old_s=0;old_c=1;
+        for(i=1;i<=16;i=i+1)
+        {
+            value=(float)i*3.141592741f*2.0f/16.0f;s=mc_math_sin(value);c=mc_math_cos(value);
+            mc_sky_vertex(0,0,100,0,0,0,alpha,2);mc_sky_vertex(1,old_s*120,old_c*120,-old_c*40*alpha,0,0,0,2);
+            mc_sky_vertex(2,s*120,c*120,-c*40*alpha,0,0,0,2);mc_sky_polygon(3,-1,color,0);old_s=s;old_c=c;
+        }
+    }
+    alpha=1.0f-mc_world_rain_strength;size=30;
+    mc_sky_vertex(0,-size,100,-size,0,0,alpha,1);mc_sky_vertex(1,size,100,-size,32,0,alpha,1);
+    mc_sky_vertex(2,size,100,size,32,32,alpha,1);mc_sky_vertex(3,-size,100,size,0,32,alpha,1);mc_sky_polygon(4,0,0,1);
+    phase=mc_world_moon_phase();col=phase%4;row=(phase/4)%2;size=20;
+    mc_sky_vertex(0,-size,-100,size,(float)(col+1)*32,(float)(row+1)*32,alpha,1);
+    mc_sky_vertex(1,size,-100,size,(float)col*32,(float)(row+1)*32,alpha,1);
+    mc_sky_vertex(2,size,-100,-size,(float)col*32,(float)row*32,alpha,1);
+    mc_sky_vertex(3,-size,-100,-size,(float)(col+1)*32,(float)row*32,alpha,1);mc_sky_polygon(4,1,0,1);
+    value=mc_world_star_brightness(partial)*alpha;
+    if(value>0)
+    {
+        color=mc_sky_rgb(value,value,value);
+        for(i=0;i<mc_sky_count;i=i+1)
+        {
+            for(j=0;j<4;j=j+1)mc_sky_vertex(j,mc_sky_stars[i*12+j*3],mc_sky_stars[i*12+j*3+1],mc_sky_stars[i*12+j*3+2],0,0,value,1);
+            mc_sky_polygon(4,-1,color,1);
+        }
+    }
+    mc_sky_lower(partial);
+    packed=(unsigned char *)&mc_asset_pixels[0];
+    for(i=0;i<76800;i=i+1){color=mc_sky_canvas[i];packed[i]=(unsigned char)((color&0xe0)|((color>>11)&0x1c)|((color>>22)&3));}
+    narm_half_blit(0,0,320,240,mc_asset_pixels);
+}
+#endif
+

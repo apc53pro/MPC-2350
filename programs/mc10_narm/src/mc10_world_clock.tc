@@ -1,0 +1,66 @@
+/* Source World.tick's time advancement and WorldProvider/World sky values.
+ * Does not pretend to implement scheduled ticks, weather RNG, mobs or saving.
+ * Elapsed real time/render frames never directly advance this state. */
+#ifdef MC10_WORLD_SYSTEMS
+uint mc_world_clock_ticks;
+int mc_world_skylight;
+int mc_world_skylight_subtracted(float partial);
+float mc_world_rain_strength,mc_world_thunder_strength;
+void mc_world_clock_init(void)
+{
+    mc_world_clock_ticks=0;
+    mc_world_rain_strength=mc_runtime_world.info->raining?1.0f:0.0f;
+    mc_world_thunder_strength=mc_runtime_world.info->raining&&mc_runtime_world.info->thundering?1.0f:0.0f;
+    mc_world_skylight=mc_world_skylight_subtracted(1.0f);
+}
+void mc_world_clock_tick(void)
+{
+    mc_world_skylight=mc_world_skylight_subtracted(1.0f);
+    uint lo=mc_runtime_world.info->world_time_lo+1;
+    mc_runtime_world.info->world_time_hi=mc_runtime_world.info->world_time_hi+(lo==0?1:0);
+    mc_runtime_world.info->world_time_lo=lo;
+    mc_world_clock_ticks=mc_world_clock_ticks+1;
+}
+/* Java signed long remainder/division; callers use only a small remainder or
+ * the low32 quotient bits, exactly as WorldProvider's cast requires. */
+int mc_world_clock_div(uint divisor,uint *quotient)
+{
+    uint lo=mc_runtime_world.info->world_time_lo,hi=mc_runtime_world.info->world_time_hi;
+    int negative=(int)(hi>>31),bit;uint remainder=0,q=0;
+    if(negative){lo=~lo+1;hi=~hi+(lo==0?1:0);}
+    for(bit=63;bit>=0;bit=bit-1)
+    {
+        remainder=(remainder<<1)|(bit>=32?((hi>>(bit-32))&1):((lo>>bit)&1));
+        if(remainder>=divisor){remainder=remainder-divisor;if(bit<32)q=q|((uint)1<<bit);}
+    }
+    if(quotient)*quotient=negative?0-q:q;
+    return negative?0-(int)remainder:(int)remainder;
+}
+float mc_world_celestial_angle(float partial)
+{
+    float value=((float)mc_world_clock_div(24000,0)+partial)/24000.0f-.25f,original;
+    int result;
+    if(value<0)value=value+1;if(value>1)value=value-1;original=value;
+    mc_fp_reset();result=mc_fp_cos_celestial(mc_fp_mul(mc_fp_f32(value),mc_fp_bits(0x54442d18,0x400921fb)));
+    value=1.0f-mc_fp_to_f32(mc_fp_div(mc_fp_add(result,D1),mc_fp_i32(2)));
+    return original+(value-original)/3.0f;
+}
+int mc_world_moon_phase(void)
+{uint quotient;mc_world_clock_div(24000,&quotient);return (int)quotient%8;}
+float mc_world_weighted_thunder(void)
+{return mc_world_thunder_strength*mc_world_rain_strength;}
+int mc_world_skylight_subtracted(float partial)
+{
+    float value=1.0f-(mc_math_cos(mc_world_celestial_angle(partial)*3.141592741f*2.0f)*2.0f+.5f);
+    if(value<0)value=0;if(value>1)value=1;value=1.0f-value;
+    mc_fp_reset();
+    value=mc_fp_to_f32(mc_fp_mul(mc_fp_f32(value),mc_fp_sub(D1,mc_fp_div(mc_fp_f32(mc_world_rain_strength*5.0f),mc_fp_i32(16)))));
+    value=mc_fp_to_f32(mc_fp_mul(mc_fp_f32(value),mc_fp_sub(D1,mc_fp_div(mc_fp_f32(mc_world_weighted_thunder()*5.0f),mc_fp_i32(16)))));
+    return (int)((1.0f-value)*11.0f);
+}
+float mc_world_star_brightness(float partial)
+{
+    float value=1.0f-(mc_math_cos(mc_world_celestial_angle(partial)*3.141592741f*2.0f)*2.0f+.75f);
+    if(value<0)value=0;if(value>1)value=1;return value*value*.5f;
+}
+#endif

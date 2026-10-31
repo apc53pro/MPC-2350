@@ -1,0 +1,70 @@
+/* Finite small-angle binary64 cosine, used by WorldProvider's celestial angle.
+ * Adapted from Sun fdlibm s_cos.c, k_cos.c, k_sin.c, e_rem_pio2.c:
+ * https://netlib.org/fdlibm/
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this software is freely
+ * granted, provided that this notice is preserved.
+ * The source caller needs only |x|<=pi. Larger values explicitly fail rather
+ * than substituting the missing large-argument reduction algorithm. */
+#ifdef MC10_WORLD_SYSTEMS
+uint mc_cos_coeff[12]={0x5555554c,0x3fa55555,0x16c15177,0xbf56c16c,
+0x19cb1590,0x3efa01a0,0x809c52ad,0xbe927e4f,0xbdb4b1c4,0x3e21ee9e,0xbe8838d4,0xbda8fae9};
+uint mc_sin_coeff[12]={0x55555549,0xbfc55555,0x1110f8a6,0x3f811111,
+0x19c161d5,0xbf2a01a0,0x57b1fe7d,0x3ec71de3,0x8a2b9ceb,0xbe5ae5e6,0x5acfd57c,0x3de5d93a};
+int mc_cos_coefficient(int index){return mc_fp_bits(mc_cos_coeff[index*2],mc_cos_coeff[index*2+1]);}
+int mc_sin_coefficient(int index){return mc_fp_bits(mc_sin_coeff[index*2],mc_sin_coeff[index*2+1]);}
+int mc_cos_kernel(int x,int y)
+{
+    uint high=mc_fp_values[x].hi&0x7fffffff;int z,r,q,h,a,i;
+    if(high<0x3e400000)return D1;
+    z=mc_fp_mul(x,x);r=mc_cos_coefficient(5);
+    for(i=4;i>=0;i=i-1)r=mc_fp_add(mc_cos_coefficient(i),mc_fp_mul(z,r));
+    r=mc_fp_mul(z,r);h=mc_fp_sub(mc_fp_mul(z,r),mc_fp_mul(x,y));
+    if(high<0x3fd33333)return mc_fp_sub(D1,mc_fp_sub(mc_fp_mul(D05,z),h));
+    q=high>0x3fe90000?mc_fp_bits(0,0x3fd20000):mc_fp_bits(0,high-0x00200000);
+    a=mc_fp_sub(D1,q);z=mc_fp_sub(mc_fp_mul(D05,z),q);
+    return mc_fp_sub(a,mc_fp_sub(z,h));
+}
+int mc_cos_sin_kernel(int x,int y)
+{
+    int z,v,r,i;
+    if((mc_fp_values[x].hi&0x7fffffff)<0x3e400000)return x;
+    z=mc_fp_mul(x,x);v=mc_fp_mul(z,x);r=mc_sin_coefficient(5);
+    for(i=4;i>=1;i=i-1)r=mc_fp_add(mc_sin_coefficient(i),mc_fp_mul(z,r));
+    return mc_fp_sub(x,mc_fp_sub(mc_fp_sub(mc_fp_mul(z,mc_fp_sub(mc_fp_mul(D05,y),mc_fp_mul(v,r))),y),mc_fp_mul(v,mc_sin_coefficient(0))));
+}
+int mc_fp_cos_celestial(int input)
+{
+    int x=mc_fp_abs(input),y0,y1,z,r,w,t,fn,n,i,j;
+    uint high=mc_fp_values[x].hi;
+    if(high<=0x3fe921fb)return mc_cos_kernel(x,D0);
+    if(mc_fp_gt(x,mc_fp_bits(0x54442d18,0x400921fb))){mc_fp_error=1;return D0;}
+    if(high<0x4002d97c)
+    {
+        z=mc_fp_sub(x,mc_fp_bits(0x54400000,0x3ff921fb));
+        if(high!=0x3ff921fb)
+        {w=mc_fp_bits(0x1a626331,0x3dd0b461);y0=mc_fp_sub(z,w);y1=mc_fp_sub(mc_fp_sub(z,y0),w);}
+        else
+        {z=mc_fp_sub(z,mc_fp_bits(0x1a600000,0x3dd0b461));w=mc_fp_bits(0x2e037073,0x3ba3198a);y0=mc_fp_sub(z,w);y1=mc_fp_sub(mc_fp_sub(z,y0),w);}
+        return mc_fp_neg(mc_cos_sin_kernel(y0,y1));
+    }
+    n=mc_fp_floor(mc_fp_add(mc_fp_mul(x,mc_fp_bits(0x6dc9c883,0x3fe45f30)),D05));fn=mc_fp_i32(n);
+    r=mc_fp_sub(x,mc_fp_mul(fn,mc_fp_bits(0x54400000,0x3ff921fb)));
+    w=mc_fp_mul(fn,mc_fp_bits(0x1a626331,0x3dd0b461));y0=mc_fp_sub(r,w);
+    if(high==0x400921fb)
+    {
+        j=(int)(high>>20);i=j-(int)((mc_fp_values[y0].hi>>20)&0x7ff);
+        if(i>16)
+        {
+            t=r;w=mc_fp_mul(fn,mc_fp_bits(0x1a600000,0x3dd0b461));r=mc_fp_sub(t,w);
+            w=mc_fp_sub(mc_fp_mul(fn,mc_fp_bits(0x2e037073,0x3ba3198a)),mc_fp_sub(mc_fp_sub(t,r),w));y0=mc_fp_sub(r,w);
+            i=j-(int)((mc_fp_values[y0].hi>>20)&0x7ff);
+            if(i>49)
+            {t=r;w=mc_fp_mul(fn,mc_fp_bits(0x2e000000,0x3ba3198a));r=mc_fp_sub(t,w);w=mc_fp_sub(mc_fp_mul(fn,mc_fp_bits(0x252049c1,0x397b839a)),mc_fp_sub(mc_fp_sub(t,r),w));y0=mc_fp_sub(r,w);}
+        }
+    }
+    y1=mc_fp_sub(mc_fp_sub(r,y0),w);
+    return (n&3)==2?mc_fp_neg(mc_cos_kernel(y0,y1)):mc_fp_neg(mc_cos_sin_kernel(y0,y1));
+}
+#endif

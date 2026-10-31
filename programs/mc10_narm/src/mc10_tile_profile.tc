@@ -1,0 +1,106 @@
+/* Same-image paired diagnostic. CPU, camera, assets, geometry and settings are
+ * frozen. Hashes and diagnostics are read after the measured frame, before
+ * the next clear; the timing HUD makes HUD-on color hashes incomparable. */
+struct MCTileSample {
+    struct MCBenchmarkSample sample;
+    uint counters[10];
+    uint flags;uint sys_hz;uint peri_hz;uint order;
+    uint mode;uint tile[9];
+};
+struct MCTileSample mc_tile_samples[40];
+/* Detailed pixel counters belong to the discarded tile warm-up only. */
+uint mc_tile_warmup[4][4];
+
+int mc_tile_measure_frame(int mode,uint flags)
+{
+    mc_render_list_flush();
+    if(mc_render_list_error)return 0;
+    mc_render_list_enabled=mode;
+    renderStats(flags);
+    if((uint)(narm_millis()-mc_bench_run_started_ms)>600000)
+    {mc_bench_cancelled=1;return 0;}
+    return mc_bench_measure_frame();
+}
+int mc_tile_collect(void)
+{
+    int view,pair,order,mode,j,index,ok=1,saved_hud=mc_render_show_hud;
+    int saved_mode=mc_render_list_enabled;
+    uint *out,*in;struct MCTileSample *s;
+    mc_bench_cancelled=0;mc_bench_completed=0;mc_render_list_error=0;
+    mc_bench_run_started_ms=narm_millis();
+    mc_bench_saved_yaw=mc_runtime_player.yaw_bits;mc_bench_saved_pitch=mc_runtime_player.pitch_bits;
+    if(renderStat(24)!=0x54420001)return 0;
+    for(view=0;view<4&&ok;view=view+1)
+    {
+        mc_runtime_player.yaw_bits=mc_bench_saved_yaw;
+        mc_runtime_player.pitch_bits=view>=2?0xc2b40000:mc_bench_saved_pitch;
+        mc_render_show_hud=(view&1)==0;mc_profile_valid=0;
+        for(mode=0;mode<2;mode=mode+1)
+        {
+            if(!mc_tile_measure_frame(mode,mode?513:1)){ok=0;break;}
+            if(mode)
+            {
+                mc_profile_cancel();
+                if(renderStat(20)!=513){ok=0;break;}
+                for(j=0;j<4;j=j+1)mc_tile_warmup[view][j]=renderStat((uint)j+27);
+            }
+        }
+        for(pair=0;pair<5&&ok;pair=pair+1)for(order=0;order<2;order=order+1)
+        {
+            mode=(view+pair+order)&1;
+            if(!mc_tile_measure_frame(mode,1)){ok=0;break;}
+            mc_profile_cancel(); /* Diagnostics and full-buffer hashes untimed. */
+            index=mode*20+view*5+pair;s=&mc_tile_samples[index];
+            out=(uint *)&s->sample.frame;in=(uint *)&mc_profile_last;
+            for(j=0;j<(int)sizeof(struct MCFrameProfile)/4;j=j+1)out[j]=in[j];
+            s->sample.visited=mc_render_last_visited;s->sample.skipped=mc_render_last_skipped;
+            s->sample.yaw_bits=mc_runtime_player.yaw_bits;s->sample.pitch_bits=mc_runtime_player.pitch_bits;
+            for(j=0;j<10;j=j+1)s->counters[j]=renderStat((uint)j+9);
+            s->flags=renderStat(20);s->sys_hz=renderStat(22);s->peri_hz=renderStat(23);
+            s->order=(uint)order;s->mode=(uint)mode;
+            for(j=0;j<9;j=j+1)s->tile[j]=renderStat((uint)j+25);
+            if(s->flags!=1){ok=0;break;}
+            mc_bench_completed=mc_bench_completed+1;
+        }
+    }
+    mc_render_list_flush();renderStats(0);mc_profile_cancel();
+    mc_runtime_player.yaw_bits=mc_bench_saved_yaw;mc_runtime_player.pitch_bits=mc_bench_saved_pitch;
+    mc_render_show_hud=saved_hud;mc_render_list_enabled=saved_mode;
+    return ok&&mc_bench_completed==40&&!mc_bench_cancelled&&!mc_render_list_error;
+}
+void mc_tile_append_fields(int view,int sample)
+{
+    int j;struct MCTileSample *s=&mc_tile_samples[mc_tile_mode*20+view*5+sample];
+    for(j=0;j<10;j=j+1){mc_bench_char(',');mc_bench_uint(s->counters[j]);}
+    mc_bench_char(',');mc_bench_uint(s->flags);
+    mc_bench_char(',');mc_bench_uint(s->sys_hz);
+    mc_bench_char(',');mc_bench_uint(s->peri_hz);
+    mc_bench_char(',');mc_bench_uint(s->order);
+    mc_bench_char(',');mc_bench_uint(s->mode);
+    for(j=0;j<9;j=j+1){mc_bench_char(',');mc_bench_uint(s->tile[j]);}
+}
+void mc_tile_format_log(void)
+{
+    int view,pair,j,index;uint *out,*in;
+    mc_bench_format_metadata();
+    mc_bench_meta("tile_warmup_counters","untimed discarded tile warm-up only;renderStats(513);views 1=saved HUD on,2=saved HUD off,3=sky HUD on,4=sky HUD off");
+    for(view=0;view<4;view=view+1)for(j=0;j<4;j=j+1)
+    {
+        mc_world_copy(mc_bench_key,64,"tile_warmup_");
+        mc_world_append_uint(mc_bench_key,64,(uint)view+1);mc_world_append_char(mc_bench_key,64,'_');
+        if(j==0)mc_world_append(mc_bench_key,64,"depth_tests");
+        if(j==1)mc_world_append(mc_bench_key,64,"depth_rejects");
+        if(j==2)mc_world_append(mc_bench_key,64,"mask_tests");
+        if(j==3)mc_world_append(mc_bench_key,64,"pixel_writes");
+        mc_bench_meta_uint(mc_bench_key,mc_tile_warmup[view][j]);
+    }
+    for(mc_tile_mode=0;mc_tile_mode<2;mc_tile_mode=mc_tile_mode+1)
+        for(view=0;view<4;view=view+1)for(pair=0;pair<5;pair=pair+1)
+        {
+            index=view*5+pair;
+            out=(uint *)&mc_bench_samples[index];in=(uint *)&mc_tile_samples[mc_tile_mode*20+index].sample;
+            for(j=0;j<(int)sizeof(struct MCBenchmarkSample)/4;j=j+1)out[j]=in[j];
+            mc_bench_row("sample",view,pair,0);
+        }
+    mc_bench_meta("complete","1");
+}

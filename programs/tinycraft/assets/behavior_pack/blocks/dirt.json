@@ -1,0 +1,24 @@
+{
+  "format_version": "1.21.80",
+  "minecraft:block": {
+    "description": { "identifier": "tinycraft:dirt" },
+    "components": {
+      "minecraft:destructible_by_mining": { "seconds_to_destroy": 0.75 },
+      "minecraft:collision_box": true,
+      "minecraft:selection_box": true,
+      "minecraft:loot": "loot_tables/blocks/dirt.json",
+      "minecraft:material_instances": {
+        "*": { "texture": "tinycraft:dirt", "render_method": "opaque" }
+      },
+      "tinycraft:runtime": {
+        "block_id": 2,
+        "render_class": "fast_cube",
+        "ui_color": 137,
+        "preferred_tool": "shovel",
+        "preferred_break_seconds": 0.4,
+        "name_label": "dirt",
+        "item": "tinycraft:dirt"
+      }
+    }
+  }
+}

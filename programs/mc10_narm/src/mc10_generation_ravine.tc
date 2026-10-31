@@ -1,0 +1,143 @@
+/* Minecraft 1.0 MapGenBase + MapGenRavine behavior, isolated phase.
+ * Only the source's first128 width entries are ever read at height128.
+ * Requires the original MathHelper sine table adapter. No save/native API.
+ */
+#ifdef MC10_WORLD_SYSTEMS
+float mc_math_sin(float value);
+float mc_math_cos(float value);
+float mc_gen_ravine_width[128];
+int mc_gen_ravine_water(char *blocks,int x0,int x1,int y0,int y1,int z0,int z1)
+{
+    int x;int z;int y;int id;
+    for(x=x0;x<x1;x=x+1)for(z=z0;z<z1;z=z+1)for(y=y1+1;y>=y0-1;y=y-1)
+    {
+        if(y>=0 && y<128)
+        {
+            id=blocks[(x*16+z)*128+y]&255;if(id==8 || id==9)return 1;
+            if(y!=y0-1 && x!=x0 && x!=x1-1 && z!=z0 && z!=z1-1)y=y0;
+        }
+    }
+    return 0;
+}
+int mc_gen_ravine_node(struct MCU64 *seed,int cx,int cz,char *blocks,
+    struct MCJDouble *position,float width,float yaw,float pitch)
+{
+    struct MCJavaRandom random;struct MCJDouble horizontal;struct MCJDouble vertical;
+    struct MCJDouble dx_value;struct MCJDouble dz_value;struct MCJDouble y_value;
+    int i;int step=0;int end;int x;int z;int y;int x0;int x1;int y0;int y1;int z0;int z1;
+    int h;int v;int px;int py;int pz;int dx;int dz;int distance;int reach;int rest;
+    int at;int id;int grass;int ny;int limit;int biome;
+    float yaw_drift=0.0f;float pitch_drift=0.0f;float factor=1.0f;float cp;float sp;
+    mc_java_random_seed_u64(&random,seed);end=112-mc_java_random_next_int_bound(&random,28);
+    for(i=0;i<128;i=i+1)
+    {
+        if(i==0 || mc_java_random_next_int_bound(&random,3)==0)
+            factor=1.0f+mc_java_random_next_float(&random)*mc_java_random_next_float(&random)*1.0f;
+        mc_gen_ravine_width[i]=factor*factor;
+    }
+    for(step=0;step<end;step=step+1)
+    {
+        mc_fp_reset();
+        h=mc_fp_add(mc_fp_bits(0,0x3ff80000),mc_fp_f32(mc_math_sin((float)step*3.1415927410125732421875f/(float)end)*width*1.0f));
+        v=mc_fp_mul(h,mc_fp_i32(3));
+        h=mc_fp_mul(h,mc_fp_add(mc_fp_mul(mc_fp_f32(mc_java_random_next_float(&random)),mc_fp_bits(0,0x3fd00000)),mc_fp_bits(0,0x3fe80000)));
+        v=mc_fp_mul(v,mc_fp_add(mc_fp_mul(mc_fp_f32(mc_java_random_next_float(&random)),mc_fp_bits(0,0x3fd00000)),mc_fp_bits(0,0x3fe80000)));
+        mc_gen_store(&horizontal,h);mc_gen_store(&vertical,v);
+        cp=mc_math_cos(pitch);sp=mc_math_sin(pitch);
+        mc_gen_store(position,mc_fp_add(mc_gen_load(position),mc_fp_f32(mc_math_cos(yaw)*cp)));
+        mc_gen_store(position+1,mc_fp_add(mc_gen_load(position+1),mc_fp_f32(sp)));
+        mc_gen_store(position+2,mc_fp_add(mc_gen_load(position+2),mc_fp_f32(mc_math_sin(yaw)*cp)));
+        pitch=pitch*0.7f;pitch=pitch+pitch_drift*0.05f;yaw=yaw+yaw_drift*0.05f;
+        pitch_drift=pitch_drift*0.8f;yaw_drift=yaw_drift*0.5f;
+        pitch_drift=pitch_drift+(mc_java_random_next_float(&random)-mc_java_random_next_float(&random))*mc_java_random_next_float(&random)*2.0f;
+        yaw_drift=yaw_drift+(mc_java_random_next_float(&random)-mc_java_random_next_float(&random))*mc_java_random_next_float(&random)*4.0f;
+        if(mc_java_random_next_int_bound(&random,4)!=0)
+        {
+            px=mc_gen_load(position);py=mc_gen_load(position+1);pz=mc_gen_load(position+2);
+            dx=mc_fp_sub(px,mc_fp_i32(cx*16+8));dz=mc_fp_sub(pz,mc_fp_i32(cz*16+8));rest=mc_fp_i32(end-step);
+            reach=mc_fp_f32(width+2.0f+16.0f);
+            distance=mc_fp_sub(mc_fp_add(mc_fp_mul(dx,dx),mc_fp_mul(dz,dz)),mc_fp_mul(rest,rest));
+            if(mc_fp_gt(distance,mc_fp_mul(reach,reach)))return 1;
+            reach=mc_fp_mul(h,mc_fp_i32(2));
+            if(mc_fp_ge(px,mc_fp_sub(mc_fp_sub(mc_fp_i32(cx*16+8),mc_fp_i32(16)),reach)) &&
+               mc_fp_ge(pz,mc_fp_sub(mc_fp_sub(mc_fp_i32(cz*16+8),mc_fp_i32(16)),reach)) &&
+               mc_fp_le(px,mc_fp_add(mc_fp_add(mc_fp_i32(cx*16+8),mc_fp_i32(16)),reach)) &&
+               mc_fp_le(pz,mc_fp_add(mc_fp_add(mc_fp_i32(cz*16+8),mc_fp_i32(16)),reach)))
+            {
+                x0=mc_fp_floor(mc_fp_sub(px,h))-cx*16-1;x1=mc_fp_floor(mc_fp_add(px,h))-cx*16+1;
+                y0=mc_fp_floor(mc_fp_sub(py,v))-1;y1=mc_fp_floor(mc_fp_add(py,v))+1;
+                z0=mc_fp_floor(mc_fp_sub(pz,h))-cz*16-1;z1=mc_fp_floor(mc_fp_add(pz,h))-cz*16+1;
+                if(x0<0)x0=0;if(x1>16)x1=16;if(y0<1)y0=1;if(y1>120)y1=120;
+                if(z0<0)z0=0;if(z1>16)z1=16;
+                if(!mc_gen_ravine_water(blocks,x0,x1,y0,y1,z0,z1))
+                {
+                    for(x=x0;x<x1;x=x+1)for(z=z0;z<z1;z=z+1)
+                    {
+                        mc_fp_reset();h=mc_gen_load(&horizontal);v=mc_gen_load(&vertical);
+                        dx=mc_fp_div(mc_fp_sub(mc_fp_add(mc_fp_i32(x+cx*16),D05),mc_gen_load(position)),h);
+                        dz=mc_fp_div(mc_fp_sub(mc_fp_add(mc_fp_i32(z+cz*16),D05),mc_gen_load(position+2)),h);
+                        distance=mc_fp_add(mc_fp_mul(dx,dx),mc_fp_mul(dz,dz));
+                        mc_gen_store(&dx_value,distance);
+                        if(mc_fp_lt(distance,D1))
+                        {
+                            at=(x*16+z)*128+y1;grass=0;
+                            for(y=y1-1;y>=y0;y=y-1)
+                            {
+                                mc_fp_reset();distance=mc_gen_load(&dx_value);v=mc_gen_load(&vertical);
+                                ny=mc_fp_div(mc_fp_sub(mc_fp_add(mc_fp_i32(y),D05),mc_gen_load(position+1)),v);
+                                limit=mc_fp_add(mc_fp_mul(distance,mc_fp_f32(mc_gen_ravine_width[y])),mc_fp_div(mc_fp_mul(ny,ny),mc_fp_i32(6)));
+                                if(mc_fp_lt(limit,D1))
+                                {
+                                    id=blocks[at]&255;if(id==2)grass=1;
+                                    if(id==1 || id==3 || id==2)
+                                    {
+                                        if(y<10)blocks[at]=10;
+                                        else
+                                        {
+                                            blocks[at]=0;
+                                            if(grass && (blocks[at-1]&255)==3)
+                                            {biome=mc_gen_biomes[x+z*16];blocks[at-1]=(char)(biome==2?12:((biome==14 || biome==15)?110:2));}
+                                        }
+                                    }
+                                }
+                                at=at-1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if(!mc_biome_yield())return 0;
+    }
+    return 1;
+}
+int mc_gen_ravines(struct MCU64 *world_seed,int cx,int cz,char *blocks)
+{
+    struct MCJavaRandom random;struct MCU64 x_factor;struct MCU64 z_factor;
+    struct MCU64 x_part;struct MCU64 z_part;struct MCU64 seed;struct MCU64 node_seed;
+    struct MCJDouble position[3];int x;int z;int px;int py;int pz;float yaw;float pitch;float width;
+    if(!mc_biome_region(1,cx*16,cz*16,16,16,mc_gen_biomes,mc_biome_scratch,3072))return 0;
+    mc_java_random_seed_u64(&random,world_seed);mc_java_random_next_long(&random,&x_factor);mc_java_random_next_long(&random,&z_factor);
+    for(x=cx-8;x<=cx+8;x=x+1)for(z=cz-8;z<=cz+8;z=z+1)
+    {
+        mc_u64_from_i32(&x_part,x);mc_u64_multiply(&x_part,&x_part,&x_factor);
+        mc_u64_from_i32(&z_part,z);mc_u64_multiply(&z_part,&z_part,&z_factor);
+        mc_u64_xor(&seed,&x_part,&z_part);mc_u64_xor(&seed,&seed,world_seed);mc_java_random_seed_u64(&random,&seed);
+        if(mc_java_random_next_int_bound(&random,50)==0)
+        {
+            px=x*16+mc_java_random_next_int_bound(&random,16);
+            py=mc_java_random_next_int_bound(&random,mc_java_random_next_int_bound(&random,40)+8)+20;
+            pz=z*16+mc_java_random_next_int_bound(&random,16);
+            yaw=mc_java_random_next_float(&random)*3.1415927410125732421875f*2.0f;
+            pitch=(mc_java_random_next_float(&random)-0.5f)*2.0f/8.0f;
+            width=(mc_java_random_next_float(&random)*2.0f+mc_java_random_next_float(&random))*2.0f;
+            mc_java_random_next_long(&random,&node_seed);mc_fp_reset();
+            mc_gen_store(position,mc_fp_i32(px));mc_gen_store(position+1,mc_fp_i32(py));mc_gen_store(position+2,mc_fp_i32(pz));
+            if(!mc_gen_ravine_node(&node_seed,cx,cz,blocks,position,width,yaw,pitch))return 0;
+        }
+        if(!mc_biome_yield())return 0;
+    }
+    return 1;
+}
+#endif
+

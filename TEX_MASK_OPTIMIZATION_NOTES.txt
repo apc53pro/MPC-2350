@@ -1,0 +1,23 @@
+TinyCraft / GP-PICO-OS VM textured 3D mask optimization patch
+
+Changes in bRPVM.cpp:
+
+1. OP_FILLTRI3D_TEX_Z_MASK and OP_FILLQUAD3D_TEX_Z_MASK masked span writer now batches framebuffer word writes.
+   - The old masked path read/wrote the 32-bit framebuffer word per accepted pixel.
+   - The new path batches up to four pixels that live in the same framebuffer word and writes the word once if any lane changed.
+
+2. Fully-empty and fully-opaque mask classification was added.
+   - Before rasterization, the masked opcode scans the mask words for the texture.
+   - If the mask is fully empty, the draw returns immediately.
+   - If the mask is fully opaque, it uses the existing unmasked OP_FILLTRI3D_TEX_Z / OP_FILLQUAD3D_TEX_Z render path internally.
+   - Instruction format is unchanged.
+
+3. Added a 16x16 wrap fast path for masked 3D textures.
+   - If tex_w == 16, tex_h == 16, and U/V wrap flags are enabled, texel index is computed as (v << 4) | u.
+   - This mirrors the existing unmasked 16x16 fast path.
+
+4. TRI3D runtime statistics are compiled out by default.
+   - TRI3D_RUNTIME_STATS defaults to 0.
+   - Set TRI3D_RUNTIME_STATS to 1 for profiling builds.
+
+Note: I could not compile this Arduino/RP2350 project in this environment because the full board/toolchain libraries are not present.

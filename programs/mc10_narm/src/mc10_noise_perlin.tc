@@ -1,0 +1,82 @@
+/*
+ * Exact port of the NoiseGeneratorPerlin(Random) constructor from the owned
+ * Minecraft 1.0 decompilation. Noise evaluation is intentionally not present
+ * yet: it depends on exact general Java binary64 arithmetic.
+ */
+
+struct MCNoiseGeneratorPerlin {
+    int permutations[512];
+    struct MCJDouble x_coord;
+    struct MCJDouble y_coord;
+    struct MCJDouble z_coord;
+};
+
+struct MCNoiseGeneratorPerlin mc_perlin_test;
+struct MCJDouble mc_perlin_random_double;
+
+void mc_noise_perlin_init(struct MCNoiseGeneratorPerlin *generator,
+                          struct MCJavaRandom *random)
+{
+    int index;
+    int swap_index;
+    int temporary;
+
+    mc_java_random_next_double_bits(random, &mc_perlin_random_double);
+    mc_java_double_multiply_pow2(&generator->x_coord,
+                                 &mc_perlin_random_double, 8);
+    mc_java_random_next_double_bits(random, &mc_perlin_random_double);
+    mc_java_double_multiply_pow2(&generator->y_coord,
+                                 &mc_perlin_random_double, 8);
+    mc_java_random_next_double_bits(random, &mc_perlin_random_double);
+    mc_java_double_multiply_pow2(&generator->z_coord,
+                                 &mc_perlin_random_double, 8);
+
+    index = 0;
+    while (index < 256)
+    {
+        generator->permutations[index] = index;
+        index = index + 1;
+    }
+
+    index = 0;
+    while (index < 256)
+    {
+        swap_index = mc_java_random_next_int_bound(random, 256 - index) + index;
+        temporary = generator->permutations[index];
+        generator->permutations[index] = generator->permutations[swap_index];
+        generator->permutations[swap_index] = temporary;
+        generator->permutations[index + 256] = generator->permutations[index];
+        index = index + 1;
+    }
+}
+
+int mc_noise_perlin_constructor_self_test(void)
+{
+    int expected[16] = {140, 157, 53, 179, 117, 253, 229, 104,
+                        247, 35, 20, 221, 25, 51, 211, 18};
+    int index;
+    mc_java_random_seed_u32(&mc_random_test_state, 0);
+    mc_noise_perlin_init(&mc_perlin_test, &mc_random_test_state);
+
+    if (!mc_java_double_bits_equal(&mc_perlin_test.x_coord,
+                                   0x40676416, 0x8ea6ca89)) return 0;
+    if (!mc_java_double_bits_equal(&mc_perlin_test.y_coord,
+                                   0x404ec9e5, 0xb3672e14)) return 0;
+    if (!mc_java_double_bits_equal(&mc_perlin_test.z_coord,
+                                   0x406465b9, 0x3a78ef81)) return 0;
+    index = 0;
+    while (index < 16)
+    {
+        if (mc_perlin_test.permutations[index] != expected[index]) return 0;
+        index = index + 1;
+    }
+    index = 0;
+    while (index < 256)
+    {
+        if (mc_perlin_test.permutations[index + 256] !=
+            mc_perlin_test.permutations[index]) return 0;
+        index = index + 1;
+    }
+    return 1;
+}
+

@@ -1,0 +1,348 @@
+/* Minecraft 1.0 Entity/EntityLiving/EntityPlayerSP locomotion subset.
+ * Binary64 registers 0..5 = pos/motion; 6..11 = persistent AABB. Damage,
+ * particles/sounds and collisions with entity objects are pending. Inventory
+ * and first-person presentation are separate guarded player modules. */
+struct MCPhysicalPlayer {
+    struct MCAABB box;
+    float yaw;float pitch;float y_size;float fall_distance;
+    float move_forward;float land_factor;float air_factor;
+    int grounded;int horizontal;int vertical;int sneak;int jump_delay;
+    int water;int lava;int ticks;int sprint;int sprint_timer;int sprint_left;
+    int flying;int fly_timer;int previous_jump;int food;int mayfly;
+};
+struct MCPhysicalPlayer mc_player;
+int mc_player_status;
+struct MCJDouble mc_player_backup_numbers[12];
+struct MCPhysicalPlayer mc_player_backup;
+void mc_player_copy(struct MCPhysicalPlayer *out,struct MCPhysicalPlayer *in)
+{uint *a=(uint *)out;uint *b=(uint *)in;int i;for(i=0;i<(int)sizeof(struct MCPhysicalPlayer)/4;i=i+1)a[i]=b[i];}
+
+void mc_player_commit_box(void)
+{
+    int a;for(a=0;a<3;a=a+1){mc_fp_store(6+a,mc_player.box.low[a]);mc_fp_store(9+a,mc_player.box.high[a]);}
+    for(a=0;a<3;a=a+1){mc_player.box.low[a]=6+a;mc_player.box.high[a]=9+a;}
+}
+void mc_player_sync_runtime(void)
+{
+    mc_runtime_player.pos_x.lo=mc_fp_values[0].lo;mc_runtime_player.pos_x.hi=mc_fp_values[0].hi;
+    mc_runtime_player.pos_y.lo=mc_fp_values[1].lo;mc_runtime_player.pos_y.hi=mc_fp_values[1].hi;
+    mc_runtime_player.pos_z.lo=mc_fp_values[2].lo;mc_runtime_player.pos_z.hi=mc_fp_values[2].hi;
+    mc_runtime_player.motion_x.lo=mc_fp_values[3].lo;mc_runtime_player.motion_x.hi=mc_fp_values[3].hi;
+    mc_runtime_player.motion_y.lo=mc_fp_values[4].lo;mc_runtime_player.motion_y.hi=mc_fp_values[4].hi;
+    mc_runtime_player.motion_z.lo=mc_fp_values[5].lo;mc_runtime_player.motion_z.hi=mc_fp_values[5].hi;
+    mc_runtime_player.yaw_bits=*((uint *)&mc_player.yaw);mc_runtime_player.pitch_bits=*((uint *)&mc_player.pitch);
+    mc_runtime_player.fall_distance_bits=*((uint *)&mc_player.fall_distance);mc_runtime_player.flying=mc_player.flying;
+    mc_runtime_player.block_x=mc_fp_floor(0);mc_runtime_player.block_y=mc_fp_floor(1);mc_runtime_player.block_z=mc_fp_floor(2);
+    mc_runtime_player.on_ground=mc_player.grounded;
+}
+float mc_player_rotation(float value)
+{
+    /* Entity.setRotation: Java float % 360.0F. Exact scaled subtraction
+     * avoids narrowing an arbitrarily large finite quotient to an int. */
+    int v=mc_fp_abs(mc_fp_f32(value)),base=mc_fp_i32(360),step,twice;
+    uint bits=*((uint *)&value);
+    if(mc_fp_lt(v,base))return value;
+    step=base;twice=mc_fp_add(step,step);
+    while(mc_fp_ge(v,twice)){step=twice;twice=mc_fp_add(step,step);}
+    while(mc_fp_ge(step,base)){if(mc_fp_ge(v,step))v=mc_fp_sub(v,step);step=mc_fp_mul(step,D05);}
+    if(bits>>31)v=mc_fp_neg(v);
+    return mc_fp_to_f32(v);
+}
+void mc_player_init(void)
+{
+    int a;int half,feet;mc_fp_init();mc_collision_error=0;mc_player_status=0;
+    mc_fp_values[0].lo=mc_runtime_player.pos_x.lo;mc_fp_values[0].hi=mc_runtime_player.pos_x.hi;
+    mc_fp_values[1].lo=mc_runtime_player.pos_y.lo;mc_fp_values[1].hi=mc_runtime_player.pos_y.hi;
+    mc_fp_values[2].lo=mc_runtime_player.pos_z.lo;mc_fp_values[2].hi=mc_runtime_player.pos_z.hi;
+    mc_fp_values[3].lo=mc_runtime_player.motion_x.lo;mc_fp_values[3].hi=mc_runtime_player.motion_x.hi;
+    mc_fp_values[4].lo=mc_runtime_player.motion_y.lo;mc_fp_values[4].hi=mc_runtime_player.motion_y.hi;
+    mc_fp_values[5].lo=mc_runtime_player.motion_z.lo;mc_fp_values[5].hi=mc_runtime_player.motion_z.hi;
+    /* Non-finite NBT state is outside the finite binary64 adapter's domain. */
+    for(a=0;a<6;a=a+1)if((mc_fp_values[a].hi&0x7ff00000)==0x7ff00000){mc_player_status=5;return;}
+    if((mc_runtime_player.yaw_bits&0x7f800000)==0x7f800000 ||
+       (mc_runtime_player.pitch_bits&0x7f800000)==0x7f800000 ||
+       (mc_runtime_player.fall_distance_bits&0x7f800000)==0x7f800000){mc_player_status=5;return;}
+    /* Entity.readFromNBT discards motion whose absolute value exceeds 10D. */
+    for(a=3;a<6;a=a+1)if(mc_fp_gt(mc_fp_abs(a),mc_fp_i32(10)))mc_fp_store(a,D0);
+    if(!mc_runtime_player.present)
+    {
+        mc_fp_store(0,mc_fp_add(mc_fp_i32(mc_runtime_player.block_x),D05));
+        mc_fp_store(1,mc_fp_add(mc_fp_i32(mc_runtime_player.block_y+1),mc_fp_f32(1.62f)));
+        mc_fp_store(2,mc_fp_add(mc_fp_i32(mc_runtime_player.block_z),D05));
+        mc_runtime_player.present=1;
+    }
+    mc_player.yaw=mc_player_rotation(*((float *)&mc_runtime_player.yaw_bits));
+    mc_player.pitch=mc_player_rotation(*((float *)&mc_runtime_player.pitch_bits));
+    mc_player.y_size=0;mc_player.fall_distance=*((float *)&mc_runtime_player.fall_distance_bits);
+    mc_player.land_factor=.1f;mc_player.air_factor=.02f;mc_player.grounded=mc_runtime_player.on_ground;
+    mc_player.horizontal=0;mc_player.vertical=0;mc_player.sneak=0;mc_player.jump_delay=0;
+    mc_player.water=0;mc_player.lava=0;mc_player.ticks=0;mc_player.move_forward=0;
+    mc_player.sprint=0;mc_player.sprint_timer=0;mc_player.sprint_left=0;
+    mc_player.flying=mc_runtime_player.flying;mc_player.mayfly=mc_runtime_player.mayfly||mc_runtime_world.info->game_type==1;
+    mc_player.food=mc_runtime_player.food;mc_player.fly_timer=0;mc_player.previous_jump=0;
+    half=mc_fp_f32(.6f/2.0f);feet=mc_fp_sub(1,mc_fp_f32(1.62f));
+    mc_player.box.low[0]=mc_fp_sub(0,half);mc_player.box.high[0]=mc_fp_add(0,half);
+    mc_player.box.low[1]=feet;mc_player.box.high[1]=mc_fp_add(feet,mc_fp_f32(1.8f));
+    mc_player.box.low[2]=mc_fp_sub(2,half);mc_player.box.high[2]=mc_fp_add(2,half);
+    mc_player_commit_box();mc_player_sync_runtime();
+}
+void mc_player_look(float dx,float dy)
+{
+    float sensitivity=mc_options.mouse_sensitivity*.6f+.2f;
+    float factor=sensitivity*sensitivity*sensitivity*8.0f;
+    mc_fp_reset();
+    dx=dx*factor;dy=dy*factor*(mc_options.invert_mouse?-1.0f:1.0f);
+    mc_player.yaw=mc_fp_to_f32(mc_fp_add(mc_fp_f32(mc_player.yaw),mc_fp_mul(mc_fp_f32(dx),mc_fp_bits(0x33333333,0x3fc33333))));
+    mc_player.pitch=mc_fp_to_f32(mc_fp_sub(mc_fp_f32(mc_player.pitch),mc_fp_mul(mc_fp_f32(dy),mc_fp_bits(0x33333333,0x3fc33333))));
+    if(mc_player.pitch<-90)mc_player.pitch=-90;if(mc_player.pitch>90)mc_player.pitch=90;
+    mc_player_sync_runtime();
+}
+void mc_vector_normalize(int *x,int *y,int *z)
+{
+    int squared=mc_fp_add(mc_fp_add(mc_fp_mul(*x,*x),mc_fp_mul(*y,*y)),mc_fp_mul(*z,*z));
+    int length=mc_fp_f32(mc_fp_to_f32(mc_fp_sqrt(squared)));
+    if(mc_fp_lt(length,D00001)){*x=D0;*y=D0;*z=D0;return;}
+    *x=mc_fp_div(*x,length);*y=mc_fp_div(*y,length);*z=mc_fp_div(*z,length);
+}
+int mc_player_material(int x,int y,int z)
+{uint id;if(!mc_collision_block(x,y,z,&id))return MC_MATERIAL_AIR;return id==0?MC_MATERIAL_AIR:mc_blocks[id].material;}
+int mc_flow_decay(int material,int x,int y,int z)
+{uint metadata;if(mc_player_material(x,y,z)!=material)return -1;mc_runtime_try_get_metadata(x,y,z,&metadata);return metadata>=8?0:(int)metadata;}
+int mc_flow_solid(int material,int x,int y,int z)
+{int other=mc_player_material(x,y,z);return other!=material && other!=MC_MATERIAL_ICE && mc_materials[other].solid;}
+void mc_fluid_flow(int material,int x,int y,int z,int *vx,int *vy,int *vz)
+{
+    int own=mc_flow_decay(material,x,y,z);int i,nx,nz,decay,diff;uint metadata;
+    *vx=D0;*vy=D0;*vz=D0;
+    for(i=0;i<4;i=i+1)
+    {
+        nx=x;nz=z;if(i==0)nx=nx-1;else if(i==1)nz=nz-1;else if(i==2)nx=nx+1;else nz=nz+1;
+        decay=mc_flow_decay(material,nx,y,nz);
+        if(decay<0)
+        {
+            if(!mc_materials[mc_player_material(nx,y,nz)].solid)
+            {decay=mc_flow_decay(material,nx,y-1,nz);if(decay>=0){diff=decay-(own-8);*vx=mc_fp_add(*vx,mc_fp_i32((nx-x)*diff));*vz=mc_fp_add(*vz,mc_fp_i32((nz-z)*diff));}}
+        }
+        else {diff=decay-own;*vx=mc_fp_add(*vx,mc_fp_i32((nx-x)*diff));*vz=mc_fp_add(*vz,mc_fp_i32((nz-z)*diff));}
+    }
+    mc_runtime_try_get_metadata(x,y,z,&metadata);
+    if(metadata>=8 && (mc_flow_solid(material,x,y,z-1)||mc_flow_solid(material,x,y,z+1)||mc_flow_solid(material,x-1,y,z)||mc_flow_solid(material,x+1,y,z)||mc_flow_solid(material,x,y+1,z-1)||mc_flow_solid(material,x,y+1,z+1)||mc_flow_solid(material,x-1,y+1,z)||mc_flow_solid(material,x+1,y+1,z)))
+    {mc_vector_normalize(vx,vy,vz);*vy=mc_fp_sub(*vy,mc_fp_i32(6));}
+    mc_vector_normalize(vx,vy,vz);
+}
+int mc_player_liquid(struct MCAABB *box,int material,int accelerate)
+{
+    int x0=mc_fp_floor(box->low[0]),x1=mc_fp_floor(mc_fp_add(box->high[0],D1));
+    int y0=mc_fp_floor(box->low[1]),y1=mc_fp_floor(mc_fp_add(box->high[1],D1));
+    int z0=mc_fp_floor(box->low[2]),z1=mc_fp_floor(mc_fp_add(box->high[2],D1));
+    int x,y,z,found=0,vx=D0,vy=D0,vz=D0,tx,ty,tz;uint metadata;float surface;
+    for(x=x0;x<x1;x=x+1)for(y=y0;y<y1;y=y+1)for(z=z0;z<z1;z=z+1)
+        if(mc_player_material(x,y,z)==material)
+        {
+            if(accelerate)
+            {
+                mc_runtime_try_get_metadata(x,y,z,&metadata);
+                surface=(float)(y+1)-(float)((metadata>=8?0:metadata)+1)/9.0f;
+                if((float)y1>=surface){found=1;mc_fluid_flow(material,x,y,z,&tx,&ty,&tz);vx=mc_fp_add(vx,tx);vy=mc_fp_add(vy,ty);vz=mc_fp_add(vz,tz);}
+            }
+            else found=1;
+        }
+    if(accelerate && (!mc_fp_zero(vx)||!mc_fp_zero(vy)||!mc_fp_zero(vz)))
+    {
+        mc_vector_normalize(&vx,&vy,&vz);tx=mc_fp_bits(0x3126e979,0x3f8cac08);
+        mc_fp_store(3,mc_fp_add(3,mc_fp_mul(vx,tx)));mc_fp_store(4,mc_fp_add(4,mc_fp_mul(vy,tx)));mc_fp_store(5,mc_fp_add(5,mc_fp_mul(vz,tx)));
+    }
+    return found;
+}
+int mc_player_on_ladder(void)
+{uint id;mc_collision_block(mc_fp_floor(0),mc_fp_floor(mc_player.box.low[1]),mc_fp_floor(2),&id);return id==65;}
+void mc_player_move(int dx,int dy,int dz)
+{
+    struct MCAABB original;struct MCAABB query;struct MCAABB normal;
+    int ox,oy,oz,can_step,nx,ny,nz,fraction;int sneaking=mc_player.grounded&&mc_player.sneak;
+    mc_player.y_size=mc_player.y_size*.4f;mc_box_copy(&original,&mc_player.box);
+    if(sneaking)
+    {
+        while(!mc_fp_zero(dx))
+        {
+            mc_box_copy(&query,&mc_player.box);mc_box_offset(&query,dx,mc_fp_i32(-1),D0);
+            if(mc_collision_query(&query)!=0||mc_collision_error)break;
+            if(mc_fp_lt(dx,D005)&&mc_fp_ge(dx,mc_fp_neg(D005)))dx=D0;
+            else dx=mc_fp_gt(dx,D0)?mc_fp_sub(dx,D005):mc_fp_add(dx,D005);
+        }
+        while(!mc_fp_zero(dz))
+        {
+            mc_box_copy(&query,&mc_player.box);mc_box_offset(&query,D0,mc_fp_i32(-1),dz);
+            if(mc_collision_query(&query)!=0||mc_collision_error)break;
+            if(mc_fp_lt(dz,D005)&&mc_fp_ge(dz,mc_fp_neg(D005)))dz=D0;
+            else dz=mc_fp_gt(dz,D0)?mc_fp_sub(dz,D005):mc_fp_add(dz,D005);
+        }
+    }
+    ox=dx;oy=dy;oz=dz;
+    mc_box_sweep(&query,&original,dx,dy,dz);mc_collision_query(&query);if(mc_collision_error)return;
+    dy=mc_collision_resolve(&mc_player.box,dy,1);mc_box_offset(&mc_player.box,D0,dy,D0);
+    can_step=mc_player.grounded||(!mc_fp_eq(oy,dy)&&mc_fp_lt(oy,D0));
+    dx=mc_collision_resolve(&mc_player.box,dx,0);mc_box_offset(&mc_player.box,dx,D0,D0);
+    dz=mc_collision_resolve(&mc_player.box,dz,2);mc_box_offset(&mc_player.box,D0,D0,dz);
+    if(can_step&&(sneaking||mc_player.y_size<.05f)&&(!mc_fp_eq(ox,dx)||!mc_fp_eq(oz,dz)))
+    {
+        nx=dx;ny=dy;nz=dz;mc_box_copy(&normal,&mc_player.box);mc_box_copy(&mc_player.box,&original);
+        dx=ox;dy=D05;dz=oz;mc_box_sweep(&query,&original,dx,dy,dz);mc_collision_query(&query);if(mc_collision_error)return;
+        dy=mc_collision_resolve(&mc_player.box,dy,1);mc_box_offset(&mc_player.box,D0,dy,D0);
+        dx=mc_collision_resolve(&mc_player.box,dx,0);mc_box_offset(&mc_player.box,dx,D0,D0);
+        dz=mc_collision_resolve(&mc_player.box,dz,2);mc_box_offset(&mc_player.box,D0,D0,dz);
+        dy=mc_collision_resolve(&mc_player.box,mc_fp_neg(D05),1);mc_box_offset(&mc_player.box,D0,dy,D0);
+        if(mc_fp_ge(mc_fp_add(mc_fp_mul(nx,nx),mc_fp_mul(nz,nz)),mc_fp_add(mc_fp_mul(dx,dx),mc_fp_mul(dz,dz))))
+        {dx=nx;dy=ny;dz=nz;mc_box_copy(&mc_player.box,&normal);}
+        else
+        {fraction=mc_fp_sub(mc_player.box.low[1],mc_fp_i32(mc_fp_trunc(mc_player.box.low[1])));if(mc_fp_gt(fraction,D0))mc_player.y_size=mc_fp_to_f32(mc_fp_add(mc_fp_add(mc_fp_f32(mc_player.y_size),fraction),D001));}
+    }
+    mc_fp_store(0,mc_fp_mul(mc_fp_add(mc_player.box.low[0],mc_player.box.high[0]),D05));
+    mc_fp_store(1,mc_fp_sub(mc_fp_add(mc_player.box.low[1],mc_fp_f32(1.62f)),mc_fp_f32(mc_player.y_size)));
+    mc_fp_store(2,mc_fp_mul(mc_fp_add(mc_player.box.low[2],mc_player.box.high[2]),D05));
+    mc_player.horizontal=!mc_fp_eq(ox,dx)||!mc_fp_eq(oz,dz);mc_player.vertical=!mc_fp_eq(oy,dy);
+    mc_player.grounded=mc_player.vertical&&mc_fp_lt(oy,D0);
+    if(mc_player.grounded)mc_player.fall_distance=0;
+    else if(mc_fp_lt(dy,D0))mc_player.fall_distance=mc_fp_to_f32(mc_fp_sub(mc_fp_f32(mc_player.fall_distance),dy));
+    if(!mc_fp_eq(ox,dx))mc_fp_store(3,D0);if(!mc_fp_eq(oy,dy))mc_fp_store(4,D0);if(!mc_fp_eq(oz,dz))mc_fp_store(5,D0);
+}
+void mc_player_move_flying(float strafe,float forward,float acceleration)
+{
+    float length=mc_math_sqrt_float(strafe*strafe+forward*forward);float scale,angle,s,c;
+    if(length<.01f)return;
+    if(length<1)length=1;scale=acceleration/length;strafe=strafe*scale;forward=forward*scale;
+    angle=mc_player.yaw*3.141592741f/180.0f;s=mc_math_sin(angle);c=mc_math_cos(angle);
+    mc_fp_store(3,mc_fp_add(3,mc_fp_f32(strafe*c-forward*s)));mc_fp_store(5,mc_fp_add(5,mc_fp_f32(forward*c+strafe*s)));
+}
+int mc_player_liquid_escape(int old_y)
+{
+    struct MCAABB test;int dy=mc_fp_add(mc_fp_sub(mc_fp_add(4,mc_fp_f32(.6f)),1),old_y);
+    int x0,x1,y0,y1,z0,z1,x,y,z,material;
+    mc_box_copy(&test,&mc_player.box);mc_box_offset(&test,3,dy,5);
+    if(mc_collision_query(&test)!=0||mc_collision_error)return 0;
+    /* World.getIsAnyLiquid has an extra negative-coordinate decrement. */
+    x0=mc_fp_floor(test.low[0]);x1=mc_fp_floor(mc_fp_add(test.high[0],D1));
+    y0=mc_fp_floor(test.low[1]);y1=mc_fp_floor(mc_fp_add(test.high[1],D1));
+    z0=mc_fp_floor(test.low[2]);z1=mc_fp_floor(mc_fp_add(test.high[2],D1));
+    if(mc_fp_lt(test.low[0],D0))x0=x0-1;if(mc_fp_lt(test.low[1],D0))y0=y0-1;if(mc_fp_lt(test.low[2],D0))z0=z0-1;
+    for(x=x0;x<x1;x=x+1)for(y=y0;y<y1;y=y+1)for(z=z0;z<z1;z=z+1)
+    {material=mc_player_material(x,y,z);if(material==MC_MATERIAL_WATER||material==MC_MATERIAL_LAVA)return 0;}
+    return 1;
+}
+void mc_player_heading(float strafe,float forward)
+{
+    int old_y=mc_fp_bits(mc_fp_values[1].lo,mc_fp_values[1].hi),drag;float friction=.91f,acceleration;uint id;int ladder;
+    if(mc_player.water||mc_player.lava)
+    {
+        mc_player_move_flying(strafe,forward,.02f);mc_player_move(3,4,5);
+        drag=mc_player.water?mc_fp_f32(.8f):D05;
+        mc_fp_store(3,mc_fp_mul(3,drag));mc_fp_store(4,mc_fp_sub(mc_fp_mul(4,drag),D002));mc_fp_store(5,mc_fp_mul(5,drag));
+        if(mc_player.horizontal&&mc_player_liquid_escape(old_y))mc_fp_store(4,mc_fp_f32(.3f));
+        return;
+    }
+    if(mc_player.grounded)
+    {
+        mc_collision_block(mc_fp_floor(0),mc_fp_floor(mc_player.box.low[1])-1,mc_fp_floor(2),&id);
+#ifdef MC10_WORLD_SYSTEMS
+        friction=id>0?mc_block_slipperiness(id)*.91f:546.0f*.1f*.1f*.1f;
+#else
+        friction=id>0?.6f*.91f:546.0f*.1f*.1f*.1f;
+#endif
+    }
+    acceleration=mc_player.grounded?mc_player.land_factor*(.16277136f/(friction*friction*friction)):(mc_player.flying?.05f:mc_player.air_factor);
+    mc_player_move_flying(strafe,forward,acceleration);
+    ladder=mc_player_on_ladder();
+    if(ladder)
+    {
+        drag=mc_fp_f32(.15f);
+        if(mc_fp_lt(3,mc_fp_neg(drag)))mc_fp_store(3,mc_fp_neg(drag));if(mc_fp_gt(3,drag))mc_fp_store(3,drag);
+        if(mc_fp_lt(5,mc_fp_neg(drag)))mc_fp_store(5,mc_fp_neg(drag));if(mc_fp_gt(5,drag))mc_fp_store(5,drag);
+        mc_player.fall_distance=0;
+        if(mc_fp_lt(4,mc_fp_bits(0x33333333,0xbfc33333)))mc_fp_store(4,mc_fp_bits(0x33333333,0xbfc33333));
+        if(mc_player.sneak&&mc_fp_lt(4,D0))mc_fp_store(4,D0);
+    }
+    mc_player_move(3,4,5);
+    if(mc_player.horizontal&&mc_player_on_ladder())mc_fp_store(4,mc_fp_bits(0x9999999a,0x3fc99999));
+    mc_fp_store(4,mc_fp_mul(mc_fp_sub(4,D008),mc_fp_f32(.98f)));
+    mc_fp_store(3,mc_fp_mul(3,mc_fp_f32(friction)));mc_fp_store(5,mc_fp_mul(5,mc_fp_f32(friction)));
+}
+int mc_player_normal_cube(int x,int y,int z)
+{
+    uint id;if(!mc_collision_block(x,y,z,&id))return 0;
+#ifdef MC10_WORLD_SYSTEMS
+    return id!=0&&mc_blocks[id].normal_block&&mc_material_is_opaque(mc_blocks[id].material);
+#else
+    return id!=0&&mc_blocks[id].normal_block&&mc_block_is_opaque(id);
+#endif
+}
+void mc_player_push_out(int px,int py,int pz)
+{
+    int x=mc_fp_floor(px),y=mc_fp_floor(py),z=mc_fp_floor(pz),direction=-1,best=mc_fp_i32(9999),candidate;
+    int fx=mc_fp_sub(px,mc_fp_i32(x)),fz=mc_fp_sub(pz,mc_fp_i32(z));
+    if(!mc_player_normal_cube(x,y,z)&&!mc_player_normal_cube(x,y+1,z))return;
+    if(!mc_player_normal_cube(x-1,y,z)&&!mc_player_normal_cube(x-1,y+1,z)&&mc_fp_lt(fx,best)){best=fx;direction=0;}
+    candidate=mc_fp_sub(D1,fx);
+    if(!mc_player_normal_cube(x+1,y,z)&&!mc_player_normal_cube(x+1,y+1,z)&&mc_fp_lt(candidate,best)){best=candidate;direction=1;}
+    if(!mc_player_normal_cube(x,y,z-1)&&!mc_player_normal_cube(x,y+1,z-1)&&mc_fp_lt(fz,best)){best=fz;direction=4;}
+    candidate=mc_fp_sub(D1,fz);
+    if(!mc_player_normal_cube(x,y,z+1)&&!mc_player_normal_cube(x,y+1,z+1)&&mc_fp_lt(candidate,best))direction=5;
+    if(direction==0)mc_fp_store(3,mc_fp_f32(-.1f));else if(direction==1)mc_fp_store(3,mc_fp_f32(.1f));
+    else if(direction==4)mc_fp_store(5,mc_fp_f32(-.1f));else if(direction==5)mc_fp_store(5,mc_fp_f32(.1f));
+}
+int mc_player_tick(float strafe,float forward,int jump,int sneak)
+{
+    struct MCAABB liquid;int i,was_forward,old_vertical,amount,fy;float angle;int good_food;
+    mc_fp_reset();mc_collision_error=0;mc_player_copy(&mc_player_backup,&mc_player);
+    for(i=0;i<12;i=i+1){mc_player_backup_numbers[i].lo=mc_fp_values[i].lo;mc_player_backup_numbers[i].hi=mc_fp_values[i].hi;}
+    /* Entity.onEntityUpdate handles water before EntityPlayerSP input updates. */
+    mc_box_expand(&liquid,&mc_player.box,D0,mc_fp_f32(-.4f),D0);
+    mc_box_expand(&liquid,&liquid,mc_fp_neg(D0001),mc_fp_neg(D0001),mc_fp_neg(D0001));
+    mc_player.water=mc_player_liquid(&liquid,MC_MATERIAL_WATER,1);if(mc_player.water)mc_player.fall_distance=0;
+    mc_box_expand(&liquid,&mc_player.box,mc_fp_f32(-.1f),mc_fp_f32(-.4f),mc_fp_f32(-.1f));
+    mc_player.lava=mc_player_liquid(&liquid,MC_MATERIAL_LAVA,0);
+    if(mc_player.sprint_left>0){mc_player.sprint_left=mc_player.sprint_left-1;if(mc_player.sprint_left==0)mc_player.sprint=0;}
+    if(mc_player.sprint_timer>0)mc_player.sprint_timer=mc_player.sprint_timer-1;
+    was_forward=mc_player.move_forward>=.8f;mc_player.sneak=sneak;
+    if(sneak){strafe=mc_fp_to_f32(mc_fp_mul(mc_fp_f32(strafe),mc_fp_bits(0x33333333,0x3fd33333)));forward=mc_fp_to_f32(mc_fp_mul(mc_fp_f32(forward),mc_fp_bits(0x33333333,0x3fd33333)));if(mc_player.y_size<.2f)mc_player.y_size=.2f;}
+    mc_player.move_forward=forward;
+    amount=mc_fp_mul(mc_fp_f32(.6f),mc_fp_bits(0x66666666,0x3fd66666));fy=mc_fp_add(mc_player.box.low[1],D05);
+    mc_player_push_out(mc_fp_sub(0,amount),fy,mc_fp_add(2,amount));mc_player_push_out(mc_fp_sub(0,amount),fy,mc_fp_sub(2,amount));
+    mc_player_push_out(mc_fp_add(0,amount),fy,mc_fp_sub(2,amount));mc_player_push_out(mc_fp_add(0,amount),fy,mc_fp_add(2,amount));
+    good_food=mc_player.food>6;
+    if(mc_player.grounded&&!was_forward&&forward>=.8f&&!mc_player.sprint&&good_food)
+    {if(mc_player.sprint_timer==0)mc_player.sprint_timer=7;else{mc_player.sprint=1;mc_player.sprint_left=600;mc_player.sprint_timer=0;}}
+    if(sneak)mc_player.sprint_timer=0;
+    if(mc_player.sprint&&(forward<.8f||mc_player.horizontal||!good_food))mc_player.sprint=0;
+    if(mc_player.mayfly&&!mc_player.previous_jump&&jump)
+    {if(mc_player.fly_timer==0)mc_player.fly_timer=7;else{mc_player.flying=!mc_player.flying;mc_player.fly_timer=0;}}
+    mc_player.previous_jump=jump;
+    if(mc_player.flying){if(sneak)mc_fp_store(4,mc_fp_sub(4,mc_fp_bits(0x33333333,0x3fc33333)));if(jump)mc_fp_store(4,mc_fp_add(4,mc_fp_bits(0x33333333,0x3fc33333)));}
+    /* EntityPlayer.onLivingUpdate follows EntityPlayerSP's double-jump test. */
+    if(mc_player.fly_timer>0)mc_player.fly_timer=mc_player.fly_timer-1;
+    if(mc_player.jump_delay>0)mc_player.jump_delay=mc_player.jump_delay-1;
+    if(mc_runtime_player.health<=0){jump=0;strafe=0;forward=0;}
+    if(jump)
+    {
+        if(mc_player.water||mc_player.lava)mc_fp_store(4,mc_fp_add(4,mc_fp_f32(.04f)));
+        else if(mc_player.grounded&&mc_player.jump_delay==0)
+        {
+            mc_fp_store(4,mc_fp_f32(.42f));mc_player.jump_delay=10;
+            if(mc_player.sprint){angle=mc_player.yaw*(3.141592741f/180.0f);mc_fp_store(3,mc_fp_sub(3,mc_fp_f32(mc_math_sin(angle)*.2f)));mc_fp_store(5,mc_fp_add(5,mc_fp_f32(mc_math_cos(angle)*.2f)));}
+        }
+    }
+    else mc_player.jump_delay=0;
+    old_vertical=mc_fp_bits(mc_fp_values[4].lo,mc_fp_values[4].hi);
+    mc_player_heading(strafe*.98f,forward*.98f);
+    if(mc_player.flying)mc_fp_store(4,mc_fp_mul(old_vertical,mc_fp_bits(0x33333333,0x3fe33333)));
+    mc_player.land_factor=.1f;mc_player.air_factor=.02f;
+    if(mc_player.sprint)
+    {mc_player.land_factor=mc_fp_to_f32(mc_fp_add(mc_fp_f32(.1f),mc_fp_mul(mc_fp_f32(.1f),mc_fp_bits(0x33333333,0x3fd33333))));mc_player.air_factor=mc_fp_to_f32(mc_fp_add(mc_fp_f32(.02f),mc_fp_mul(mc_fp_f32(.02f),mc_fp_bits(0x33333333,0x3fd33333))));}
+    if(mc_player.grounded)mc_player.flying=0;
+    if(mc_collision_error||mc_fp_error)
+    {
+        mc_player_status=mc_collision_error?mc_collision_error:4;mc_player_copy(&mc_player,&mc_player_backup);
+        for(i=0;i<12;i=i+1){mc_fp_values[i].lo=mc_player_backup_numbers[i].lo;mc_fp_values[i].hi=mc_player_backup_numbers[i].hi;}
+        return 0;
+    }
+    mc_player_commit_box();mc_player.ticks=mc_player.ticks+1;mc_player_sync_runtime();mc_player_status=0;return 1;
+}

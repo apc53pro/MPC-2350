@@ -1,0 +1,223 @@
+/* Minecraft 1.0 Block.java registration and subclass static state invariants.
+ * Guarded extension: profiler builds retain their historical 32-ID registry.
+ * A registered ID is not a promise that its active callbacks/tile state exist. */
+#ifdef MC10_WORLD_SYSTEMS
+void mc_blocks_register_world_systems(void)
+{
+    mc_block_register(6,MC_MATERIAL_PLANTS,15,1,0,0,0,0);
+    mc_block_register(8,MC_MATERIAL_WATER,205,4,0,0,3,0);
+    mc_block_register(12,MC_MATERIAL_SAND,18,0,1,1,255,0);
+    mc_block_register(18,MC_MATERIAL_LEAVES,52,0,1,1,1,0);
+    mc_block_register(19,MC_MATERIAL_SPONGE,48,0,1,1,255,0);
+    mc_block_register(20,MC_MATERIAL_GLASS,49,0,0,1,0,0);
+    mc_block_register(22,MC_MATERIAL_ROCK,144,0,1,1,255,0);
+    mc_block_register(23,MC_MATERIAL_ROCK,45,0,1,1,255,0);
+    mc_block_register(24,MC_MATERIAL_ROCK,192,0,1,1,255,0);
+    mc_block_register(25,MC_MATERIAL_WOOD,74,0,1,1,255,0);
+    mc_block_register(26,MC_MATERIAL_CLOTH,134,14,0,0,0,0);
+    mc_block_register(27,MC_MATERIAL_CIRCUITS,179,9,0,0,0,0);
+    mc_block_register(28,MC_MATERIAL_CIRCUITS,195,9,0,0,0,0);
+    mc_block_register(29,MC_MATERIAL_PISTON,106,16,0,0,0,0);
+    mc_block_register(30,MC_MATERIAL_WEB,11,1,0,0,1,0);
+    mc_block_register(32,MC_MATERIAL_PLANTS,55,1,0,0,0,0);
+    mc_block_register(33,MC_MATERIAL_PISTON,107,16,0,0,0,0);
+    mc_block_register(34,MC_MATERIAL_PISTON,107,17,0,0,0,0);
+    mc_block_register(36,MC_MATERIAL_PISTON,0,-1,0,0,0,0);
+    mc_block_register(38,MC_MATERIAL_PLANTS,12,1,0,0,0,0);
+    mc_block_register(39,MC_MATERIAL_PLANTS,29,1,0,0,0,1);
+    mc_block_register(40,MC_MATERIAL_PLANTS,28,1,0,0,0,0);
+    mc_block_register(41,MC_MATERIAL_IRON,23,0,1,1,255,0);
+    mc_block_register(42,MC_MATERIAL_IRON,22,0,1,1,255,0);
+    mc_block_register(44,MC_MATERIAL_ROCK,6,0,0,0,255,0);
+    mc_block_register(45,MC_MATERIAL_ROCK,7,0,1,1,255,0);
+    mc_block_register(46,MC_MATERIAL_TNT,8,0,1,1,255,0);
+    mc_block_register(47,MC_MATERIAL_WOOD,35,0,1,1,255,0);
+    mc_block_register(48,MC_MATERIAL_ROCK,36,0,1,1,255,0);
+    mc_block_register(49,MC_MATERIAL_ROCK,37,0,1,1,255,0);
+    mc_block_register(51,MC_MATERIAL_FIRE,31,3,0,0,0,15);
+    mc_block_register(52,MC_MATERIAL_ROCK,65,0,0,1,0,0);
+    mc_block_register(54,MC_MATERIAL_WOOD,26,22,0,0,0,0);
+    mc_block_register(55,MC_MATERIAL_CIRCUITS,164,5,0,0,0,0);
+    mc_block_register(57,MC_MATERIAL_IRON,24,0,1,1,255,0);
+    mc_block_register(61,MC_MATERIAL_ROCK,45,0,1,1,255,0);
+    mc_block_register(62,MC_MATERIAL_ROCK,45,0,1,1,255,13);
+    mc_block_register(63,MC_MATERIAL_WOOD,4,-1,0,0,0,0);
+    mc_block_register(66,MC_MATERIAL_CIRCUITS,128,9,0,0,0,0);
+    mc_block_register(68,MC_MATERIAL_WOOD,4,-1,0,0,0,0);
+    mc_block_register(69,MC_MATERIAL_CIRCUITS,96,12,0,0,0,0);
+    mc_block_register(70,MC_MATERIAL_ROCK,1,0,0,0,0,0);
+    mc_block_register(71,MC_MATERIAL_IRON,98,7,0,0,0,0);
+    mc_block_register(74,MC_MATERIAL_ROCK,51,0,1,1,255,9);
+    mc_block_register(75,MC_MATERIAL_CIRCUITS,115,2,0,0,0,0);
+    mc_block_register(76,MC_MATERIAL_CIRCUITS,99,2,0,0,0,7);
+    mc_block_register(77,MC_MATERIAL_CIRCUITS,1,0,0,0,0,0);
+    mc_block_register(78,MC_MATERIAL_SNOW,66,0,0,0,0,0);
+    mc_block_register(79,MC_MATERIAL_ICE,67,0,0,1,3,0);
+    mc_block_register(80,MC_MATERIAL_CRAFTED_SNOW,66,0,1,1,255,0);
+    mc_block_register(81,MC_MATERIAL_CACTUS,70,13,0,0,0,0);
+    mc_block_register(82,MC_MATERIAL_CLAY,72,0,1,1,255,0);
+    mc_block_register(83,MC_MATERIAL_PLANTS,73,1,0,0,0,0);
+    mc_block_register(84,MC_MATERIAL_WOOD,74,0,1,1,255,0);
+    mc_block_register(86,MC_MATERIAL_PUMPKIN,102,0,1,1,255,0);
+    mc_block_register(87,MC_MATERIAL_ROCK,103,0,1,1,255,0);
+    mc_block_register(88,MC_MATERIAL_SAND,104,0,1,1,255,0);
+    mc_block_register(89,MC_MATERIAL_GLASS,105,0,1,1,255,15);
+    mc_block_register(90,MC_MATERIAL_PORTAL,14,0,0,0,0,11);
+    mc_block_register(91,MC_MATERIAL_PUMPKIN,102,0,1,1,255,15);
+    mc_block_register(92,MC_MATERIAL_CAKE,121,0,0,0,0,0);
+    mc_block_register(93,MC_MATERIAL_CIRCUITS,6,15,0,0,0,0);
+    mc_block_register(94,MC_MATERIAL_CIRCUITS,6,15,0,0,0,9);
+    mc_block_register(95,MC_MATERIAL_WOOD,26,0,1,1,255,15);
+    mc_block_register(96,MC_MATERIAL_WOOD,84,0,0,0,0,0);
+    mc_block_register(97,MC_MATERIAL_CLAY,1,0,1,1,255,0);
+    mc_block_register(98,MC_MATERIAL_ROCK,54,0,1,1,255,0);
+    mc_block_register(99,MC_MATERIAL_WOOD,142,0,1,1,255,0);
+    mc_block_register(100,MC_MATERIAL_WOOD,142,0,1,1,255,0);
+    mc_block_register(101,MC_MATERIAL_IRON,85,18,0,0,0,0);
+    mc_block_register(103,MC_MATERIAL_PUMPKIN,136,0,1,1,255,0);
+    mc_block_register(104,MC_MATERIAL_PLANTS,111,19,0,0,0,0);
+    mc_block_register(105,MC_MATERIAL_PLANTS,111,19,0,0,0,0);
+    mc_block_register(106,MC_MATERIAL_VINE,143,20,0,0,0,0);
+    mc_block_register(107,MC_MATERIAL_WOOD,4,21,0,0,0,0);
+    mc_block_register(108,MC_MATERIAL_ROCK,7,10,0,0,255,0);
+    mc_block_register(109,MC_MATERIAL_ROCK,54,10,0,0,255,0);
+    mc_block_register(110,MC_MATERIAL_GRASS,77,0,1,1,255,0);
+    mc_block_register(111,MC_MATERIAL_PLANTS,76,23,0,0,0,0);
+    mc_block_register(112,MC_MATERIAL_ROCK,224,0,1,1,255,0);
+    mc_block_register(113,MC_MATERIAL_ROCK,224,11,0,0,0,0);
+    mc_block_register(114,MC_MATERIAL_ROCK,224,10,0,0,255,0);
+    mc_block_register(115,MC_MATERIAL_PLANTS,226,6,0,0,0,0);
+    mc_block_register(116,MC_MATERIAL_ROCK,166,0,0,0,0,0);
+    mc_block_register(117,MC_MATERIAL_IRON,157,25,0,0,0,1);
+    mc_block_register(118,MC_MATERIAL_IRON,154,24,0,0,0,0);
+    mc_block_register(119,MC_MATERIAL_PORTAL,0,-1,0,0,0,15);
+    mc_block_register(120,MC_MATERIAL_GLASS,159,26,0,1,0,1);
+    mc_block_register(121,MC_MATERIAL_ROCK,175,0,1,1,255,0);
+    mc_block_register(122,MC_MATERIAL_FIELD_Z,167,27,0,0,0,1);
+    mc_blocks[44].max_y=.5f;
+    mc_blocks[26].max_y=.5625f;
+    mc_blocks[70].min_x=.0625f;mc_blocks[70].min_z=.0625f;
+    mc_blocks[70].max_x=.9375f;mc_blocks[70].max_z=.9375f;mc_blocks[70].max_y=.0625f;
+    mc_blocks[78].max_y=.125f;
+    mc_blocks[93].max_y=.125f;mc_blocks[94].max_y=.125f;
+    mc_blocks[111].max_y=.015625f;mc_blocks[116].max_y=.75f;
+    mc_blocks[63].min_x=.25f;mc_blocks[63].min_z=.25f;
+    mc_blocks[63].max_x=.75f;mc_blocks[63].max_z=.75f;
+    mc_blocks[55].max_y=.0625f;
+    mc_blocks[115].max_y=.25f;
+}
+
+int mc_block_chest_texture(uint id,int side,int x,int y,int z)
+{
+    uint n=0,s=0,w=0,e=0,a=0,b=0;int front=3,offset=0;
+    if(side<=1)return 25;
+    mc_runtime_try_get_block(x,y,z-1,&n);mc_runtime_try_get_block(x,y,z+1,&s);
+    mc_runtime_try_get_block(x-1,y,z,&w);mc_runtime_try_get_block(x+1,y,z,&e);
+    if(id==95||n!=id&&s!=id&&w!=id&&e!=id)
+    {if(mc_block_is_opaque(n)&&!mc_block_is_opaque(s))front=3;if(mc_block_is_opaque(s)&&!mc_block_is_opaque(n))front=2;if(mc_block_is_opaque(w)&&!mc_block_is_opaque(e))front=5;if(mc_block_is_opaque(e)&&!mc_block_is_opaque(w))front=4;return side==front?27:26;}
+    if(n!=id&&s!=id){if(side==4||side==5)return 26;offset=w==id?-1:0;mc_runtime_try_get_block(w==id?x-1:x+1,y,z-1,&a);mc_runtime_try_get_block(w==id?x-1:x+1,y,z+1,&b);if(side==3)offset=-1-offset;if((mc_block_is_opaque(n)||mc_block_is_opaque(a))&&!mc_block_is_opaque(s)&&!mc_block_is_opaque(b))front=3;if((mc_block_is_opaque(s)||mc_block_is_opaque(b))&&!mc_block_is_opaque(n)&&!mc_block_is_opaque(a))front=2;return (side==front?42:58)+offset;}
+    if(side==2||side==3)return 26;offset=n==id?-1:0;mc_runtime_try_get_block(x-1,y,n==id?z-1:z+1,&a);mc_runtime_try_get_block(x+1,y,n==id?z-1:z+1,&b);if(side==4)offset=-1-offset;front=5;if((mc_block_is_opaque(w)||mc_block_is_opaque(a))&&!mc_block_is_opaque(e)&&!mc_block_is_opaque(b))front=5;if((mc_block_is_opaque(e)||mc_block_is_opaque(b))&&!mc_block_is_opaque(w)&&!mc_block_is_opaque(a))front=4;return(side==front?42:58)+offset;
+}
+int mc_block_extra_texture(uint id,int side,uint metadata,int x,int y,int z)
+{
+    uint n=0;int direction;
+    if(id==6){metadata=metadata&3;return metadata==1?63:(metadata==2?79:15);}
+    if(id==8)return side>1?206:205;
+    if(id==18)return mc_blocks[18].texture+((metadata&3)==1?80:0);
+    if(id==23||id==61||id==62){if(side<=1)return 62;return side==(int)metadata?(id==23?46:(id==62?61:44)):45;}
+    if(id==24)return side==0?208:(side==1?176:192);
+    if(id==26){int d=metadata&3;int f=side;if(side==0)return 4;if(side==1)f=0;else if(d==0)f=side==2?3:(side==3?2:(side==4?5:4));else if(d==1)f=side==2?5:(side==3?4:(side==4?2:3));else if(d==2)f=side;else f=side==2?4:(side==3?5:(side==4?3:2));if(metadata&8)return f==2?152:(f==4||f==5?151:135);return f==3?149:(f==4||f==5?150:134);}
+    if(id==27)return (metadata&8)?179:163;
+    if(id==66)return metadata>=6?112:128;
+    if(id==29||id==33||id==34){direction=metadata&7;if(direction>5)return mc_blocks[id].texture;if(side==direction)return id==34?((metadata&8)?106:107):((metadata&8)?110:mc_blocks[id].texture);if(side==(direction^1))return id==34?107:109;return 108;}
+    if(id==31)return metadata==0?55:(metadata==2?56:39);
+    if(id==44)return mc_block_texture(43,side,metadata,x,y,z);
+    if(id==46)return side==0?10:(side==1?9:8);
+    if(id==47)return side<=1?4:35;
+    if(id==54||id==95)return mc_block_chest_texture(id,side,x,y,z);
+    if(id==59)return 88+(int)metadata;
+    if(id==75||id==76)return side==1?164:mc_blocks[id].texture;
+    if(id==71){int state=(metadata&4)==0?((int)metadata-1)&3:(int)metadata&3;int rotation;if(side<=1)return 98;if((((state==0||state==2)?1:0)^(side<=3?1:0)))return 98;rotation=state/2+((side&1)^state)+(metadata&4)/4;return (rotation&1)?-(98-(int)(metadata&8)*2):98-(int)(metadata&8)*2;}
+    if(id==81)return side==0?71:(side==1?69:70);
+    if(id==84)return side==1?75:74;
+    if(id==86||id==91){if(side<=1)return 102;if(metadata==2&&side==2||metadata==3&&side==5||metadata==0&&side==3||metadata==1&&side==4)return id==91?120:119;return 118;}
+    if(id==92)return side==1?121:(side==0?124:(metadata>0&&side==4?123:122));
+    if(id==93||id==94)return side==0?(id==94?99:115):(side==1?(id==94?147:131):5);
+    if(id==97)return metadata==1?16:(metadata==2?54:1);
+    if(id==98)return metadata==1?100:(metadata==2?101:54);
+    if(id==99||id==100){int cap=126-(id==100?1:0);if(metadata==10&&side>1)return 141;if(metadata==14)return cap;if(metadata==15)return 141;if(metadata>=1&&metadata<=9){if(side==1)return cap;if(side==2&&metadata<=3)return cap;if(side==3&&metadata>=7)return cap;if(side==4&&(metadata==1||metadata==4||metadata==7))return cap;if(side==5&&(metadata==3||metadata==6||metadata==9))return cap;}return 142;}
+    if(id==103)return side<=1?137:136;
+    if(id==110){if(side==1)return 78;if(side==0)return 2;if(mc_runtime_try_get_block(x,y+1,z,&n)&&(n==78||n==80))return 68;return 77;}
+    if(id==115)return metadata>=3?228:(metadata>0?227:226);
+    if(id==116)return side==0?183:(side==1?166:182);
+    if(id==118)return side==0?155:(side==1?138:154);
+    if(id==120)return side==0?175:(side==1?158:159);
+    return -1000;
+}
+
+void mc_block_extra_bounds(uint id,uint metadata,float *x0,float *y0,float *z0,float *x1,float *y1,float *z1)
+{
+    int direction=metadata&7;float t;
+    if(id==70)*y1=metadata==1?.03125f:.0625f;
+    if(id==78)*y1=(float)(2*(1+(metadata&7)))/16.0f;
+    if(id==92){*x0=(float)(1+metadata*2)/16.0f;*z0=.0625f;*x1=.9375f;*y1=.5f;*z1=.9375f;}
+    if(id==96){*y1=.1875f;if(metadata&4){*y1=1;if((metadata&3)==0)*z0=.8125f;else if((metadata&3)==1)*z1=.1875f;else if((metadata&3)==2)*x0=.8125f;else *x1=.1875f;}}
+    if((id==29||id==33)&&(metadata&8)){if(direction==0)*y0=.25f;else if(direction==1)*y1=.75f;else if(direction==2)*z0=.25f;else if(direction==3)*z1=.75f;else if(direction==4)*x0=.25f;else if(direction==5)*x1=.75f;}
+    if(id==71){int state=(metadata&4)==0?((int)metadata-1)&3:(int)metadata&3;*x0=0;*y0=0;*z0=0;*x1=1;*y1=1;*z1=1;if(state==0)*z1=.1875f;else if(state==1)*x0=.8125f;else if(state==2)*z0=.8125f;else*x1=.1875f;}
+    if(id==77){t=(metadata&8)?.0625f:.125f;*x0=0;*y0=.375f;*z0=.3125f;*x1=1;*y1=.625f;*z1=.6875f;if(direction==1)*x1=t;else if(direction==2)*x0=1-t;else if(direction==3){*x0=.3125f;*x1=.6875f;*z0=0;*z1=t;}else if(direction==4){*x0=.3125f;*x1=.6875f;*z0=1-t;*z1=1;}}
+    if(id==6||id==31||id==32){*x0=.5f-.4f;*z0=.5f-.4f;*x1=.5f+.4f;*z1=.5f+.4f;*y1=.4f*2.0f;}
+    if(id==37||id==38||id==39||id==40){*x0=.5f-.2f;*z0=.5f-.2f;*x1=.5f+.2f;*z1=.5f+.2f;*y1=.2f*3.0f;}
+    if(id==39||id==40)*y1=.4f;
+    if(id==59||id==115||id==104||id==105){*x0=0;*z0=0;*x1=1;*z1=1;*y1=id==59||id==115?.25f:((float)(metadata*2+2))/16.0f;}
+    if(id==104||id==105){*x0=.375f;*z0=.375f;*x1=.625f;*z1=.625f;}
+    if(id==83){*x0=.125f;*z0=.125f;*x1=.875f;*z1=.875f;}
+    if(id==27||id==28||id==66)*y1=metadata>=2&&metadata<=5?.625f:.125f;
+    if(id==119)*y1=.0625f;
+    if(id==34){*x0=0;*y0=0;*z0=0;*x1=1;*y1=1;*z1=1;if(direction==0)*y1=.25f;else if(direction==1)*y0=.75f;else if(direction==2)*z1=.25f;else if(direction==3)*z0=.75f;else if(direction==4)*x1=.25f;else if(direction==5)*x0=.75f;}
+    if(id==120)*y1=.8125f;
+    if(id==69){if(direction>=1&&direction<=4){*y0=.2f;*y1=.8f;if(direction==1){*x1=.375f;*z0=.3125f;*z1=.6875f;}else if(direction==2){*x0=.625f;*z0=.3125f;*z1=.6875f;}else if(direction==3){*x0=.3125f;*x1=.6875f;*z1=.375f;}else{*x0=.3125f;*x1=.6875f;*z0=.625f;}}else{*x0=.25f;*z0=.25f;*x1=.75f;*z1=.75f;*y1=.6f;}}
+}
+
+void mc_blocks_set_graphics_level(int fancy)
+{mc_blocks[18].opaque_cube=!fancy;mc_blocks[18].texture=fancy?52:53;}
+
+int mc_block_ray_collidable(uint id,uint metadata,int liquids)
+{
+    if(id==0||id>122||id==51)return 0;
+    if(id>=8&&id<=11)return liquids&&metadata==0;
+    return 1;
+}
+int mc_block_neighbor(uint id,int x,int y,int z)
+{
+    uint n=0;mc_runtime_try_get_block(x,y,z,&n);
+    if(id==85||id==113)return n==id||n==107||(n!=0&&n<256&&mc_blocks[n].present&&mc_material_is_opaque(mc_blocks[n].material)&&mc_blocks[n].normal_block&&mc_blocks[n].material!=MC_MATERIAL_PUMPKIN);
+    if(id==101||id==102)return n==id||n==20||n==18||mc_block_is_opaque(n);
+    return n==id;
+}
+void mc_block_bounds_at(uint id,uint metadata,int x,int y,int z,float *x0,float *y0,float *z0,float *x1,float *y1,float *z1)
+{
+    int nx,px,nz,pz;uint above=0;
+    mc_block_bounds_for_state(id,metadata,x0,y0,z0,x1,y1,z1);
+    if(id==85||id==113||id==101||id==102){nx=mc_block_neighbor(id,x-1,y,z);px=mc_block_neighbor(id,x+1,y,z);nz=mc_block_neighbor(id,x,y,z-1);pz=mc_block_neighbor(id,x,y,z+1);if(id==85||id==113){*x0=nx?0:.375f;*x1=px?1:.625f;*z0=nz?0:.375f;*z1=pz?1:.625f;}else{*x0=.4375f;*x1=.5625f;*z0=.4375f;*z1=.5625f;if(nx)*x0=0;if(px)*x1=1;if(nz)*z0=0;if(pz)*z1=1;if(!nx&&!px&&!nz&&!pz){*x0=0;*x1=1;*z0=0;*z1=1;}}}
+    if(id==90){*x0=.375f;*x1=.625f;if(mc_block_neighbor(id,x-1,y,z)||mc_block_neighbor(id,x+1,y,z)){*x0=0;*x1=1;*z0=.375f;*z1=.625f;}}
+    if(id==65||id==68){*x0=0;*z0=0;*x1=1;*z1=1;if(id==68){*y0=.28125f;*y1=.78125f;}if(metadata==2)*z0=.875f;else if(metadata==3)*z1=.125f;else if(metadata==4)*x0=.875f;else if(metadata==5)*x1=.125f;}
+    if(id==50||id==75||id==76){int d=metadata&7;float r=.15f;*x0=0;*y0=.2f;*z0=0;*x1=1;*y1=.8f;*z1=1;if(d==1){*x1=r*2;*z0=.5f-r;*z1=.5f+r;}else if(d==2){*x0=1-r*2;*z0=.5f-r;*z1=.5f+r;}else if(d==3){*x0=.5f-r;*x1=.5f+r;*z1=r*2;}else if(d==4){*x0=.5f-r;*x1=.5f+r;*z0=1-r*2;}else{r=.1f;*x0=.5f-r;*x1=.5f+r;*y0=0;*y1=.6f;*z0=.5f-r;*z1=.5f+r;}}
+    if(id==106){*x0=1;*y0=1;*z0=1;*x1=0;*y1=0;*z1=0;if(metadata&2){*x0=0;*x1=.0625f;*y0=0;*y1=1;*z0=0;*z1=1;}if(metadata&8){if(*x0>.9375f)*x0=.9375f;*x1=1;*y0=0;*y1=1;*z0=0;*z1=1;}if(metadata&4){*x0=0;*x1=1;*y0=0;*y1=1;*z0=0;if(*z1<.0625f)*z1=.0625f;}if(metadata&1){*x0=0;*x1=1;*y0=0;*y1=1;if(*z0>.9375f)*z0=.9375f;*z1=1;}if(metadata==0&&mc_runtime_try_get_block(x,y+1,z,&above)&&above<256&&mc_blocks[above].normal_block&&mc_materials[mc_blocks[above].material].blocks_movement){*x0=0;*x1=1;*y0=.9375f;*y1=1;*z0=0;*z1=1;}}
+}
+
+/* 0 invalid ID; 1 complete static block; 2 static model with active tile
+ * portion pending; 3 special visual renderer pending; 4 unsafe dynamic shape.
+ * Status is deliberately distinct from material/ID registration. */
+int mc_block_static_status(uint id)
+{
+    if(id==0)return 1;
+    if(id>122||!mc_blocks[id].present)return 0;
+    if(id==36)return 4;
+    if(id==119)return 3;
+    if(id==52||id==54||id==63||id==68||id==116)return 2;
+    return 1;
+}
+float mc_block_slipperiness(uint id)
+{return id==79?.98f:.6f;}
+#endif
+

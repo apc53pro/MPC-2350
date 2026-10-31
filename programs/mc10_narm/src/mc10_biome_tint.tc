@@ -1,0 +1,80 @@
+/* Immutable per-window color recipes; tiny mutable lighting tile LRU.
+ * A queued native list is ALWAYS flushed before an LRU slot is overwritten.
+ * Recipe overflow rolls back that block's geometry capture and preserves the
+ * exact slower direct path; it never substitutes a biome or drops a quad. */
+#ifdef MC10_WORLD_SYSTEMS
+#define MC_TINT_RECIPES 8191
+#define MC_TINT_HASH_SLOTS 16384
+#define MC_TINT_LRU_SLOTS 16
+uint mc_tint_recipes[MC_TINT_RECIPES];
+uint mc_tint_hash[MC_TINT_HASH_SLOTS];
+uint mc_tint_lru_keys[MC_TINT_LRU_SLOTS];
+uint mc_tint_lru_ages[MC_TINT_LRU_SLOTS];
+int mc_tint_lru_levels[MC_TINT_LRU_SLOTS];
+uint mc_tint_lru_pixels[MC_TINT_LRU_SLOTS*64];
+uint mc_tint_lru_masks[MC_TINT_LRU_SLOTS*8];
+uint mc_tint_age;
+int mc_tint_recipe_count,mc_tint_error;
+int mc_render_source_recipe,mc_render_source_dynamic;
+uint mc_render_source_dynamic_key;
+#ifdef MC10_TILE_PROFILE
+void mc_render_list_flush(void);
+#endif
+void mc_tint_reset(void)
+{
+    int i;mc_tint_recipe_count=0;mc_tint_age=0;mc_tint_error=0;
+    mc_render_source_recipe=0;mc_render_source_dynamic=0;
+    for(i=0;i<MC_TINT_HASH_SLOTS;i=i+1)mc_tint_hash[i]=0;
+    for(i=0;i<MC_TINT_LRU_SLOTS;i=i+1){mc_tint_lru_ages[i]=0;mc_tint_lru_levels[i]=-1;}
+}
+int mc_tint_recipe(uint key)
+{
+    uint h=(key^(key>>16))*0x45d9f3b,index;
+    h=(h^(h>>16))&(MC_TINT_HASH_SLOTS-1);
+    for(;;)
+    {
+        index=mc_tint_hash[h];
+        if(!index)
+        {
+            if(mc_tint_recipe_count>=MC_TINT_RECIPES)return 0;
+            index=(uint)mc_tint_recipe_count+1;mc_tint_recipes[index-1]=key;
+            mc_tint_recipe_count=(int)index;mc_tint_hash[h]=index;return (int)index;
+        }
+        if(mc_tint_recipes[index-1]==key)return (int)index;
+        h=(h+1)&(MC_TINT_HASH_SLOTS-1);
+    }
+}
+void mc_tint_begin_quad(int tile,uint rgb)
+{
+    mc_render_source_dynamic=1;mc_render_source_dynamic_key=(rgb<<8)|(uint)tile;
+    mc_render_source_recipe=mc_tint_recipe(mc_render_source_dynamic_key);
+}
+int mc_tint_tile(uint key,int level)
+{
+    int i,slot=0,x,r,g,b;uint oldest=0xffffffff,color,base,rgb=key>>8;
+    uint *input=mc_block_color_tile((int)(key&255));unsigned char *output;
+    float red=(float)((rgb>>16)&255)/255.0f,green=(float)((rgb>>8)&255)/255.0f,blue=(float)(rgb&255)/255.0f;
+    if(!input||level<0||level>15){mc_tint_error=1;return -1;}
+    mc_tint_age=mc_tint_age+1;
+    for(i=0;i<MC_TINT_LRU_SLOTS;i=i+1)
+    {
+        if(mc_tint_lru_ages[i]&&mc_tint_lru_keys[i]==key&&mc_tint_lru_levels[i]==level)
+        {mc_tint_lru_ages[i]=mc_tint_age;return i;}
+        if(mc_tint_lru_ages[i]<oldest){oldest=mc_tint_lru_ages[i];slot=i;}
+    }
+#ifdef MC10_TILE_PROFILE
+    mc_render_list_flush();
+#endif
+    output=(unsigned char *)&mc_tint_lru_pixels[slot*64];
+    for(i=0;i<8;i=i+1)mc_tint_lru_masks[slot*8+i]=0;
+    for(x=0;x<256;x=x+1)
+    {
+        color=input[x];r=(int)((float)(color&255)*red);g=(int)((float)((color>>8)&255)*green);b=(int)((float)((color>>16)&255)*blue);
+        base=(uint)(r&224)|((uint)(g>>5)<<2)|(uint)(b>>6);
+        r=((int)(base>>5)*level+7)/15;g=((int)((base>>2)&7)*level+7)/15;b=((int)(base&3)*level+7)/15;
+        output[x]=(unsigned char)((r<<5)|(g<<2)|b);
+        if((color>>24)>=128)mc_tint_lru_masks[slot*8+(x>>5)]=mc_tint_lru_masks[slot*8+(x>>5)]|((uint)1<<(31-(x&31)));
+    }
+    mc_tint_lru_keys[slot]=key;mc_tint_lru_levels[slot]=level;mc_tint_lru_ages[slot]=mc_tint_age;return slot;
+}
+#endif

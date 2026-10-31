@@ -1,0 +1,388 @@
+void clearItemRegistry()
+{
+    g_i = 0;
+    while (g_i < 32)
+    {
+        itemDefs[g_i].used = 0;
+        itemDefs[g_i].id = (uint)g_i;
+        itemDefs[g_i].kind = TC_ITEM_KIND_NONE;
+        itemDefs[g_i].render_kind = TC_ITEM_RENDER_NONE;
+        itemDefs[g_i].max_stack = 64;
+        itemDefs[g_i].linked_block_id = -1;
+        itemDefs[g_i].tool_kind = TC_TOOL_NONE;
+        itemDefs[g_i].tool_level = 0;
+        itemDefs[g_i].ui_color = (uint)0;
+        itemDefs[g_i].icon_tex = TC_TEX_MISSING;
+        itemDefs[g_i].name_label = TC_NAME_NONE;
+        itemDefs[g_i].use_action = TC_ITEM_USE_NONE;
+        itemDefs[g_i].behavior_flags = 0;
+        itemDefs[g_i].mesh_id = -1;
+        itemDefs[g_i].attack_damage = 1;
+        itemDefs[g_i].attack_cooldown_ms = 500;
+        g_i = g_i + 1;
+    }
+
+    item_registry_ready = 0;
+    item_registry_loaded_count = 0;
+}
+
+void defineRuntimeItemFull(int id, int kind, int render_kind, int max_stack, int linked_block_id, int tool_kind, int tool_level, uint ui_color, int icon_tex, int name_label, int use_action, int behavior_flags)
+{
+    if (id < 0) return;
+    if (id >= 32) return;
+    if (max_stack <= 0) max_stack = 1;
+    if (itemDefs[id].used == 0) item_registry_loaded_count = item_registry_loaded_count + 1;
+    itemDefs[id].used = 1;
+    itemDefs[id].id = (uint)id;
+    itemDefs[id].kind = kind;
+    itemDefs[id].render_kind = render_kind;
+    itemDefs[id].max_stack = max_stack;
+    itemDefs[id].linked_block_id = linked_block_id;
+    itemDefs[id].tool_kind = tool_kind;
+    itemDefs[id].tool_level = tool_level;
+    itemDefs[id].ui_color = ui_color;
+    itemDefs[id].icon_tex = icon_tex;
+    itemDefs[id].name_label = name_label;
+    itemDefs[id].use_action = use_action;
+    itemDefs[id].behavior_flags = behavior_flags;
+    itemDefs[id].mesh_id = -1;
+    itemDefs[id].attack_damage = 1;
+    itemDefs[id].attack_cooldown_ms = 500;
+}
+
+void defineRuntimeItem(int id, int kind, int render_kind, int linked_block_id, int tool_kind, uint ui_color, int icon_tex, int name_label)
+{
+    g_i = TC_ITEM_USE_NONE;
+    g_x = TC_ITEM_FLAG_STACKABLE;
+    if (kind == TC_ITEM_KIND_BLOCK)
+    {
+        g_i = TC_ITEM_USE_PLACE_BLOCK;
+        g_x = TC_ITEM_FLAG_STACKABLE + TC_ITEM_FLAG_PLACEABLE;
+    }
+    if (kind == TC_ITEM_KIND_TOOL)
+    {
+        g_i = TC_ITEM_USE_SWING_TOOL;
+        g_x = TC_ITEM_FLAG_STACKABLE + TC_ITEM_FLAG_TOOL;
+    }
+    if (kind == TC_ITEM_KIND_RESOURCE)
+    {
+        g_x = TC_ITEM_FLAG_STACKABLE + TC_ITEM_FLAG_RESOURCE;
+    }
+    defineRuntimeItemFull(id, kind, render_kind, 64, linked_block_id, tool_kind, 1, ui_color, icon_tex, name_label, g_i, g_x);
+}
+
+void registerBlockItemFromBlock(int item_id, int block_id)
+{
+    if (block_id < 0) return;
+    if (block_id >= 16) return;
+    if (blockDefs[block_id].used == 0) return;
+
+    defineRuntimeItemFull(
+        item_id,
+        TC_ITEM_KIND_BLOCK,
+        TC_ITEM_RENDER_BLOCK_CUBE,
+        64,
+        block_id,
+        TC_TOOL_NONE,
+        0,
+        blockDefs[block_id].ui_color,
+        blockDefs[block_id].icon_tex,
+        blockDefs[block_id].name_label,
+        TC_ITEM_USE_PLACE_BLOCK,
+        TC_ITEM_FLAG_STACKABLE + TC_ITEM_FLAG_PLACEABLE
+    );
+}
+
+void registerResourceItem(int id, uint ui_color, int icon_tex, int name_label)
+{
+    defineRuntimeItemFull(
+        id,
+        TC_ITEM_KIND_RESOURCE,
+        TC_ITEM_RENDER_HANDHELD,
+        64,
+        -1,
+        TC_TOOL_NONE,
+        0,
+        ui_color,
+        icon_tex,
+        name_label,
+        TC_ITEM_USE_NONE,
+        TC_ITEM_FLAG_STACKABLE + TC_ITEM_FLAG_RESOURCE
+    );
+}
+
+void registerFoodItem(int id, uint ui_color, int icon_tex, int name_label)
+{
+    defineRuntimeItemFull(
+        id,
+        TC_ITEM_KIND_FOOD,
+        TC_ITEM_RENDER_HANDHELD,
+        64,
+        -1,
+        TC_TOOL_NONE,
+        0,
+        ui_color,
+        icon_tex,
+        name_label,
+        TC_ITEM_USE_NONE,
+        TC_ITEM_FLAG_STACKABLE + TC_ITEM_FLAG_RESOURCE
+    );
+}
+
+void registerToolItem(int id, int tool_kind, uint ui_color, int icon_tex, int name_label)
+{
+    defineRuntimeItemFull(
+        id,
+        TC_ITEM_KIND_TOOL,
+        TC_ITEM_RENDER_HANDHELD,
+        64,
+        -1,
+        tool_kind,
+        1,
+        ui_color,
+        icon_tex,
+        name_label,
+        TC_ITEM_USE_SWING_TOOL,
+        TC_ITEM_FLAG_STACKABLE + TC_ITEM_FLAG_TOOL
+    );
+
+    if (tool_kind == TC_TOOL_SWORD)
+    {
+        itemDefs[id].attack_damage = 4;
+        itemDefs[id].attack_cooldown_ms = 625;
+    }
+    else
+    {
+        itemDefs[id].attack_damage = 2;
+        itemDefs[id].attack_cooldown_ms = 700;
+    }
+}
+
+void initItemRegistry()
+{
+    clearItemRegistry();
+
+    g_i = 0;
+    while (g_i < 16)
+    {
+        if (blockRegistryKnown((uint)g_i) != 0)
+        {
+            if (blockRegistryIsPlaceable((uint)g_i) != 0)
+            {
+                g_b = blockRegistryLinkedItem((uint)g_i);
+                if (g_b != (uint)0) registerBlockItemFromBlock((int)g_b, g_i);
+            }
+        }
+        g_i = g_i + 1;
+    }
+
+    registerResourceItem((int)ITEM_STICK, (uint)109, TC_TEX_ITEM_STICK, TC_NAME_STICK);
+    registerToolItem((int)ITEM_WOODEN_PICKAXE, TC_TOOL_PICKAXE, (uint)145, TC_TEX_ITEM_WOODEN_PICKAXE, TC_NAME_WOODEN_PICKAXE);
+    registerToolItem((int)ITEM_WOODEN_SWORD, TC_TOOL_SWORD, (uint)145, TC_TEX_ITEM_WOODEN_SWORD, TC_NAME_WOODEN_SWORD);
+    registerToolItem((int)ITEM_WOODEN_SHOVEL, TC_TOOL_SHOVEL, (uint)145, TC_TEX_ITEM_WOODEN_SHOVEL, TC_NAME_WOODEN_SHOVEL);
+    registerToolItem((int)ITEM_WOODEN_AXE, TC_TOOL_AXE, (uint)145, TC_TEX_ITEM_WOODEN_AXE, TC_NAME_WOODEN_AXE);
+    registerFoodItem((int)ITEM_RAW_PORKCHOP, (uint)210, TC_TEX_ITEM_RAW_PORKCHOP, TC_NAME_RAW_PORKCHOP);
+
+    item_registry_ready = 1;
+}
+
+int itemRegistryKnown(uint item_id)
+{
+    if (item_id < (uint)32)
+    {
+        if (itemDefs[(int)item_id].used != 0) return 1;
+    }
+    return 0;
+}
+
+int itemRegistryMaxStack(uint item_id)
+{
+    if (itemRegistryKnown(item_id) != 0) return itemDefs[(int)item_id].max_stack;
+    return max_stack_size;
+}
+
+int itemRegistryToolKind(uint item_id)
+{
+    if (itemRegistryKnown(item_id) != 0) return itemDefs[(int)item_id].tool_kind;
+    return TC_TOOL_NONE;
+}
+
+int itemRegistryToolLevel(uint item_id)
+{
+    if (itemRegistryKnown(item_id) != 0) return itemDefs[(int)item_id].tool_level;
+    return 0;
+}
+
+int itemRegistryRenderKind(uint item_id)
+{
+    if (itemRegistryKnown(item_id) != 0) return itemDefs[(int)item_id].render_kind;
+    return TC_ITEM_RENDER_NONE;
+}
+
+int itemRegistryMeshId(uint item_id)
+{
+    if (itemRegistryKnown(item_id) != 0) return itemDefs[(int)item_id].mesh_id;
+    return -1;
+}
+
+int itemRegistryUseAction(uint item_id)
+{
+    if (itemRegistryKnown(item_id) != 0) return itemDefs[(int)item_id].use_action;
+    return TC_ITEM_USE_NONE;
+}
+
+int itemRegistryLinkedBlock(uint item_id)
+{
+    if (itemRegistryKnown(item_id) != 0) return itemDefs[(int)item_id].linked_block_id;
+    return -1;
+}
+
+int itemRegistryNameLabel(uint item_id)
+{
+    if (itemRegistryKnown(item_id) != 0) return itemDefs[(int)item_id].name_label;
+    return TC_NAME_NONE;
+}
+
+uint itemRegistryUIColor(uint item_id)
+{
+    if (itemRegistryKnown(item_id) != 0) return itemDefs[(int)item_id].ui_color;
+    return (uint)0;
+}
+
+int itemRegistryIsPlaceable(uint item_id)
+{
+    if (itemRegistryUseAction(item_id) == TC_ITEM_USE_PLACE_BLOCK) return 1;
+    return 0;
+}
+
+uint itemRegistryPlaceBlock(uint item_id)
+{
+    g_i = itemRegistryLinkedBlock(item_id);
+    if (g_i >= 0)
+    {
+        if (g_i < 16)
+        {
+            if (blockDefs[g_i].used != 0) return (uint)g_i;
+        }
+    }
+    return (uint)0;
+}
+
+int itemRegistryIsTool(uint item_id)
+{
+    if (itemRegistryToolKind(item_id) != TC_TOOL_NONE) return 1;
+    return 0;
+}
+
+int itemRegistryAttackDamage(uint item_id)
+{
+    if (itemRegistryKnown(item_id) != 0) return itemDefs[(int)item_id].attack_damage;
+    return player_fist_damage;
+}
+
+int itemRegistryAttackCooldownMs(uint item_id)
+{
+    if (itemRegistryKnown(item_id) != 0) return itemDefs[(int)item_id].attack_cooldown_ms;
+    return player_fist_cooldown_ms;
+}
+
+int runtimeItemAttackDamage(uint item_id)
+{
+    return itemRegistryAttackDamage(item_id);
+}
+
+int runtimeItemAttackCooldownMs(uint item_id)
+{
+    return itemRegistryAttackCooldownMs(item_id);
+}
+
+int runtimeItemKnown(uint item_id)
+{
+    return itemRegistryKnown(item_id);
+}
+
+int runtimeItemMaxStack(uint item_id)
+{
+    return itemRegistryMaxStack(item_id);
+}
+
+int runtimeItemToolKind(uint item_id)
+{
+    return itemRegistryToolKind(item_id);
+}
+
+int runtimeItemRenderKind(uint item_id)
+{
+    return itemRegistryRenderKind(item_id);
+}
+
+int runtimeItemMeshId(uint item_id)
+{
+    return itemRegistryMeshId(item_id);
+}
+
+int runtimeItemNameLabel(uint item_id)
+{
+    return itemRegistryNameLabel(item_id);
+}
+
+uint runtimeItemUIColor(uint item_id)
+{
+    return itemRegistryUIColor(item_id);
+}
+
+int runtimeItemIsPlaceable(uint item_id)
+{
+    return itemRegistryIsPlaceable(item_id);
+}
+
+int runtimeItemUseAction(uint item_id)
+{
+    return itemRegistryUseAction(item_id);
+}
+
+uint runtimeItemPlaceBlock(uint item_id)
+{
+    return itemRegistryPlaceBlock(item_id);
+}
+
+void selectItemTexturesFromRuntime(uint item_id)
+{
+    if (itemRegistryKnown(item_id) != 0)
+    {
+        item_top_tex = textureRegistryPtr(itemDefs[(int)item_id].icon_tex);
+        item_side_tex = textureRegistryPtr(itemDefs[(int)item_id].icon_tex);
+        item_bottom_tex = textureRegistryPtr(itemDefs[(int)item_id].icon_tex);
+        g_i = itemRegistryLinkedBlock(item_id);
+        if (g_i >= 0)
+        {
+            if (g_i < 16)
+            {
+                if (blockDefs[g_i].used != 0)
+                {
+                    item_top_tex = textureRegistryPtr(blockDefs[g_i].tex_top);
+                    item_bottom_tex = textureRegistryPtr(blockDefs[g_i].tex_bottom);
+                    item_side_tex = textureRegistryPtr(blockDefs[g_i].tex_side);
+                    return;
+                }
+            }
+        }
+        return;
+    }
+
+    item_top_tex = textureRegistryPtr(TC_TEX_MISSING);
+    item_side_tex = textureRegistryPtr(TC_TEX_MISSING);
+    item_bottom_tex = textureRegistryPtr(TC_TEX_MISSING);
+}
+
+void selectIconTextureFromRuntime(uint item_id)
+{
+    icon_tex_id = TC_TEX_MISSING;
+    if (itemRegistryKnown(item_id) != 0)
+    {
+        icon_tex_id = itemDefs[(int)item_id].icon_tex;
+        icon_tex = textureRegistryPtr(icon_tex_id);
+        return;
+    }
+    icon_tex = textureRegistryPtr(TC_TEX_MISSING);
+}

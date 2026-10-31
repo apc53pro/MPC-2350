@@ -1,0 +1,891 @@
+uint assetCacheReadU32(int off)
+{
+    return (((uint)asset_cache_io[off] & (uint)255) << 24) |
+           (((uint)asset_cache_io[off + 1] & (uint)255) << 16) |
+           (((uint)asset_cache_io[off + 2] & (uint)255) << 8) |
+           ((uint)asset_cache_io[off + 3] & (uint)255);
+}
+
+uint assetCachePayloadWord(int off)
+{
+    return ((uint)asset_cache_payload[off] & (uint)255) |
+           (((uint)asset_cache_payload[off + 1] & (uint)255) << 8) |
+           (((uint)asset_cache_payload[off + 2] & (uint)255) << 16) |
+           (((uint)asset_cache_payload[off + 3] & (uint)255) << 24);
+}
+
+int assetCachePayloadByte(int off)
+{
+    return (int)((uint)asset_cache_payload[off] & (uint)255);
+}
+
+uint assetCachePayloadU16(int off)
+{
+    return (((uint)asset_cache_payload[off] & (uint)255) << 8) |
+           ((uint)asset_cache_payload[off + 1] & (uint)255);
+}
+
+int assetCachePayloadS16(int off)
+{
+    asset_cache_byte = (int)assetCachePayloadU16(off);
+    if (asset_cache_byte >= 32768) asset_cache_byte = asset_cache_byte - 65536;
+    return asset_cache_byte;
+}
+
+int assetCachePayloadSignedByte(int off)
+{
+    asset_cache_byte = assetCachePayloadByte(off);
+    if (asset_cache_byte >= 128) asset_cache_byte = asset_cache_byte - 256;
+    return asset_cache_byte;
+}
+
+int assetCacheRecordKind()
+{
+    if (asset_cache_version < 2) return TC_ASSET_RECORD_TEXTURE;
+    return asset_cache_flags / TC_ASSET_RECORD_KIND_SHIFT;
+}
+
+void clearAssetCacheRuntime()
+{
+    asset_cache_loaded = 0;
+    asset_cache_status = 0;
+    asset_cache_record_count = 0;
+    asset_cache_loaded_textures = 0;
+    asset_cache_loaded_meshes = 0;
+    asset_cache_loaded_blocks = 0;
+    asset_cache_loaded_block_models = 0;
+    asset_cache_loaded_entities = 0;
+    asset_cache_loaded_entity_models = 0;
+    asset_cache_loaded_destroy_stages = 0;
+    asset_cache_version = 0;
+    asset_cache_next_tex16_slot = 0;
+    asset_cache_next_entity_tex_slot = 0;
+    asset_cache_record_kind = TC_ASSET_RECORD_TEXTURE;
+
+    clearEntityRegistry();
+
+    asset_cache_mesh_id = 0;
+    while (asset_cache_mesh_id < TC_MAX_ITEM_MESHES)
+    {
+        itemMeshDefs[asset_cache_mesh_id].used = 0;
+        itemMeshDefs[asset_cache_mesh_id].item_id = -1;
+        itemMeshDefs[asset_cache_mesh_id].first_face = 0;
+        itemMeshDefs[asset_cache_mesh_id].face_count = 0;
+        itemMeshDefs[asset_cache_mesh_id].icon_tex = TC_TEX_MISSING;
+        itemMeshDefs[asset_cache_mesh_id].flags = 0;
+        asset_cache_mesh_id = asset_cache_mesh_id + 1;
+    }
+
+    asset_cache_block_model_id = 0;
+    while (asset_cache_block_model_id < TC_MAX_BLOCK_MODELS)
+    {
+        blockModelDefs[asset_cache_block_model_id].used = 0;
+        blockModelDefs[asset_cache_block_model_id].block_id = asset_cache_block_model_id;
+        blockModelDefs[asset_cache_block_model_id].first_face = 0;
+        blockModelDefs[asset_cache_block_model_id].face_count = 0;
+        blockModelDefs[asset_cache_block_model_id].flags = 0;
+        asset_cache_block_model_id = asset_cache_block_model_id + 1;
+    }
+
+    asset_cache_entity_model_id = 0;
+    while (asset_cache_entity_model_id < TC_MAX_ENTITY_MODELS)
+    {
+        entityModelDefs[asset_cache_entity_model_id].used = 0;
+        entityModelDefs[asset_cache_entity_model_id].model_id = asset_cache_entity_model_id;
+        entityModelDefs[asset_cache_entity_model_id].first_part = 0;
+        entityModelDefs[asset_cache_entity_model_id].part_count = 0;
+        entityModelDefs[asset_cache_entity_model_id].texture_id = TC_TEX_MISSING;
+        entityModelDefs[asset_cache_entity_model_id].flags = 0;
+        asset_cache_entity_model_id = asset_cache_entity_model_id + 1;
+    }
+
+    asset_cache_face_i = 0;
+    while (asset_cache_face_i < TC_MAX_ITEM_MESH_FACES)
+    {
+        itemMeshFaces[asset_cache_face_i].x0 = 0;
+        itemMeshFaces[asset_cache_face_i].y0 = 0;
+        itemMeshFaces[asset_cache_face_i].z0 = 0;
+        itemMeshFaces[asset_cache_face_i].x1 = 0;
+        itemMeshFaces[asset_cache_face_i].y1 = 0;
+        itemMeshFaces[asset_cache_face_i].z1 = 0;
+        itemMeshFaces[asset_cache_face_i].x2 = 0;
+        itemMeshFaces[asset_cache_face_i].y2 = 0;
+        itemMeshFaces[asset_cache_face_i].z2 = 0;
+        itemMeshFaces[asset_cache_face_i].x3 = 0;
+        itemMeshFaces[asset_cache_face_i].y3 = 0;
+        itemMeshFaces[asset_cache_face_i].z3 = 0;
+        itemMeshFaces[asset_cache_face_i].u0 = 0;
+        itemMeshFaces[asset_cache_face_i].v0 = 0;
+        itemMeshFaces[asset_cache_face_i].u1 = 15;
+        itemMeshFaces[asset_cache_face_i].v1 = 15;
+        itemMeshFaces[asset_cache_face_i].texture_id = TC_TEX_MISSING;
+        itemMeshFaces[asset_cache_face_i].flags = 0;
+        asset_cache_face_i = asset_cache_face_i + 1;
+    }
+
+    asset_cache_face_i = 0;
+    while (asset_cache_face_i < TC_MAX_BLOCK_MODEL_FACES)
+    {
+        blockModelFaces[asset_cache_face_i].x0 = 0;
+        blockModelFaces[asset_cache_face_i].y0 = 0;
+        blockModelFaces[asset_cache_face_i].z0 = 0;
+        blockModelFaces[asset_cache_face_i].x1 = 0;
+        blockModelFaces[asset_cache_face_i].y1 = 0;
+        blockModelFaces[asset_cache_face_i].z1 = 0;
+        blockModelFaces[asset_cache_face_i].x2 = 0;
+        blockModelFaces[asset_cache_face_i].y2 = 0;
+        blockModelFaces[asset_cache_face_i].z2 = 0;
+        blockModelFaces[asset_cache_face_i].x3 = 0;
+        blockModelFaces[asset_cache_face_i].y3 = 0;
+        blockModelFaces[asset_cache_face_i].z3 = 0;
+        blockModelFaces[asset_cache_face_i].u0 = 0;
+        blockModelFaces[asset_cache_face_i].v0 = 0;
+        blockModelFaces[asset_cache_face_i].u1 = 15;
+        blockModelFaces[asset_cache_face_i].v1 = 15;
+        blockModelFaces[asset_cache_face_i].texture_id = TC_TEX_MISSING;
+        blockModelFaces[asset_cache_face_i].flags = 0;
+        asset_cache_face_i = asset_cache_face_i + 1;
+    }
+
+    asset_cache_face_i = 0;
+    while (asset_cache_face_i < TC_MAX_ENTITY_MODEL_PARTS)
+    {
+        entityModelParts[asset_cache_face_i].part_kind = TC_ENTITY_PART_NONE;
+        entityModelParts[asset_cache_face_i].anim_kind = TC_ENTITY_PART_ANIM_NONE;
+        entityModelParts[asset_cache_face_i].lod_group = 0;
+        entityModelParts[asset_cache_face_i].texture_id = TC_TEX_MISSING;
+        entityModelParts[asset_cache_face_i].uvx = 0;
+        entityModelParts[asset_cache_face_i].uvy = 0;
+        entityModelParts[asset_cache_face_i].sx = 1;
+        entityModelParts[asset_cache_face_i].sy = 1;
+        entityModelParts[asset_cache_face_i].sz = 1;
+        entityModelParts[asset_cache_face_i].flags = 0;
+        entityModelParts[asset_cache_face_i].lx0 = 0.0f;
+        entityModelParts[asset_cache_face_i].ly0 = 0.0f;
+        entityModelParts[asset_cache_face_i].lz0 = 0.0f;
+        entityModelParts[asset_cache_face_i].lx1 = 0.0f;
+        entityModelParts[asset_cache_face_i].ly1 = 0.0f;
+        entityModelParts[asset_cache_face_i].lz1 = 0.0f;
+        entityModelParts[asset_cache_face_i].pivot_x = 0.0f;
+        entityModelParts[asset_cache_face_i].pivot_y = 0.0f;
+        entityModelParts[asset_cache_face_i].pivot_z = 0.0f;
+        asset_cache_face_i = asset_cache_face_i + 1;
+    }
+
+    asset_cache_slot = 0;
+    while (asset_cache_slot < 12)
+    {
+        asset_cache_tex16_used[asset_cache_slot] = 0;
+        asset_cache_slot = asset_cache_slot + 1;
+    }
+
+    asset_cache_slot = 0;
+    while (asset_cache_slot < TC_ASSET_CACHE_MAX_ENTITY_TEX)
+    {
+        asset_cache_entity_tex_used[asset_cache_slot] = 0;
+        asset_cache_slot = asset_cache_slot + 1;
+    }
+}
+
+int assetCacheTextureRecordValid()
+{
+    if (asset_cache_record_kind != TC_ASSET_RECORD_TEXTURE) return 0;
+    if (asset_cache_tex_id < 0) return 0;
+    if (asset_cache_tex_id >= 32) return 0;
+    if (asset_cache_payload_off < 0) return 0;
+    if (asset_cache_payload_off < (16 + asset_cache_record_count * TC_ASSET_CACHE_RECORD_BYTES)) return 0;
+    if (asset_cache_payload_bytes <= 0) return 0;
+    if (asset_cache_alpha != TC_TEXTURE_ALPHA_NONE)
+    {
+        if (asset_cache_alpha != TC_TEXTURE_ALPHA_MASK) return 0;
+        if (asset_cache_version < 3) return 0;
+    }
+    if (asset_cache_width == 16)
+    {
+        if (asset_cache_height != 16) return 0;
+        if (asset_cache_alpha == TC_TEXTURE_ALPHA_MASK)
+        {
+            if (asset_cache_words != 72) return 0;
+            if (asset_cache_payload_bytes != 288) return 0;
+        }
+        else
+        {
+            if (asset_cache_words != 64) return 0;
+            if (asset_cache_payload_bytes != 256) return 0;
+        }
+        return 1;
+    }
+    if (asset_cache_width == 64)
+    {
+        if (asset_cache_height != 32) return 0;
+        if (asset_cache_alpha != TC_TEXTURE_ALPHA_NONE) return 0;
+        if (asset_cache_words != 512) return 0;
+        if (asset_cache_payload_bytes != 2048) return 0;
+        return 1;
+    }
+    return 0;
+}
+
+int assetCacheDestroyStagesRecordValid()
+{
+    if (asset_cache_version < 8) return 0;
+    if (asset_cache_record_kind != TC_ASSET_RECORD_DESTROY_STAGES) return 0;
+    if (asset_cache_tex_id != 0) return 0;
+    if (asset_cache_width != 16) return 0;
+    if (asset_cache_height != 16) return 0;
+    if (asset_cache_alpha != TC_DESTROY_STAGE_COUNT) return 0;
+    if (asset_cache_words != 720) return 0;
+    if (asset_cache_payload_bytes != (TC_DESTROY_STAGE_COUNT * TC_DESTROY_STAGE_BYTES)) return 0;
+    if (asset_cache_payload_off < (16 + asset_cache_record_count * TC_ASSET_CACHE_RECORD_BYTES)) return 0;
+    return 1;
+}
+
+int assetCacheMeshRecordValid()
+{
+    if (asset_cache_version < 2) return 0;
+    if (asset_cache_record_kind != TC_ASSET_RECORD_ITEM_MESH) return 0;
+    if (asset_cache_tex_id < 0) return 0;
+    if (asset_cache_tex_id >= TC_MAX_ITEMS) return 0;
+    if (asset_cache_height <= 0) return 0;
+        if (asset_cache_height > 128) return 0;
+    if (asset_cache_payload_off < (16 + asset_cache_record_count * TC_ASSET_CACHE_RECORD_BYTES)) return 0;
+    if (asset_cache_payload_bytes != asset_cache_height * TC_ITEM_MESH_FACE_BYTES) return 0;
+    if (asset_cache_words != (asset_cache_payload_bytes / 4)) return 0;
+    if (asset_cache_payload_bytes <= 0) return 0;
+    if (asset_cache_loaded_meshes >= TC_MAX_ITEM_MESHES) return 0;
+    if ((asset_cache_loaded_textures + asset_cache_loaded_meshes) > 999999) return 0;
+    if ((asset_cache_loaded_meshes + 1) > TC_MAX_ITEM_MESHES) return 0;
+    asset_cache_face_slot = 0;
+    asset_cache_mesh_id = 0;
+    while (asset_cache_mesh_id < TC_MAX_ITEM_MESHES)
+    {
+        if (itemMeshDefs[asset_cache_mesh_id].used != 0)
+        {
+            asset_cache_face_slot = asset_cache_face_slot + itemMeshDefs[asset_cache_mesh_id].face_count;
+        }
+        asset_cache_mesh_id = asset_cache_mesh_id + 1;
+    }
+    if ((asset_cache_face_slot + asset_cache_height) > TC_MAX_ITEM_MESH_FACES) return 0;
+    return 1;
+}
+
+int assetCacheBlockRecordValid()
+{
+    if (asset_cache_version < 4) return 0;
+    if (asset_cache_record_kind != TC_ASSET_RECORD_BLOCK_DEF) return 0;
+    if (asset_cache_tex_id < 0) return 0;
+    if (asset_cache_tex_id >= 16) return 0;
+    if (asset_cache_payload_off < (16 + asset_cache_record_count * TC_ASSET_CACHE_RECORD_BYTES)) return 0;
+    if (asset_cache_payload_bytes != TC_BLOCK_DEF_BYTES) return 0;
+    if (asset_cache_words != (TC_BLOCK_DEF_BYTES / 4)) return 0;
+    return 1;
+}
+
+int assetCacheBlockModelRecordValid()
+{
+    if (asset_cache_version < 5) return 0;
+    if (asset_cache_record_kind != TC_ASSET_RECORD_BLOCK_MODEL) return 0;
+    if (asset_cache_tex_id < 0) return 0;
+    if (asset_cache_tex_id >= TC_MAX_BLOCK_MODELS) return 0;
+    if (asset_cache_height <= 0) return 0;
+    if (asset_cache_height > 128) return 0;
+    if (asset_cache_payload_off < (16 + asset_cache_record_count * TC_ASSET_CACHE_RECORD_BYTES)) return 0;
+    if (asset_cache_payload_bytes != asset_cache_height * TC_BLOCK_MODEL_FACE_BYTES) return 0;
+    if (asset_cache_words != (asset_cache_payload_bytes / 4)) return 0;
+    if (blockModelDefs[asset_cache_tex_id].used != 0) return 0;
+
+    asset_cache_block_model_face_slot = 0;
+    asset_cache_block_model_id = 0;
+    while (asset_cache_block_model_id < TC_MAX_BLOCK_MODELS)
+    {
+        if (blockModelDefs[asset_cache_block_model_id].used != 0)
+        {
+            asset_cache_block_model_face_slot = asset_cache_block_model_face_slot + blockModelDefs[asset_cache_block_model_id].face_count;
+        }
+        asset_cache_block_model_id = asset_cache_block_model_id + 1;
+    }
+    if ((asset_cache_block_model_face_slot + asset_cache_height) > TC_MAX_BLOCK_MODEL_FACES) return 0;
+    return 1;
+}
+
+int assetCacheEntityRecordValid()
+{
+    if (asset_cache_version < 6) return 0;
+    if (asset_cache_record_kind != TC_ASSET_RECORD_ENTITY_DEF) return 0;
+    if (asset_cache_tex_id < 0) return 0;
+    if (asset_cache_tex_id >= TC_MAX_ENTITY_DEFS) return 0;
+    if (asset_cache_payload_off < (16 + asset_cache_record_count * TC_ASSET_CACHE_RECORD_BYTES)) return 0;
+    if (asset_cache_payload_bytes != TC_ENTITY_DEF_BYTES) return 0;
+    if (asset_cache_words != (TC_ENTITY_DEF_BYTES / 4)) return 0;
+    return 1;
+}
+
+int assetCacheEntityModelRecordValid()
+{
+    if (asset_cache_version < 7) return 0;
+    if (asset_cache_record_kind != TC_ASSET_RECORD_ENTITY_MODEL) return 0;
+    if (asset_cache_tex_id < 0) return 0;
+    if (asset_cache_tex_id >= TC_MAX_ENTITY_MODELS) return 0;
+    if (asset_cache_height <= 0) return 0;
+    if (asset_cache_height > 16) return 0;
+    if (asset_cache_payload_off < (16 + asset_cache_record_count * TC_ASSET_CACHE_RECORD_BYTES)) return 0;
+    if (asset_cache_payload_bytes != asset_cache_height * TC_ENTITY_MODEL_PART_BYTES) return 0;
+    if (asset_cache_words != (asset_cache_payload_bytes / 4)) return 0;
+    if (entityModelDefs[asset_cache_tex_id].used != 0) return 0;
+
+    asset_cache_entity_model_part_slot = 0;
+    asset_cache_entity_model_id = 0;
+    while (asset_cache_entity_model_id < TC_MAX_ENTITY_MODELS)
+    {
+        if (entityModelDefs[asset_cache_entity_model_id].used != 0)
+        {
+            asset_cache_entity_model_part_slot = asset_cache_entity_model_part_slot + entityModelDefs[asset_cache_entity_model_id].part_count;
+        }
+        asset_cache_entity_model_id = asset_cache_entity_model_id + 1;
+    }
+    if ((asset_cache_entity_model_part_slot + asset_cache_height) > TC_MAX_ENTITY_MODEL_PARTS) return 0;
+    return 1;
+}
+
+void assetCacheBlockModelBoundsVisit(int vx, int vy, int vz)
+{
+    if (vx < asset_cache_model_min_x) asset_cache_model_min_x = vx;
+    if (vy < asset_cache_model_min_y) asset_cache_model_min_y = vy;
+    if (vz < asset_cache_model_min_z) asset_cache_model_min_z = vz;
+
+    if (vx > asset_cache_model_max_x) asset_cache_model_max_x = vx;
+    if (vy > asset_cache_model_max_y) asset_cache_model_max_y = vy;
+    if (vz > asset_cache_model_max_z) asset_cache_model_max_z = vz;
+}
+
+int assetCacheLoadedBlockModelLooksLikeFastCube()
+{
+    /* v65 performance guard: a normal Bedrock full-cube model must not push
+       dirt/stone/grass/etc. onto the custom block renderer. It stays on the
+       greedy packed terrain path, which is the only way large terrain stays fast. */
+    if (asset_cache_height != 6) return 0;
+
+    asset_cache_model_min_x = 9999;
+    asset_cache_model_min_y = 9999;
+    asset_cache_model_min_z = 9999;
+    asset_cache_model_max_x = -9999;
+    asset_cache_model_max_y = -9999;
+    asset_cache_model_max_z = -9999;
+
+    asset_cache_face_i = 0;
+    while (asset_cache_face_i < asset_cache_height)
+    {
+        asset_cache_slot = asset_cache_block_model_face_slot + asset_cache_face_i;
+
+        assetCacheBlockModelBoundsVisit(blockModelFaces[asset_cache_slot].x0, blockModelFaces[asset_cache_slot].y0, blockModelFaces[asset_cache_slot].z0);
+        assetCacheBlockModelBoundsVisit(blockModelFaces[asset_cache_slot].x1, blockModelFaces[asset_cache_slot].y1, blockModelFaces[asset_cache_slot].z1);
+        assetCacheBlockModelBoundsVisit(blockModelFaces[asset_cache_slot].x2, blockModelFaces[asset_cache_slot].y2, blockModelFaces[asset_cache_slot].z2);
+        assetCacheBlockModelBoundsVisit(blockModelFaces[asset_cache_slot].x3, blockModelFaces[asset_cache_slot].y3, blockModelFaces[asset_cache_slot].z3);
+
+        asset_cache_face_i = asset_cache_face_i + 1;
+    }
+
+    if ((asset_cache_model_max_x - asset_cache_model_min_x) != 16) return 0;
+    if ((asset_cache_model_max_y - asset_cache_model_min_y) != 16) return 0;
+    if ((asset_cache_model_max_z - asset_cache_model_min_z) != 16) return 0;
+
+    return 1;
+}
+
+void applyAssetCacheTextureRecord()
+{
+    if (assetCacheTextureRecordValid() == 0) return;
+
+    if (asset_cache_width == 16)
+    {
+        if (asset_cache_next_tex16_slot >= 12) return;
+        asset_cache_slot = asset_cache_next_tex16_slot;
+        asset_cache_read = sdFileRead(asset_cache_path, asset_cache_payload, asset_cache_payload_off);
+        if (asset_cache_read < 256) return;
+
+        asset_cache_word_i = 0;
+        while (asset_cache_word_i < 64)
+        {
+            asset_cache_tex16[(asset_cache_slot * 64) + asset_cache_word_i] = assetCachePayloadWord(asset_cache_word_i * 4);
+            asset_cache_word_i = asset_cache_word_i + 1;
+        }
+
+        if (asset_cache_alpha == TC_TEXTURE_ALPHA_MASK)
+        {
+            asset_cache_read = sdFileRead(asset_cache_path, asset_cache_payload, asset_cache_payload_off + 256);
+            if (asset_cache_read < TC_TEXTURE_MASK_BYTES) return;
+            asset_cache_mask_i = 0;
+            while (asset_cache_mask_i < TC_TEXTURE_MASK_WORDS)
+            {
+                textureMasks[(asset_cache_tex_id * TC_TEXTURE_MASK_WORDS) + asset_cache_mask_i] = assetCachePayloadWord(asset_cache_mask_i * 4);
+                asset_cache_mask_i = asset_cache_mask_i + 1;
+            }
+        }
+
+        asset_cache_tex16_used[asset_cache_slot] = 1;
+        texturePtrs[asset_cache_tex_id] = &asset_cache_tex16[asset_cache_slot * 64];
+        textureDefs[asset_cache_tex_id].used = 1;
+        textureDefs[asset_cache_tex_id].source_kind = TC_TEXTURE_KIND_CACHE_SLOT;
+        textureDefs[asset_cache_tex_id].format = TC_TEXTURE_FORMAT_RGB332_PACKED;
+        textureDefs[asset_cache_tex_id].width = 16;
+        textureDefs[asset_cache_tex_id].height = 16;
+        textureDefs[asset_cache_tex_id].word_count = 64;
+        textureDefs[asset_cache_tex_id].alpha_kind = asset_cache_alpha;
+        textureDefs[asset_cache_tex_id].cache_slot = asset_cache_slot;
+
+        asset_cache_next_tex16_slot = asset_cache_next_tex16_slot + 1;
+        asset_cache_loaded_textures = asset_cache_loaded_textures + 1;
+        return;
+    }
+
+    if (asset_cache_width == 64)
+    {
+        if (asset_cache_next_entity_tex_slot >= TC_ASSET_CACHE_MAX_ENTITY_TEX) return;
+        asset_cache_slot = asset_cache_next_entity_tex_slot;
+        asset_cache_chunk = 0;
+        while (asset_cache_chunk < 8)
+        {
+            asset_cache_read = sdFileRead(asset_cache_path, asset_cache_payload, asset_cache_payload_off + asset_cache_chunk * 256);
+            if (asset_cache_read < 256) return;
+
+            asset_cache_word_i = 0;
+            while (asset_cache_word_i < 64)
+            {
+                asset_cache_entity_tex[(asset_cache_slot * 512) + (asset_cache_chunk * 64) + asset_cache_word_i] = assetCachePayloadWord(asset_cache_word_i * 4);
+                asset_cache_word_i = asset_cache_word_i + 1;
+            }
+            asset_cache_chunk = asset_cache_chunk + 1;
+        }
+
+        asset_cache_entity_tex_used[asset_cache_slot] = 1;
+        texturePtrs[asset_cache_tex_id] = &asset_cache_entity_tex[asset_cache_slot * 512];
+        textureDefs[asset_cache_tex_id].used = 1;
+        textureDefs[asset_cache_tex_id].source_kind = TC_TEXTURE_KIND_CACHE_SLOT;
+        textureDefs[asset_cache_tex_id].format = TC_TEXTURE_FORMAT_RGB332_PACKED;
+        textureDefs[asset_cache_tex_id].width = 64;
+        textureDefs[asset_cache_tex_id].height = 32;
+        textureDefs[asset_cache_tex_id].word_count = 512;
+        textureDefs[asset_cache_tex_id].alpha_kind = TC_TEXTURE_ALPHA_NONE;
+        textureDefs[asset_cache_tex_id].cache_slot = 100 + asset_cache_slot;
+        asset_cache_next_entity_tex_slot = asset_cache_next_entity_tex_slot + 1;
+        asset_cache_loaded_textures = asset_cache_loaded_textures + 1;
+    }
+}
+
+void applyAssetCacheDestroyStagesRecord()
+{
+    if (assetCacheDestroyStagesRecordValid() == 0) return;
+
+    asset_cache_stage_i = 0;
+    while (asset_cache_stage_i < TC_DESTROY_STAGE_COUNT)
+    {
+        asset_cache_record_off = asset_cache_payload_off + asset_cache_stage_i * TC_DESTROY_STAGE_BYTES;
+        asset_cache_read = sdFileRead(asset_cache_path, asset_cache_payload, asset_cache_record_off);
+        if (asset_cache_read < 256) return;
+
+        asset_cache_word_i = 0;
+        while (asset_cache_word_i < TC_DESTROY_STAGE_TEXTURE_WORDS)
+        {
+            destroyStageTextures[(asset_cache_stage_i * TC_DESTROY_STAGE_TEXTURE_WORDS) + asset_cache_word_i] = assetCachePayloadWord(asset_cache_word_i * 4);
+            asset_cache_word_i = asset_cache_word_i + 1;
+        }
+
+        asset_cache_read = sdFileRead(asset_cache_path, asset_cache_payload, asset_cache_record_off + 256);
+        if (asset_cache_read < TC_TEXTURE_MASK_BYTES) return;
+        asset_cache_mask_i = 0;
+        while (asset_cache_mask_i < TC_DESTROY_STAGE_MASK_WORDS)
+        {
+            destroyStageMasks[(asset_cache_stage_i * TC_DESTROY_STAGE_MASK_WORDS) + asset_cache_mask_i] = assetCachePayloadWord(asset_cache_mask_i * 4);
+            asset_cache_mask_i = asset_cache_mask_i + 1;
+        }
+
+        asset_cache_stage_i = asset_cache_stage_i + 1;
+    }
+
+    asset_cache_loaded_destroy_stages = 1;
+}
+
+void applyAssetCacheMeshRecord()
+{
+    if (assetCacheMeshRecordValid() == 0) return;
+
+    asset_cache_mesh_id = 0;
+    while (asset_cache_mesh_id < TC_MAX_ITEM_MESHES)
+    {
+        if (itemMeshDefs[asset_cache_mesh_id].used == 0)
+        {
+            asset_cache_face_slot = 0;
+            asset_cache_slot = 0;
+            while (asset_cache_slot < TC_MAX_ITEM_MESHES)
+            {
+                if (itemMeshDefs[asset_cache_slot].used != 0)
+                {
+                    asset_cache_face_slot = asset_cache_face_slot + itemMeshDefs[asset_cache_slot].face_count;
+                }
+                asset_cache_slot = asset_cache_slot + 1;
+            }
+
+            asset_cache_face_i = 0;
+            while (asset_cache_face_i < asset_cache_height)
+            {
+                asset_cache_read = sdFileRead(asset_cache_path, asset_cache_payload, asset_cache_payload_off + asset_cache_face_i * TC_ITEM_MESH_FACE_BYTES);
+                if (asset_cache_read < TC_ITEM_MESH_FACE_BYTES) return;
+
+                asset_cache_slot = asset_cache_face_slot + asset_cache_face_i;
+                itemMeshFaces[asset_cache_slot].x0 = assetCachePayloadSignedByte(0);
+                itemMeshFaces[asset_cache_slot].y0 = assetCachePayloadSignedByte(1);
+                itemMeshFaces[asset_cache_slot].z0 = assetCachePayloadSignedByte(2);
+                itemMeshFaces[asset_cache_slot].x1 = assetCachePayloadSignedByte(3);
+                itemMeshFaces[asset_cache_slot].y1 = assetCachePayloadSignedByte(4);
+                itemMeshFaces[asset_cache_slot].z1 = assetCachePayloadSignedByte(5);
+                itemMeshFaces[asset_cache_slot].x2 = assetCachePayloadSignedByte(6);
+                itemMeshFaces[asset_cache_slot].y2 = assetCachePayloadSignedByte(7);
+                itemMeshFaces[asset_cache_slot].z2 = assetCachePayloadSignedByte(8);
+                itemMeshFaces[asset_cache_slot].x3 = assetCachePayloadSignedByte(9);
+                itemMeshFaces[asset_cache_slot].y3 = assetCachePayloadSignedByte(10);
+                itemMeshFaces[asset_cache_slot].z3 = assetCachePayloadSignedByte(11);
+                itemMeshFaces[asset_cache_slot].u0 = assetCachePayloadByte(12);
+                itemMeshFaces[asset_cache_slot].v0 = assetCachePayloadByte(13);
+                itemMeshFaces[asset_cache_slot].u1 = assetCachePayloadByte(14);
+                itemMeshFaces[asset_cache_slot].v1 = assetCachePayloadByte(15);
+                itemMeshFaces[asset_cache_slot].texture_id = assetCachePayloadByte(16);
+                itemMeshFaces[asset_cache_slot].flags = assetCachePayloadByte(17);
+
+                asset_cache_face_i = asset_cache_face_i + 1;
+            }
+
+            itemMeshDefs[asset_cache_mesh_id].used = 1;
+            itemMeshDefs[asset_cache_mesh_id].item_id = asset_cache_tex_id;
+            itemMeshDefs[asset_cache_mesh_id].first_face = asset_cache_face_slot;
+            itemMeshDefs[asset_cache_mesh_id].face_count = asset_cache_height;
+            itemMeshDefs[asset_cache_mesh_id].icon_tex = asset_cache_alpha;
+            itemMeshDefs[asset_cache_mesh_id].flags = asset_cache_flags - (TC_ASSET_RECORD_ITEM_MESH * TC_ASSET_RECORD_KIND_SHIFT);
+            asset_cache_loaded_meshes = asset_cache_loaded_meshes + 1;
+            return;
+        }
+        asset_cache_mesh_id = asset_cache_mesh_id + 1;
+    }
+}
+
+void applyAssetCacheBlockRecord()
+{
+    if (assetCacheBlockRecordValid() == 0) return;
+
+    asset_cache_read = sdFileRead(asset_cache_path, asset_cache_payload, asset_cache_payload_off);
+    if (asset_cache_read < TC_BLOCK_DEF_BYTES) return;
+
+    defineRuntimeBlockFull(
+        asset_cache_tex_id,
+        assetCachePayloadByte(0),
+        assetCachePayloadByte(1),
+        assetCachePayloadByte(2),
+        assetCachePayloadByte(3),
+        (uint)assetCachePayloadByte(4),
+        assetCachePayloadU16(5),
+        assetCachePayloadSignedByte(7),
+        assetCachePayloadU16(8),
+        assetCachePayloadSignedByte(10),
+        (uint)assetCachePayloadByte(11),
+        assetCachePayloadByte(12),
+        assetCachePayloadByte(13),
+        assetCachePayloadByte(14),
+        assetCachePayloadByte(15),
+        assetCachePayloadByte(16),
+        assetCachePayloadByte(17),
+        (uint)assetCachePayloadByte(18),
+        assetCachePayloadByte(19),
+        assetCachePayloadU16(20)
+    );
+
+    asset_cache_loaded_blocks = asset_cache_loaded_blocks + 1;
+}
+
+void applyAssetCacheBlockModelRecord()
+{
+    if (assetCacheBlockModelRecordValid() == 0) return;
+
+    asset_cache_block_model_face_slot = 0;
+    asset_cache_block_model_id = 0;
+    while (asset_cache_block_model_id < TC_MAX_BLOCK_MODELS)
+    {
+        if (blockModelDefs[asset_cache_block_model_id].used != 0)
+        {
+            asset_cache_block_model_face_slot = asset_cache_block_model_face_slot + blockModelDefs[asset_cache_block_model_id].face_count;
+        }
+        asset_cache_block_model_id = asset_cache_block_model_id + 1;
+    }
+
+    asset_cache_face_i = 0;
+    while (asset_cache_face_i < asset_cache_height)
+    {
+        asset_cache_read = sdFileRead(asset_cache_path, asset_cache_payload, asset_cache_payload_off + asset_cache_face_i * TC_BLOCK_MODEL_FACE_BYTES);
+        if (asset_cache_read < TC_BLOCK_MODEL_FACE_BYTES) return;
+
+        asset_cache_slot = asset_cache_block_model_face_slot + asset_cache_face_i;
+        blockModelFaces[asset_cache_slot].x0 = assetCachePayloadSignedByte(0);
+        blockModelFaces[asset_cache_slot].y0 = assetCachePayloadSignedByte(1);
+        blockModelFaces[asset_cache_slot].z0 = assetCachePayloadSignedByte(2);
+        blockModelFaces[asset_cache_slot].x1 = assetCachePayloadSignedByte(3);
+        blockModelFaces[asset_cache_slot].y1 = assetCachePayloadSignedByte(4);
+        blockModelFaces[asset_cache_slot].z1 = assetCachePayloadSignedByte(5);
+        blockModelFaces[asset_cache_slot].x2 = assetCachePayloadSignedByte(6);
+        blockModelFaces[asset_cache_slot].y2 = assetCachePayloadSignedByte(7);
+        blockModelFaces[asset_cache_slot].z2 = assetCachePayloadSignedByte(8);
+        blockModelFaces[asset_cache_slot].x3 = assetCachePayloadSignedByte(9);
+        blockModelFaces[asset_cache_slot].y3 = assetCachePayloadSignedByte(10);
+        blockModelFaces[asset_cache_slot].z3 = assetCachePayloadSignedByte(11);
+        blockModelFaces[asset_cache_slot].u0 = assetCachePayloadByte(12);
+        blockModelFaces[asset_cache_slot].v0 = assetCachePayloadByte(13);
+        blockModelFaces[asset_cache_slot].u1 = assetCachePayloadByte(14);
+        blockModelFaces[asset_cache_slot].v1 = assetCachePayloadByte(15);
+        blockModelFaces[asset_cache_slot].texture_id = assetCachePayloadByte(16);
+        blockModelFaces[asset_cache_slot].flags = assetCachePayloadByte(17);
+
+        asset_cache_face_i = asset_cache_face_i + 1;
+    }
+
+    asset_cache_model_fast_cube = assetCacheLoadedBlockModelLooksLikeFastCube();
+
+    blockModelDefs[asset_cache_tex_id].used = 1;
+    blockModelDefs[asset_cache_tex_id].block_id = asset_cache_tex_id;
+    blockModelDefs[asset_cache_tex_id].first_face = asset_cache_block_model_face_slot;
+    blockModelDefs[asset_cache_tex_id].face_count = asset_cache_height;
+    blockModelDefs[asset_cache_tex_id].flags = asset_cache_flags - (TC_ASSET_RECORD_BLOCK_MODEL * TC_ASSET_RECORD_KIND_SHIFT);
+
+    if (blockDefs[asset_cache_tex_id].used != 0)
+    {
+        if (asset_cache_model_fast_cube != 0)
+        {
+            blockDefs[asset_cache_tex_id].render_class = TC_BLOCK_RENDER_FAST_CUBE;
+        }
+        else
+        {
+            blockDefs[asset_cache_tex_id].render_class = TC_BLOCK_RENDER_CUSTOM_MODEL;
+        }
+    }
+
+    asset_cache_loaded_block_models = asset_cache_loaded_block_models + 1;
+}
+
+void applyAssetCacheEntityRecord()
+{
+    if (assetCacheEntityRecordValid() == 0) return;
+
+    asset_cache_read = sdFileRead(asset_cache_path, asset_cache_payload, asset_cache_payload_off);
+    if (asset_cache_read < TC_ENTITY_DEF_BYTES) return;
+
+    defineRuntimeEntityFull(
+        asset_cache_tex_id,
+        assetCachePayloadByte(0),
+        assetCachePayloadByte(1),
+        assetCachePayloadByte(2),
+        assetCachePayloadByte(3),
+        assetCachePayloadByte(4),
+        assetCachePayloadByte(5),
+        assetCachePayloadByte(6),
+        assetCachePayloadByte(7),
+        (int)assetCachePayloadU16(8),
+        (int)assetCachePayloadU16(10),
+        (int)assetCachePayloadU16(12),
+        (int)assetCachePayloadU16(14),
+        (int)assetCachePayloadU16(16),
+        (int)assetCachePayloadU16(18),
+        (int)assetCachePayloadU16(20),
+        (int)assetCachePayloadU16(22),
+        (int)assetCachePayloadU16(24),
+        (int)assetCachePayloadU16(26),
+        (int)assetCachePayloadU16(28),
+        (int)assetCachePayloadU16(30)
+    );
+
+    asset_cache_loaded_entities = asset_cache_loaded_entities + 1;
+}
+
+void applyAssetCacheEntityModelRecord()
+{
+    if (assetCacheEntityModelRecordValid() == 0) return;
+
+    asset_cache_entity_model_part_slot = 0;
+    asset_cache_entity_model_id = 0;
+    while (asset_cache_entity_model_id < TC_MAX_ENTITY_MODELS)
+    {
+        if (entityModelDefs[asset_cache_entity_model_id].used != 0)
+        {
+            asset_cache_entity_model_part_slot = asset_cache_entity_model_part_slot + entityModelDefs[asset_cache_entity_model_id].part_count;
+        }
+        asset_cache_entity_model_id = asset_cache_entity_model_id + 1;
+    }
+
+    asset_cache_face_i = 0;
+    while (asset_cache_face_i < asset_cache_height)
+    {
+        asset_cache_read = sdFileRead(asset_cache_path, asset_cache_payload, asset_cache_payload_off + asset_cache_face_i * TC_ENTITY_MODEL_PART_BYTES);
+        if (asset_cache_read < TC_ENTITY_MODEL_PART_BYTES) return;
+
+        asset_cache_slot = asset_cache_entity_model_part_slot + asset_cache_face_i;
+        entityModelParts[asset_cache_slot].part_kind = assetCachePayloadByte(0);
+        entityModelParts[asset_cache_slot].anim_kind = assetCachePayloadByte(1);
+        entityModelParts[asset_cache_slot].lod_group = assetCachePayloadByte(2);
+        entityModelParts[asset_cache_slot].texture_id = assetCachePayloadByte(3);
+        entityModelParts[asset_cache_slot].uvx = assetCachePayloadByte(4);
+        entityModelParts[asset_cache_slot].uvy = assetCachePayloadByte(5);
+        entityModelParts[asset_cache_slot].sx = assetCachePayloadByte(6);
+        entityModelParts[asset_cache_slot].sy = assetCachePayloadByte(7);
+        entityModelParts[asset_cache_slot].sz = assetCachePayloadByte(8);
+        entityModelParts[asset_cache_slot].flags = assetCachePayloadByte(9);
+        entityModelParts[asset_cache_slot].lx0 = (float)assetCachePayloadS16(12) * 0.0001f;
+        entityModelParts[asset_cache_slot].ly0 = (float)assetCachePayloadS16(14) * 0.0001f;
+        entityModelParts[asset_cache_slot].lz0 = (float)assetCachePayloadS16(16) * 0.0001f;
+        entityModelParts[asset_cache_slot].lx1 = (float)assetCachePayloadS16(18) * 0.0001f;
+        entityModelParts[asset_cache_slot].ly1 = (float)assetCachePayloadS16(20) * 0.0001f;
+        entityModelParts[asset_cache_slot].lz1 = (float)assetCachePayloadS16(22) * 0.0001f;
+        entityModelParts[asset_cache_slot].pivot_x = (float)assetCachePayloadS16(24) * 0.0001f;
+        entityModelParts[asset_cache_slot].pivot_y = (float)assetCachePayloadS16(26) * 0.0001f;
+        entityModelParts[asset_cache_slot].pivot_z = (float)assetCachePayloadS16(28) * 0.0001f;
+
+        asset_cache_face_i = asset_cache_face_i + 1;
+    }
+
+    entityModelDefs[asset_cache_tex_id].used = 1;
+    entityModelDefs[asset_cache_tex_id].model_id = asset_cache_tex_id;
+    entityModelDefs[asset_cache_tex_id].first_part = asset_cache_entity_model_part_slot;
+    entityModelDefs[asset_cache_tex_id].part_count = asset_cache_height;
+    entityModelDefs[asset_cache_tex_id].texture_id = asset_cache_alpha;
+    entityModelDefs[asset_cache_tex_id].flags = asset_cache_flags - (TC_ASSET_RECORD_ENTITY_MODEL * TC_ASSET_RECORD_KIND_SHIFT);
+
+    asset_cache_loaded_entity_models = asset_cache_loaded_entity_models + 1;
+}
+
+void applyAssetCacheRecord()
+{
+    if (asset_cache_record_kind == TC_ASSET_RECORD_TEXTURE)
+    {
+        applyAssetCacheTextureRecord();
+        return;
+    }
+    if (asset_cache_record_kind == TC_ASSET_RECORD_DESTROY_STAGES)
+    {
+        applyAssetCacheDestroyStagesRecord();
+        return;
+    }
+    if (asset_cache_record_kind == TC_ASSET_RECORD_ITEM_MESH)
+    {
+        applyAssetCacheMeshRecord();
+        return;
+    }
+    if (asset_cache_record_kind == TC_ASSET_RECORD_BLOCK_DEF)
+    {
+        applyAssetCacheBlockRecord();
+        return;
+    }
+    if (asset_cache_record_kind == TC_ASSET_RECORD_BLOCK_MODEL)
+    {
+        applyAssetCacheBlockModelRecord();
+        return;
+    }
+    if (asset_cache_record_kind == TC_ASSET_RECORD_ENTITY_DEF)
+    {
+        applyAssetCacheEntityRecord();
+        return;
+    }
+    if (asset_cache_record_kind == TC_ASSET_RECORD_ENTITY_MODEL)
+    {
+        applyAssetCacheEntityModelRecord();
+        return;
+    }
+}
+
+void applyLoadedItemMeshesToItemRegistry()
+{
+    asset_cache_mesh_id = 0;
+    while (asset_cache_mesh_id < TC_MAX_ITEM_MESHES)
+    {
+        if (itemMeshDefs[asset_cache_mesh_id].used != 0)
+        {
+            asset_cache_item_id = itemMeshDefs[asset_cache_mesh_id].item_id;
+            if (asset_cache_item_id >= 0)
+            {
+                if (asset_cache_item_id < TC_MAX_ITEMS)
+                {
+                    asset_cache_icon_tex = itemMeshDefs[asset_cache_mesh_id].icon_tex;
+                    if (asset_cache_icon_tex < 0) asset_cache_icon_tex = TC_TEX_MISSING;
+                    if (asset_cache_icon_tex >= TC_MAX_TEXTURES) asset_cache_icon_tex = TC_TEX_MISSING;
+                    if (itemDefs[asset_cache_item_id].used == 0)
+                    {
+                        defineRuntimeItemFull(asset_cache_item_id, TC_ITEM_KIND_RESOURCE, TC_ITEM_RENDER_CUSTOM_MESH, 64, -1, TC_TOOL_NONE, 0, (uint)145, asset_cache_icon_tex, TC_NAME_NONE, TC_ITEM_USE_NONE, TC_ITEM_FLAG_STACKABLE + TC_ITEM_FLAG_RESOURCE);
+                    }
+                    itemDefs[asset_cache_item_id].render_kind = TC_ITEM_RENDER_CUSTOM_MESH;
+                    itemDefs[asset_cache_item_id].mesh_id = asset_cache_mesh_id;
+                    itemDefs[asset_cache_item_id].icon_tex = asset_cache_icon_tex;
+                }
+            }
+        }
+        asset_cache_mesh_id = asset_cache_mesh_id + 1;
+    }
+}
+
+void loadBinaryAssetCache()
+{
+    clearAssetCacheRuntime();
+
+    if (!sdFileExists(asset_cache_path))
+    {
+        asset_cache_status = -1;
+        return;
+    }
+
+    asset_cache_read = sdFileRead(asset_cache_path, asset_cache_io, 0);
+    if (asset_cache_read < 16)
+    {
+        asset_cache_status = -2;
+        return;
+    }
+    if (assetCacheReadU32(0) != (uint)TC_ASSET_CACHE_MAGIC)
+    {
+        asset_cache_status = -3;
+        return;
+    }
+    asset_cache_version = (int)assetCacheReadU32(4);
+    if (asset_cache_version < 1)
+    {
+        asset_cache_status = -4;
+        return;
+    }
+    if (asset_cache_version > TC_ASSET_CACHE_VERSION)
+    {
+        asset_cache_status = -4;
+        return;
+    }
+
+    asset_cache_record_count = (int)assetCacheReadU32(8);
+    if (asset_cache_record_count < 0)
+    {
+        asset_cache_status = -5;
+        return;
+    }
+    if (asset_cache_record_count > TC_ASSET_CACHE_MAX_RECORDS) asset_cache_record_count = TC_ASSET_CACHE_MAX_RECORDS;
+
+    asset_cache_record_i = 0;
+    while (asset_cache_record_i < asset_cache_record_count)
+    {
+        asset_cache_record_off = 16 + asset_cache_record_i * TC_ASSET_CACHE_RECORD_BYTES;
+        asset_cache_read = sdFileRead(asset_cache_path, asset_cache_io, asset_cache_record_off);
+        if (asset_cache_read >= TC_ASSET_CACHE_RECORD_BYTES)
+        {
+            asset_cache_tex_id = (int)assetCacheReadU32(0);
+            asset_cache_width = (int)assetCacheReadU32(4);
+            asset_cache_height = (int)assetCacheReadU32(8);
+            asset_cache_words = (int)assetCacheReadU32(12);
+            asset_cache_payload_off = (int)assetCacheReadU32(16);
+            asset_cache_payload_bytes = (int)assetCacheReadU32(20);
+            asset_cache_alpha = (int)assetCacheReadU32(24);
+            asset_cache_flags = (int)assetCacheReadU32(28);
+            asset_cache_record_kind = assetCacheRecordKind();
+            applyAssetCacheRecord();
+        }
+        asset_cache_record_i = asset_cache_record_i + 1;
+    }
+
+    asset_cache_loaded = 1;
+    asset_cache_status = asset_cache_loaded_textures + asset_cache_loaded_meshes * 100 + asset_cache_loaded_blocks * 10000 + asset_cache_loaded_block_models * 1000000 + asset_cache_loaded_entities * 100000000;
+}

@@ -1,0 +1,1105 @@
+void clearWorld()
+{
+    int i;
+    i = 0;
+    while (i < 16384)
+    {
+        world[i] = (uint)0;
+        i = i + 1;
+    }
+}
+
+void generateWorld()
+{
+    // v24: active 16x16 collision-window generation does not invalidate the
+    // far render cache. The render cache stores absolute columns and is moved
+    // only when the player reaches its outer margin.
+    clearWorld();
+
+    /* Fast active-window generation:
+       fill terrain columns directly, then apply tree leaves/trunks. This avoids
+       calling the full procedural block resolver for all 16x16x64 voxels. */
+    gen_lz = 0;
+    while (gen_lz < 16)
+    {
+        gen_lx = 0;
+        while (gen_lx < 16)
+        {
+            gen_wx = world_origin_x + gen_lx;
+            gen_wz = world_origin_z + gen_lz;
+
+            g_y = 0;
+            gen_h = terrainHeightAbs(gen_wx, gen_wz);
+            tn_soil = 3 + (int)(terrainHash(floorDivInt(gen_wx, 4), floorDivInt(gen_wz, 4), 9) & (uint)1);
+            while (g_y <= gen_h)
+            {
+                if (g_y == gen_h)
+                {
+                    if (surfaceStoneAtAbs(gen_wx, gen_wz, gen_h) != 0) world[(g_y * 256) + (gen_lz * 16) + gen_lx] = (uint)3;
+                    else world[(g_y * 256) + (gen_lz * 16) + gen_lx] = (uint)1;
+                }
+                else
+                {
+                    if ((g_y + tn_soil) >= gen_h) world[(g_y * 256) + (gen_lz * 16) + gen_lx] = (uint)2;
+                    else world[(g_y * 256) + (gen_lz * 16) + gen_lx] = (uint)3;
+                }
+                g_y = g_y + 1;
+            }
+
+            gen_lx = gen_lx + 1;
+        }
+        gen_lz = gen_lz + 1;
+    }
+
+    /* Leaves can extend two blocks into this active window from trees just
+       outside it, so scan a slightly padded base area. */
+    tree_bz = world_origin_z - 2;
+    while (tree_bz <= (world_origin_z + 17))
+    {
+        tree_bx = world_origin_x - 2;
+        while (tree_bx <= (world_origin_x + 17))
+        {
+            if (treeBaseAtAbs(tree_bx, tree_bz) != 0)
+            {
+                tree_h = terrainHeightAbs(tree_bx, tree_bz);
+
+                rc_dz = -2;
+                while (rc_dz <= 2)
+                {
+                    rc_dx = -2;
+                    while (rc_dx <= 2)
+                    {
+                        rc_adx = absSmallInt(rc_dx);
+                        rc_adz = absSmallInt(rc_dz);
+                        if ((rc_adx + rc_adz) < 4)
+                        {
+                            gen_edit_lx = tree_bx + rc_dx - world_origin_x;
+                            gen_edit_lz = tree_bz + rc_dz - world_origin_z;
+                            tree_trunk_h = treeTrunkHeightAtAbs(tree_bx, tree_bz);
+                            g_y = tree_h + tree_trunk_h;
+                            if ((gen_edit_lx >= 0) && (gen_edit_lx < 16) && (gen_edit_lz >= 0) && (gen_edit_lz < 16) && (g_y < 64))
+                            {
+                                world[(g_y * 256) + (gen_edit_lz * 16) + gen_edit_lx] = (uint)5;
+                            }
+                        }
+                        rc_dx = rc_dx + 1;
+                    }
+                    rc_dz = rc_dz + 1;
+                }
+
+                rc_dz = -1;
+                while (rc_dz <= 1)
+                {
+                    rc_dx = -1;
+                    while (rc_dx <= 1)
+                    {
+                        gen_edit_lx = tree_bx + rc_dx - world_origin_x;
+                        gen_edit_lz = tree_bz + rc_dz - world_origin_z;
+                        tree_trunk_h = treeTrunkHeightAtAbs(tree_bx, tree_bz);
+                        g_y = tree_h + tree_trunk_h + 1;
+                        if ((gen_edit_lx >= 0) && (gen_edit_lx < 16) && (gen_edit_lz >= 0) && (gen_edit_lz < 16) && (g_y < 64))
+                        {
+                            world[(g_y * 256) + (gen_edit_lz * 16) + gen_edit_lx] = (uint)5;
+                        }
+                        rc_dx = rc_dx + 1;
+                    }
+                    rc_dz = rc_dz + 1;
+                }
+            }
+            tree_bx = tree_bx + 1;
+        }
+        tree_bz = tree_bz + 1;
+    }
+
+    /* Trunks are drawn after leaves so the center column remains wood. */
+    gen_lz = 0;
+    while (gen_lz < 16)
+    {
+        gen_lx = 0;
+        while (gen_lx < 16)
+        {
+            gen_wx = world_origin_x + gen_lx;
+            gen_wz = world_origin_z + gen_lz;
+            if (treeBaseAtAbs(gen_wx, gen_wz) != 0)
+            {
+                gen_h = terrainHeightAbs(gen_wx, gen_wz);
+                tree_trunk_h = treeTrunkHeightAtAbs(gen_wx, gen_wz);
+                g_y = gen_h + 1;
+                while ((g_y <= (gen_h + tree_trunk_h)) && (g_y < 64))
+                {
+                    world[(g_y * 256) + (gen_lz * 16) + gen_lx] = (uint)4;
+                    g_y = g_y + 1;
+                }
+            }
+            gen_lx = gen_lx + 1;
+        }
+        gen_lz = gen_lz + 1;
+    }
+
+    /* Overlay player edits that fall inside this active window. */
+    gen_edit_i = 0;
+    while (gen_edit_i < edit_count)
+    {
+        gen_edit_lx = edit_x[gen_edit_i] - world_origin_x;
+        gen_edit_lz = edit_z[gen_edit_i] - world_origin_z;
+        if (gen_edit_lx >= 0)
+        {
+            if (gen_edit_lx < 16)
+            {
+                if (gen_edit_lz >= 0)
+                {
+                    if (gen_edit_lz < 16)
+                    {
+                        if (edit_y[gen_edit_i] >= 0)
+                        {
+                            if (edit_y[gen_edit_i] < 64)
+                            {
+                                world[(edit_y[gen_edit_i] * 256) + (gen_edit_lz * 16) + gen_edit_lx] = edit_block[gen_edit_i];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        gen_edit_i = gen_edit_i + 1;
+    }
+}
+
+void recenterActiveWorldIfNeeded()
+{
+    if (player_x < (float)recenter_low)
+    {
+        rec_abs_x = (float)world_origin_x + player_x;
+        rec_new_origin_x = floorFloatToInt(rec_abs_x) - 8;
+    }
+    else
+    {
+        if (player_x > (float)recenter_high)
+        {
+            rec_abs_x = (float)world_origin_x + player_x;
+            rec_new_origin_x = floorFloatToInt(rec_abs_x) - 8;
+        }
+        else
+        {
+            rec_new_origin_x = world_origin_x;
+        }
+    }
+
+    if (player_z < (float)recenter_low)
+    {
+        rec_abs_z = (float)world_origin_z + player_z;
+        rec_new_origin_z = floorFloatToInt(rec_abs_z) - 8;
+    }
+    else
+    {
+        if (player_z > (float)recenter_high)
+        {
+            rec_abs_z = (float)world_origin_z + player_z;
+            rec_new_origin_z = floorFloatToInt(rec_abs_z) - 8;
+        }
+        else
+        {
+            rec_new_origin_z = world_origin_z;
+        }
+    }
+
+    if ((rec_new_origin_x != world_origin_x) || (rec_new_origin_z != world_origin_z))
+    {
+        rec_abs_x = (float)world_origin_x + player_x;
+        rec_abs_z = (float)world_origin_z + player_z;
+        world_origin_x = rec_new_origin_x;
+        world_origin_z = rec_new_origin_z;
+        player_x = rec_abs_x - (float)world_origin_x;
+        player_z = rec_abs_z - (float)world_origin_z;
+        generateWorld();
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Input and player movement                                                 */
+/* ------------------------------------------------------------------------- */
+
+/* key() currently requires an integer literal scancode as its first argument. */
+
+int footprintHighest(float px, float pz)
+{
+    int x0;
+    int x1;
+    int z0;
+    int z1;
+
+    x0 = (int)(px - 0.28f);
+    x1 = (int)(px + 0.28f);
+    z0 = (int)(pz - 0.28f);
+    z1 = (int)(pz + 0.28f);
+
+    if (x0 < 0) return -1;
+    if (x1 > 15) return -1;
+    if (z0 < 0) return -1;
+    if (z1 > 15) return -1;
+
+    g_z0 = z0 * 16;
+    g_z1 = z1 * 16;
+    g_y = 63;
+    while (g_y >= 0)
+    {
+        g_base = g_y * 256;
+        if (world[g_base + g_z0 + x0] != (uint)0) return g_y;
+        if (world[g_base + g_z0 + x1] != (uint)0) return g_y;
+        if (world[g_base + g_z1 + x0] != (uint)0) return g_y;
+        if (world[g_base + g_z1 + x1] != (uint)0) return g_y;
+        g_y = g_y - 1;
+    }
+    return -1;
+}
+
+int footprintHighestLimited(float px, float pz, float max_top)
+{
+    int x0;
+    int x1;
+    int z0;
+    int z1;
+
+    x0 = (int)(px - 0.28f);
+    x1 = (int)(px + 0.28f);
+    z0 = (int)(pz - 0.28f);
+    z1 = (int)(pz + 0.28f);
+
+    if (x0 < 0) return -1;
+    if (x1 > 15) return -1;
+    if (z0 < 0) return -1;
+    if (z1 > 15) return -1;
+
+    g_z0 = z0 * 16;
+    g_z1 = z1 * 16;
+    g_y = 63;
+    while (g_y >= 0)
+    {
+        if (((float)g_y + 1.0f) <= max_top)
+        {
+            g_base = g_y * 256;
+            if (world[g_base + g_z0 + x0] != (uint)0) return g_y;
+            if (world[g_base + g_z0 + x1] != (uint)0) return g_y;
+            if (world[g_base + g_z1 + x0] != (uint)0) return g_y;
+            if (world[g_base + g_z1 + x1] != (uint)0) return g_y;
+        }
+        g_y = g_y - 1;
+    }
+    return -1;
+}
+
+float standingFootY(float px, float pz)
+{
+    int h;
+    h = footprintHighest(px, pz);
+    if (h < 0) return -1000.0f;
+    return (float)h + 1.0f;
+}
+
+float standingFootYLimited(float px, float pz, float max_top)
+{
+    int h;
+    h = footprintHighestLimited(px, pz, max_top);
+    if (h < 0) return -1000.0f;
+    return (float)h + 1.0f;
+}
+
+int footprintSolidAtY(float px, float pz, int y)
+{
+    int x0;
+    int x1;
+    int z0;
+    int z1;
+
+    if (y < 0) return 0;
+    if (y > 63) return 0;
+
+    x0 = (int)(px - 0.28f);
+    x1 = (int)(px + 0.28f);
+    z0 = (int)(pz - 0.28f);
+    z1 = (int)(pz + 0.28f);
+
+    if (x0 < 0) return 0;
+    if (x1 > 15) return 0;
+    if (z0 < 0) return 0;
+    if (z1 > 15) return 0;
+
+    g_base = y * 256;
+    g_x0 = z0 * 16;
+    g_x1 = z1 * 16;
+    if (world[g_base + g_x0 + x0] != (uint)0) return 1;
+    if (world[g_base + g_x0 + x1] != (uint)0) return 1;
+    if (world[g_base + g_x1 + x0] != (uint)0) return 1;
+    if (world[g_base + g_x1 + x1] != (uint)0) return 1;
+    return 0;
+}
+
+int playerHasGround()
+{
+    int y;
+    float ground_y;
+
+    y = (int)(player_foot_y - 0.05f);
+    if (footprintSolidAtY(player_x, player_z, y) != 0) return 1;
+
+    ground_y = standingFootYLimited(player_x, player_z, player_foot_y + 0.20f);
+    if (ground_y > -100.0f)
+    {
+        if ((player_foot_y - ground_y) < 0.25f)
+        {
+            if ((ground_y - player_foot_y) < 0.25f) return 1;
+        }
+    }
+    return 0;
+}
+
+int playerBodyClear(float px, float foot_y, float pz)
+{
+    int x0;
+    int x1;
+    int z0;
+    int z1;
+    int y0;
+    int y1;
+
+    x0 = (int)(px - 0.28f);
+    x1 = (int)(px + 0.28f);
+    z0 = (int)(pz - 0.28f);
+    z1 = (int)(pz + 0.28f);
+    y0 = (int)(foot_y + 0.10f);
+    y1 = (int)(foot_y + 1.55f);
+
+    if (x0 < 0) return 0;
+    if (x1 > 15) return 0;
+    if (z0 < 0) return 0;
+    if (z1 > 15) return 0;
+    if (y0 < 0) return 0;
+
+    /* Above WORLD_H there are no blocks, so do not make tall terrain or a
+       jump near the top of the small test world fail just because the player's
+       head is outside the stored voxel array. */
+    if (y0 > 63) return 1;
+    if (y1 > 63) y1 = 63;
+
+    g_x0 = z0 * 16;
+    g_x1 = z1 * 16;
+    g_base = y0 * 256;
+    if (world[g_base + g_x0 + x0] != (uint)0) return 0;
+    if (world[g_base + g_x0 + x1] != (uint)0) return 0;
+    if (world[g_base + g_x1 + x0] != (uint)0) return 0;
+    if (world[g_base + g_x1 + x1] != (uint)0) return 0;
+
+    g_base = y1 * 256;
+    if (world[g_base + g_x0 + x0] != (uint)0) return 0;
+    if (world[g_base + g_x0 + x1] != (uint)0) return 0;
+    if (world[g_base + g_x1 + x0] != (uint)0) return 0;
+    if (world[g_base + g_x1 + x1] != (uint)0) return 0;
+
+    return 1;
+}
+
+void syncEyeToFoot()
+{
+    player_y = player_foot_y + 1.62f;
+}
+
+void syncPlayerToGround()
+{
+    player_foot_y = standingFootY(player_x, player_z);
+    if (player_foot_y < -100.0f)
+    {
+        player_foot_y = 9.0f;
+    }
+    player_vy = 0.0f;
+    player_vx = 0.0f;
+    player_vz = 0.0f;
+    player_on_ground = 1;
+    syncEyeToFoot();
+}
+
+int canMoveAirAt(float px, float pz)
+{
+    if (px < 0.35f) return 0;
+    if (px > 15.65f) return 0;
+    if (pz < 0.35f) return 0;
+    if (pz > 15.65f) return 0;
+
+    if (playerBodyClear(px, player_foot_y, pz) == 0) return 0;
+    return 1;
+}
+
+void tryMovePlayer(float dx, float dz)
+{
+    move_nx = player_x + dx;
+    move_moved_axis = 0;
+
+    if (player_on_ground != 0)
+    {
+        move_ground_y = standingFootYLimited(move_nx, player_z, player_foot_y + 0.20f);
+        if (move_ground_y > -100.0f)
+        {
+            move_diff_y = move_ground_y - player_foot_y;
+
+            /* Stay glued only to almost-level ground. Do not auto-step up or
+               snap down a full block; walking off/down a block should become
+               a normal fall handled by updateVerticalPhysics(). */
+            if ((move_diff_y < ground_snap_epsilon) && (move_diff_y > (0.0f - ground_snap_epsilon)))
+            {
+                if (playerBodyClear(move_nx, move_ground_y, player_z) != 0)
+                {
+                    player_x = move_nx;
+                    player_foot_y = move_ground_y;
+                    move_moved_axis = 1;
+                    syncEyeToFoot();
+                }
+            }
+            else
+            {
+                if (move_diff_y < (0.0f - ground_snap_epsilon))
+                {
+                    if (playerBodyClear(move_nx, player_foot_y, player_z) != 0)
+                    {
+                        player_x = move_nx;
+                        player_on_ground = 0;
+                        move_moved_axis = 1;
+                    }
+                }
+            }
+        }
+        else
+        {
+            if (playerBodyClear(move_nx, player_foot_y, player_z) != 0)
+            {
+                player_x = move_nx;
+                player_on_ground = 0;
+                move_moved_axis = 1;
+            }
+        }
+
+        /* If moved_axis is still zero, the destination is probably a higher
+           block/wall. Block it instead of teleporting upward. */
+    }
+    else
+    {
+        if (canMoveAirAt(move_nx, player_z) != 0)
+        {
+            player_x = move_nx;
+        }
+    }
+
+    move_nz = player_z + dz;
+    move_moved_axis = 0;
+
+    if (player_on_ground != 0)
+    {
+        move_ground_y = standingFootYLimited(player_x, move_nz, player_foot_y + 0.20f);
+        if (move_ground_y > -100.0f)
+        {
+            move_diff_y = move_ground_y - player_foot_y;
+
+            if ((move_diff_y < ground_snap_epsilon) && (move_diff_y > (0.0f - ground_snap_epsilon)))
+            {
+                if (playerBodyClear(player_x, move_ground_y, move_nz) != 0)
+                {
+                    player_z = move_nz;
+                    player_foot_y = move_ground_y;
+                    move_moved_axis = 1;
+                    syncEyeToFoot();
+                }
+            }
+            else
+            {
+                if (move_diff_y < (0.0f - ground_snap_epsilon))
+                {
+                    if (playerBodyClear(player_x, player_foot_y, move_nz) != 0)
+                    {
+                        player_z = move_nz;
+                        player_on_ground = 0;
+                        move_moved_axis = 1;
+                    }
+                }
+            }
+        }
+        else
+        {
+            if (playerBodyClear(player_x, player_foot_y, move_nz) != 0)
+            {
+                player_z = move_nz;
+                player_on_ground = 0;
+                move_moved_axis = 1;
+            }
+        }
+    }
+    else
+    {
+        if (canMoveAirAt(player_x, move_nz) != 0)
+        {
+            player_z = move_nz;
+        }
+    }
+}
+
+
+void killPlayer()
+{
+    player_health = 0;
+    player_dead = 1;
+    player_hurt_ms = 0.0f;
+    player_invuln_ms = 0.0f;
+    player_last_damage_taken = 0.0f;
+    resetMining();
+    old_break_key = 0;
+    old_place_key = 0;
+    player_vy = 0.0f;
+    player_vx = 0.0f;
+    player_vz = 0.0f;
+    air_hit_anim_ms = (uint)0;
+    place_anim_ms = (uint)0;
+}
+
+void damagePlayer(int half_hearts)
+{
+    if (player_dead != 0) return;
+    if (half_hearts <= 0) return;
+
+    combat_amount = (float)half_hearts;
+    if (player_invuln_ms > 0.0f)
+    {
+        if (combat_amount <= player_last_damage_taken) return;
+        combat_amount = combat_amount - player_last_damage_taken;
+    }
+
+    combat_damage_int = (int)combat_amount;
+    if (combat_damage_int <= 0) combat_damage_int = 1;
+    player_health = player_health - combat_damage_int;
+    player_hurt_ms = 500.0f;
+    player_invuln_ms = 500.0f;
+    player_last_damage_taken = (float)half_hearts;
+    if (player_health <= 0) killPlayer();
+}
+
+void applyPlayerKnockback(float source_x, float source_z, float strength)
+{
+    combat_dx = source_x;
+    combat_dz = source_z;
+    combat_len = combat_dx * combat_dx + combat_dz * combat_dz;
+    if (combat_len < 0.0001f) return;
+    if (combat_len < 1.0f) combat_len = 1.0f;
+    combat_len = (combat_len + (combat_dx * combat_dx + combat_dz * combat_dz) / combat_len) * 0.5f;
+    combat_len = (combat_len + (combat_dx * combat_dx + combat_dz * combat_dz) / combat_len) * 0.5f;
+    combat_dx = combat_dx / combat_len;
+    combat_dz = combat_dz / combat_len;
+
+    player_vx = player_vx * 0.50f - combat_dx * strength;
+    player_vz = player_vz * 0.50f - combat_dz * strength;
+    player_vy = player_vy * 0.50f + strength;
+    if (player_vy > 0.40f) player_vy = 0.40f;
+    player_on_ground = 0;
+}
+
+void damagePlayerFromSource(int half_hearts, float source_x, float source_z, float knockback_strength)
+{
+    combat_tmp = (float)player_health;
+    damagePlayer(half_hearts);
+    if ((float)player_health < combat_tmp)
+    {
+        applyPlayerKnockback(source_x, source_z, knockback_strength);
+    }
+}
+
+void handleLandingDamage(float landed_y)
+{
+    if (fall_tracking == 0) return;
+    fall_distance_blocks = fall_highest_foot_y - landed_y;
+    fall_damage_half_hearts = floorFloatToInt(fall_distance_blocks) - 3;
+    fall_tracking = 0;
+    if (fall_damage_half_hearts > 0) damagePlayer(fall_damage_half_hearts);
+}
+
+void updateFallTracking()
+{
+    if (player_on_ground != 0)
+    {
+        fall_tracking = 0;
+        fall_highest_foot_y = player_foot_y;
+        return;
+    }
+    if (fall_tracking == 0)
+    {
+        fall_tracking = 1;
+        fall_highest_foot_y = player_foot_y;
+    }
+    else
+    {
+        if (player_foot_y > fall_highest_foot_y) fall_highest_foot_y = player_foot_y;
+    }
+}
+
+void respawnPlayerAtWorldSpawn()
+{
+    player_dead = 0;
+    player_health = 20;
+    player_hurt_ms = 0.0f;
+    player_invuln_ms = 0.0f;
+    player_last_damage_taken = 0.0f;
+    player_attack_cooldown_ms = 0.0f;
+    world_origin_x = -8;
+    world_origin_z = -8;
+    player_x = 8.5f;
+    player_z = 8.5f;
+    player_foot_y = 4.0f;
+    player_y = 5.62f;
+    player_vy = 0.0f;
+    player_vx = 0.0f;
+    player_vz = 0.0f;
+    player_on_ground = 1;
+    fall_tracking = 0;
+    yaw_angle = 0.0f;
+    pitch_angle = 0.0f;
+    updateViewVectors();
+    generateWorld();
+    syncPlayerToGround();
+    render_cache_valid = 0;
+    resetMining();
+    air_hit_anim_ms = (uint)0;
+    place_anim_ms = (uint)0;
+    last_ms = millis();
+    game_tick_accum_ms = (uint)0;
+    tick_jump_request = 0;
+    tick_jump_started = 0;
+    tick_jump_this_update = 0;
+}
+
+void updateVerticalPhysics(float dtf)
+{
+    /* 20 TPS vertical velocity update only. Position is integrated every
+       rendered frame by applyPlayerMotionFrame(), so movement no longer jumps
+       in visible 50 ms steps. */
+    phys_was_ground = player_on_ground;
+    updateFallTracking();
+
+    if (player_on_ground != 0)
+    {
+        phys_ground_y = standingFootYLimited(player_x, player_z, player_foot_y + 0.20f);
+        if (phys_ground_y > -100.0f)
+        {
+            if ((player_foot_y - phys_ground_y) < 0.25f)
+            {
+                if ((phys_ground_y - player_foot_y) < 0.25f)
+                {
+                    player_foot_y = phys_ground_y;
+                    if (player_vy < 0.0f) player_vy = 0.0f;
+                    syncEyeToFoot();
+                    return;
+                }
+            }
+        }
+        player_on_ground = 0;
+    }
+
+    /* Do not eat the first jump tick with gravity; otherwise the jump arc is
+       visibly lower and the player cannot reliably clear a one-block ledge. */
+    if (tick_jump_started != 0)
+    {
+        tick_jump_started = 0;
+        return;
+    }
+
+    player_vy = (player_vy - tick_gravity) * tick_vertical_drag;
+    if (player_vy < tick_terminal_fall) player_vy = tick_terminal_fall;
+}
+
+void applyPlayerMotionAlpha(float alpha)
+{
+    /* Integrate one small movement slice. Velocities are still updated only
+       by the 20 TPS physics tick; this only spends the already-existing
+       velocity over real elapsed frame time. Splitting large low-FPS frames
+       prevents horizontal collision from blocking an entire jump arc before
+       the vertical part has a chance to lift the player over a one-block ledge. */
+    frame_tick_alpha = alpha;
+    if (frame_tick_alpha <= 0.0f) return;
+
+    tryMovePlayer(player_vx * frame_tick_alpha, player_vz * frame_tick_alpha);
+
+    phys_was_ground = player_on_ground;
+    updateFallTracking();
+
+    if (player_on_ground != 0)
+    {
+        phys_ground_y = standingFootYLimited(player_x, player_z, player_foot_y + 0.20f);
+        if (phys_ground_y > -100.0f)
+        {
+            if ((player_foot_y - phys_ground_y) < 0.25f)
+            {
+                if ((phys_ground_y - player_foot_y) < 0.25f)
+                {
+                    player_foot_y = phys_ground_y;
+                    if (player_vy < 0.0f) player_vy = 0.0f;
+                    syncEyeToFoot();
+                    return;
+                }
+            }
+        }
+        player_on_ground = 0;
+    }
+
+    frame_vy_step = player_vy * frame_tick_alpha;
+    phys_new_foot_y = player_foot_y + frame_vy_step;
+
+    if (player_vy <= 0.0f)
+    {
+        phys_ground_y = standingFootYLimited(player_x, player_z, player_foot_y + 0.10f);
+        if (phys_ground_y > -100.0f)
+        {
+            if (phys_new_foot_y <= phys_ground_y)
+            {
+                player_foot_y = phys_ground_y;
+                if (phys_was_ground == 0)
+                {
+                    land_anim_ms = (uint)220;
+                    handleLandingDamage(phys_ground_y);
+                }
+                player_vy = 0.0f;
+                player_on_ground = 1;
+                syncEyeToFoot();
+                return;
+            }
+        }
+    }
+
+    if (playerBodyClear(player_x, phys_new_foot_y, player_z) != 0)
+    {
+        player_foot_y = phys_new_foot_y;
+        player_on_ground = 0;
+    }
+    else
+    {
+        if (player_vy > 0.0f)
+        {
+            player_vy = 0.0f;
+        }
+        else
+        {
+            phys_ground_y = standingFootYLimited(player_x, player_z, player_foot_y + 0.20f);
+            if (phys_ground_y > -100.0f)
+            {
+                player_foot_y = phys_ground_y;
+                if (phys_was_ground == 0)
+                {
+                    land_anim_ms = (uint)220;
+                    handleLandingDamage(phys_ground_y);
+                }
+                player_vy = 0.0f;
+                player_on_ground = 1;
+            }
+        }
+    }
+
+    syncEyeToFoot();
+}
+
+
+void applyPlayerMotionFrame(float dtf)
+{
+    /* Do not throw away low-FPS time. v53 capped this at 1.5 ticks, so a
+       150-200 ms frame consumed gravity/AI time but only moved the player for
+       75 ms. That made pickups miss and made one-block jumps fail.
+       We keep normal movement identical at good FPS, but split big frames into
+       <= 0.5 tick slices so collision stays accurate instead of tunneling or
+       blocking the whole frame. */
+    frame_alpha_left = dtf * 0.020f;
+    if (frame_alpha_left < 0.0f) frame_alpha_left = 0.0f;
+    if (frame_alpha_left > 4.0f) frame_alpha_left = 4.0f;
+
+    /* When a jump starts in a very long frame, the tick loop intentionally
+       stops after the jump impulse so several gravity ticks do not crush the
+       jump before the player is rendered moving upward. Do not spend the full
+       200 ms with the untouched jump velocity either, or the jump becomes too
+       tall. Two ticks gives the player enough lift to clear one-block ledges
+       without changing normal/high-FPS movement. */
+    if (tick_jump_this_update != 0)
+    {
+        if (frame_alpha_left > 2.0f) frame_alpha_left = 2.0f;
+    }
+
+    frame_alpha_guard = (uint)0;
+    while ((frame_alpha_left > 0.0001f) && (frame_alpha_guard < (uint)8))
+    {
+        frame_alpha_step = frame_alpha_left;
+        if (frame_alpha_step > 0.50f) frame_alpha_step = 0.50f;
+        applyPlayerMotionAlpha(frame_alpha_step);
+        frame_alpha_left = frame_alpha_left - frame_alpha_step;
+        frame_alpha_guard = frame_alpha_guard + (uint)1;
+    }
+}
+
+void updateMovementPhysicsTick()
+{
+    tick_input_x = 0.0f;
+    tick_input_z = 0.0f;
+
+    if (tick_w_down != 0)
+    {
+        tick_input_x = tick_input_x + sin_yaw;
+        tick_input_z = tick_input_z + cos_yaw;
+    }
+    if (tick_s_down != 0)
+    {
+        tick_input_x = tick_input_x - sin_yaw;
+        tick_input_z = tick_input_z - cos_yaw;
+    }
+    if (tick_a_down != 0)
+    {
+        tick_input_x = tick_input_x - cos_yaw;
+        tick_input_z = tick_input_z + sin_yaw;
+    }
+    if (tick_d_down != 0)
+    {
+        tick_input_x = tick_input_x + cos_yaw;
+        tick_input_z = tick_input_z - sin_yaw;
+    }
+
+    tick_input_len_sq = tick_input_x * tick_input_x + tick_input_z * tick_input_z;
+    if (tick_input_len_sq > 0.0001f)
+    {
+        /* Avoid sqrt for the common WASD cases. Diagonal movement has length
+           about sqrt(2), so multiply by 0.7071 to keep acceleration constant. */
+        if (tick_input_len_sq > 1.20f)
+        {
+            tick_input_x = tick_input_x * 0.707106f;
+            tick_input_z = tick_input_z * 0.707106f;
+        }
+    }
+    else
+    {
+        tick_input_x = 0.0f;
+        tick_input_z = 0.0f;
+    }
+
+    if (up_running != 0) tick_accel = tick_ground_run_accel;
+    else tick_accel = tick_ground_walk_accel;
+
+    if ((player_on_ground != 0) || (playerHasGround() != 0))
+    {
+        player_vx = player_vx * tick_ground_drag;
+        player_vz = player_vz * tick_ground_drag;
+        player_vx = player_vx + tick_input_x * tick_accel;
+        player_vz = player_vz + tick_input_z * tick_accel;
+
+        if (tick_jump_request != 0)
+        {
+            player_vy = tick_jump_velocity;
+            player_on_ground = 0;
+            tick_jump_started = 1;
+            tick_jump_this_update = 1;
+            tick_jump_request = 0;
+        }
+    }
+    else
+    {
+        player_vx = player_vx * tick_air_drag;
+        player_vz = player_vz * tick_air_drag;
+        player_vx = player_vx + tick_input_x * tick_accel * tick_air_accel_mult;
+        player_vz = player_vz + tick_input_z * tick_accel * tick_air_accel_mult;
+
+        /* Preserve momentum, but prevent held air input from building unlimited speed.
+           Manhattan cap avoids sqrt and keeps diagonal air movement sane. */
+        g_fx = player_vx;
+        if (g_fx < 0.0f) g_fx = 0.0f - g_fx;
+        g_fz = player_vz;
+        if (g_fz < 0.0f) g_fz = 0.0f - g_fz;
+        g_d2 = g_fx + g_fz;
+        if (g_d2 > tick_air_speed_cap)
+        {
+            g_side = tick_air_speed_cap / g_d2;
+            player_vx = player_vx * g_side;
+            player_vz = player_vz * g_side;
+        }
+    }
+
+    /* Velocity update only. Smooth frame integration happens after the tick loop. */
+    updateVerticalPhysics(50.0f);
+}
+
+void updateViewVectors()
+{
+    sin_yaw = sinf(yaw_angle);
+    cos_yaw = cosf(yaw_angle);
+    sin_pitch = sinf(pitch_angle);
+    cos_pitch = cosf(pitch_angle);
+
+    view_x = sin_yaw * cos_pitch;
+    view_y = sin_pitch;
+    view_z = cos_yaw * cos_pitch;
+}
+
+int blockInsidePlayerSpace(int bx, int by, int bz)
+{
+    int x0;
+    int x1;
+    int z0;
+    int z1;
+    int y0;
+    int y1;
+
+    x0 = (int)(player_x - 0.28f);
+    x1 = (int)(player_x + 0.28f);
+    z0 = (int)(player_z - 0.28f);
+    z1 = (int)(player_z + 0.28f);
+    y0 = (int)(player_foot_y + 0.10f);
+    y1 = (int)(player_foot_y + 1.55f);
+
+    if (bx < x0) return 0;
+    if (bx > x1) return 0;
+    if (bz < z0) return 0;
+    if (bz > z1) return 0;
+    if (by < y0) return 0;
+    if (by > y1) return 0;
+    return 1;
+}
+
+
+int traceRayTarget()
+{
+    /* 3D DDA voxel traversal. The older ray marched in 0.10-block steps and
+       could skip across an edge/corner, causing the target to jump to the block
+       behind or beside the one under the crosshair. DDA advances through exact
+       voxel boundary crossings, so the selected block/face is stable near
+       block edges. */
+    /* Trace from the same camera position used for rendering. The old
+       ray origin was 0.20 blocks below the actual eye, which made edge hits
+       prefer side faces too often when the crosshair was visually on a top
+       face. */
+    ray_rx = player_x + cos_yaw * cam_bob_x;
+    ray_ry = player_y + cam_bob_y + land_cam_y;
+    ray_rz = player_z - sin_yaw * cam_bob_x;
+
+    ray_bx = (int)ray_rx;
+    ray_by = (int)ray_ry;
+    ray_bz = (int)ray_rz;
+
+    ray_last_x = ray_bx;
+    ray_last_y = ray_by;
+    ray_last_z = ray_bz;
+
+    if (view_x > 0.00001f)
+    {
+        ray_step_x = 1;
+        ray_tdelta_x = 1.0f / view_x;
+        ray_tmax_x = ((float)(ray_bx + 1) - ray_rx) / view_x;
+    }
+    else
+    {
+        if (view_x < -0.00001f)
+        {
+            ray_step_x = -1;
+            ray_tdelta_x = 0.0f - (1.0f / view_x);
+            ray_tmax_x = (ray_rx - (float)ray_bx) / (0.0f - view_x);
+        }
+        else
+        {
+            ray_step_x = 0;
+            ray_tdelta_x = 999999.0f;
+            ray_tmax_x = 999999.0f;
+        }
+    }
+
+    if (view_y > 0.00001f)
+    {
+        ray_step_y = 1;
+        ray_tdelta_y = 1.0f / view_y;
+        ray_tmax_y = ((float)(ray_by + 1) - ray_ry) / view_y;
+    }
+    else
+    {
+        if (view_y < -0.00001f)
+        {
+            ray_step_y = -1;
+            ray_tdelta_y = 0.0f - (1.0f / view_y);
+            ray_tmax_y = (ray_ry - (float)ray_by) / (0.0f - view_y);
+        }
+        else
+        {
+            ray_step_y = 0;
+            ray_tdelta_y = 999999.0f;
+            ray_tmax_y = 999999.0f;
+        }
+    }
+
+    if (view_z > 0.00001f)
+    {
+        ray_step_z = 1;
+        ray_tdelta_z = 1.0f / view_z;
+        ray_tmax_z = ((float)(ray_bz + 1) - ray_rz) / view_z;
+    }
+    else
+    {
+        if (view_z < -0.00001f)
+        {
+            ray_step_z = -1;
+            ray_tdelta_z = 0.0f - (1.0f / view_z);
+            ray_tmax_z = (ray_rz - (float)ray_bz) / (0.0f - view_z);
+        }
+        else
+        {
+            ray_step_z = 0;
+            ray_tdelta_z = 999999.0f;
+            ray_tmax_z = 999999.0f;
+        }
+    }
+
+    ray_i = 0;
+    while (ray_i < 48)
+    {
+        ray_last_x = ray_bx;
+        ray_last_y = ray_by;
+        ray_last_z = ray_bz;
+
+        /* When the ray is very close to a block edge/corner, prefer the
+           Y boundary if it is nearly tied with X/Z. This makes visible top
+           and bottom faces much less likely to be stolen by a side face at
+           the edge of the block. */
+        if ((ray_tmax_y <= (ray_tmax_x + 0.025f)) && (ray_tmax_y <= (ray_tmax_z + 0.025f)))
+        {
+            ray_by = ray_by + ray_step_y;
+            ray_t = ray_tmax_y;
+            ray_tmax_y = ray_tmax_y + ray_tdelta_y;
+        }
+        else
+        {
+            if (ray_tmax_x <= ray_tmax_z)
+            {
+                ray_bx = ray_bx + ray_step_x;
+                ray_t = ray_tmax_x;
+                ray_tmax_x = ray_tmax_x + ray_tdelta_x;
+            }
+            else
+            {
+                ray_bz = ray_bz + ray_step_z;
+                ray_t = ray_tmax_z;
+                ray_tmax_z = ray_tmax_z + ray_tdelta_z;
+            }
+        }
+
+        if (ray_t > 7.0f) return 0;
+
+        if (inWorld(ray_bx, ray_by, ray_bz) == 0)
+        {
+            return 0;
+        }
+
+        ray_b = world[(ray_by * 256) + (ray_bz * 16) + ray_bx];
+        if (ray_b != (uint)0)
+        {
+            ray_hit_x = ray_rx + view_x * ray_t;
+            ray_hit_y = ray_ry + view_y * ray_t;
+            ray_hit_z = ray_rz + view_z * ray_t;
+            return 1;
+        }
+
+        ray_i = ray_i + 1;
+    }
+
+    return 0;
+}
+

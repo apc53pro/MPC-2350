@@ -1,0 +1,118 @@
+/* Exact binary representation helpers for Java double values.
+ *
+ * This milestone implements only operations whose complete result can be
+ * proven with integer construction. General add/subtract/multiply/divide are
+ * deliberately absent until their IEEE-754 rounding is implemented exactly.
+ */
+
+struct MCJDouble {
+    uint lo;
+    uint hi;
+};
+
+struct MCU64 mc_double_integer;
+struct MCU64 mc_double_normalized;
+
+void mc_java_double_from_fraction53(struct MCJDouble *result,
+                                    uint integer_low, uint integer_high)
+{
+    uint scan;
+    int top_bit;
+    int shift;
+    int exponent;
+
+    if (integer_low == 0 && integer_high == 0)
+    {
+        result->lo = 0;
+        result->hi = 0;
+        return;
+    }
+
+    if (integer_high != 0)
+    {
+        scan = integer_high;
+        top_bit = 32;
+    }
+    else
+    {
+        scan = integer_low;
+        top_bit = 0;
+    }
+    while ((scan >> 1) != 0)
+    {
+        scan = scan >> 1;
+        top_bit = top_bit + 1;
+    }
+
+    mc_double_integer.lo = integer_low;
+    mc_double_integer.hi = integer_high;
+    shift = 52 - top_bit;
+    mc_u64_shift_left(&mc_double_normalized, &mc_double_integer, shift);
+    exponent = top_bit + 970; /* top_bit - 53 + IEEE-754 bias 1023 */
+    result->lo = mc_double_normalized.lo;
+    result->hi = (mc_double_normalized.hi & 0x000fffff) |
+                 ((uint)exponent << 20);
+}
+
+void mc_java_double_multiply_pow2(struct MCJDouble *result,
+                                  struct MCJDouble *value, int power)
+{
+    uint exponent = (value->hi >> 20) & 0x7ff;
+    result->lo = value->lo;
+    if (exponent == 0 || exponent == 0x7ff)
+    {
+        /* Not needed by Random.nextDouble()*256; preserve zero/NaN/Inf. */
+        result->hi = value->hi;
+        return;
+    }
+    exponent = exponent + (uint)power;
+    result->hi = (value->hi & 0x800fffff) | (exponent << 20);
+}
+
+int mc_java_double_bits_equal(struct MCJDouble *value, uint hi, uint lo)
+{
+    return value->hi == hi && value->lo == lo;
+}
+
+/* MathHelper.floor_double, evaluated directly from the stored IEEE-754 bits. */
+int mc_java_double_floor_i32(struct MCJDouble *value)
+{
+    uint sign = value->hi >> 31;
+    uint biased = (value->hi >> 20) & 0x7ff;
+    uint mantissa_hi;
+    uint magnitude;
+    uint mask;
+    int exponent;
+    int shift;
+    int fractional;
+    if (biased == 0x7ff)
+    {
+        if ((value->hi & 0xfffff) != 0 || value->lo != 0) return 0;
+        return sign ? (int)0x80000000 : 0x7fffffff;
+    }
+    if (biased == 0)
+    {
+        if ((value->hi & 0xfffff) == 0 && value->lo == 0) return 0;
+        return sign ? -1 : 0;
+    }
+    exponent = (int)biased - 1023;
+    if (exponent < 0) return sign ? -1 : 0;
+    if (exponent > 30) return sign ? (int)0x80000000 : 0x7fffffff;
+    mantissa_hi = (value->hi & 0xfffff) | 0x100000;
+    shift = 52 - exponent;
+    if (shift >= 32)
+    {
+        magnitude = mantissa_hi >> (shift - 32);
+        mask = shift == 32 ? 0 : 0xffffffff >> (64 - shift);
+        fractional = value->lo != 0 || (mantissa_hi & mask) != 0;
+    }
+    else
+    {
+        magnitude = (mantissa_hi << (32 - shift)) | (value->lo >> shift);
+        mask = 0xffffffff >> (32 - shift);
+        fractional = (value->lo & mask) != 0;
+    }
+    if (!sign) return (int)magnitude;
+    return -(int)magnitude - (fractional ? 1 : 0);
+}
+

@@ -1,0 +1,248 @@
+void clearBlockRegistry()
+{
+    g_i = 0;
+    while (g_i < 16)
+    {
+        blockDefs[g_i].used = 0;
+        blockDefs[g_i].id = (uint)g_i;
+        blockDefs[g_i].render_class = TC_BLOCK_RENDER_NONE;
+        blockDefs[g_i].placeable = 0;
+        blockDefs[g_i].stops_sky_light = 1;
+        blockDefs[g_i].light_emission = 0;
+        blockDefs[g_i].ui_color = (uint)0;
+        blockDefs[g_i].default_break_ms = (uint)900;
+        blockDefs[g_i].preferred_tool = TC_TOOL_NONE;
+        blockDefs[g_i].preferred_break_ms = (uint)900;
+        blockDefs[g_i].drop_required_tool = TC_TOOL_NONE;
+        blockDefs[g_i].dropped_item_id = (uint)0;
+        blockDefs[g_i].dropped_count = 0;
+        blockDefs[g_i].tex_top = TC_TEX_DIRT;
+        blockDefs[g_i].tex_bottom = TC_TEX_DIRT;
+        blockDefs[g_i].tex_side = TC_TEX_DIRT;
+        blockDefs[g_i].icon_tex = TC_TEX_DIRT;
+        blockDefs[g_i].name_label = TC_NAME_NONE;
+        blockDefs[g_i].opens_crafting = 0;
+        blockDefs[g_i].linked_item_id = (uint)0;
+        blockDefs[g_i].behavior_flags = 0;
+        g_i = g_i + 1;
+    }
+
+    block_registry_ready = 0;
+    block_registry_loaded_count = 0;
+}
+
+void defineRuntimeBlockFull(int id, int render_class, int placeable, int stops_sky, int light_emission, uint ui_color, uint break_ms, int preferred_tool, uint preferred_ms, int drop_required_tool, uint dropped_item_id, int dropped_count, int top_tex, int bottom_tex, int side_tex, int icon_tex, int name_label, uint linked_item_id, int opens_crafting, int behavior_flags)
+{
+    if (id < 0) return;
+    if (id >= 16) return;
+    if (blockDefs[id].used == 0) block_registry_loaded_count = block_registry_loaded_count + 1;
+    blockDefs[id].used = 1;
+    blockDefs[id].id = (uint)id;
+    blockDefs[id].render_class = render_class;
+    blockDefs[id].placeable = placeable;
+    blockDefs[id].stops_sky_light = stops_sky;
+    blockDefs[id].light_emission = light_emission;
+    blockDefs[id].ui_color = ui_color;
+    blockDefs[id].default_break_ms = break_ms;
+    blockDefs[id].preferred_tool = preferred_tool;
+    blockDefs[id].preferred_break_ms = preferred_ms;
+    blockDefs[id].drop_required_tool = drop_required_tool;
+    blockDefs[id].dropped_item_id = dropped_item_id;
+    blockDefs[id].dropped_count = dropped_count;
+    blockDefs[id].tex_top = top_tex;
+    blockDefs[id].tex_bottom = bottom_tex;
+    blockDefs[id].tex_side = side_tex;
+    blockDefs[id].icon_tex = icon_tex;
+    blockDefs[id].name_label = name_label;
+    blockDefs[id].linked_item_id = linked_item_id;
+    blockDefs[id].opens_crafting = opens_crafting;
+    blockDefs[id].behavior_flags = behavior_flags;
+}
+
+void defineRuntimeBlock(int id, uint ui_color, uint break_ms, int preferred_tool, uint preferred_ms, int drop_required_tool, int stops_sky, int top_tex, int bottom_tex, int side_tex, int icon_tex, int name_label)
+{
+    g_x = TC_BLOCK_FLAG_SOLID + TC_BLOCK_FLAG_PLACEABLE;
+    if (stops_sky != 0) g_x = g_x + TC_BLOCK_FLAG_STOPS_SKY;
+    defineRuntimeBlockFull(
+        id,
+        TC_BLOCK_RENDER_FAST_CUBE,
+        1,
+        stops_sky,
+        0,
+        ui_color,
+        break_ms,
+        preferred_tool,
+        preferred_ms,
+        drop_required_tool,
+        (uint)id,
+        1,
+        top_tex,
+        bottom_tex,
+        side_tex,
+        icon_tex,
+        name_label,
+        (uint)id,
+        0,
+        g_x
+    );
+}
+
+void registerAirBlock()
+{
+    defineRuntimeBlockFull(
+        0,
+        TC_BLOCK_RENDER_NONE,
+        0,
+        0,
+        0,
+        (uint)0,
+        (uint)0,
+        TC_TOOL_NONE,
+        (uint)0,
+        TC_TOOL_NONE,
+        (uint)0,
+        0,
+        TC_TEX_MISSING,
+        TC_TEX_MISSING,
+        TC_TEX_MISSING,
+        TC_TEX_MISSING,
+        TC_NAME_NONE,
+        (uint)0,
+        0,
+        0
+    );
+}
+
+void initBlockRegistry()
+{
+    clearBlockRegistry();
+    registerAirBlock();
+
+    block_registry_ready = 1;
+}
+
+void initFallbackBlockRegistry()
+{
+    clearBlockRegistry();
+    registerAirBlock();
+
+    defineRuntimeBlock(1, (uint)28,  (uint)750,  TC_TOOL_SHOVEL,  (uint)400,  TC_TOOL_NONE,    1, TC_TEX_GRASS_TOP,           TC_TEX_DIRT,                TC_TEX_GRASS_SIDE,          TC_TEX_GRASS_SIDE,          TC_NAME_GRASS);
+    defineRuntimeBlock(2, (uint)137, (uint)750,  TC_TOOL_SHOVEL,  (uint)400,  TC_TOOL_NONE,    1, TC_TEX_DIRT,                TC_TEX_DIRT,                TC_TEX_DIRT,                TC_TEX_DIRT,                TC_NAME_DIRT);
+    defineRuntimeBlock(3, (uint)146, (uint)7500, TC_TOOL_PICKAXE, (uint)1500, TC_TOOL_PICKAXE, 1, TC_TEX_STONE,               TC_TEX_STONE,               TC_TEX_STONE,               TC_TEX_STONE,               TC_NAME_STONE);
+    defineRuntimeBlock(4, (uint)169, (uint)3000, TC_TOOL_AXE,     (uint)750,  TC_TOOL_NONE,    1, TC_TEX_LOG_TOP,             TC_TEX_LOG_TOP,             TC_TEX_LOG_SIDE,            TC_TEX_LOG_SIDE,            TC_NAME_OAK_WOOD);
+    defineRuntimeBlock(5, (uint)60,  (uint)320,  TC_TOOL_NONE,    (uint)320,  TC_TOOL_NONE,    0, TC_TEX_LEAVES,              TC_TEX_LEAVES,              TC_TEX_LEAVES,              TC_TEX_LEAVES,              TC_NAME_LEAVES);
+    defineRuntimeBlock(6, (uint)170, (uint)3000, TC_TOOL_AXE,     (uint)750,  TC_TOOL_NONE,    1, TC_TEX_OAK_PLANKS,          TC_TEX_OAK_PLANKS,          TC_TEX_OAK_PLANKS,          TC_TEX_OAK_PLANKS,          TC_NAME_OAK_PLANKS);
+    defineRuntimeBlock(7, (uint)173, (uint)3000, TC_TOOL_AXE,     (uint)750,  TC_TOOL_NONE,    1, TC_TEX_CRAFTING_TABLE_TOP,  TC_TEX_CRAFTING_TABLE_SIDE, TC_TEX_CRAFTING_TABLE_SIDE, TC_TEX_CRAFTING_TABLE_SIDE, TC_NAME_CRAFTING_TABLE);
+    defineRuntimeBlock(8, (uint)146, (uint)7500, TC_TOOL_PICKAXE, (uint)1500, TC_TOOL_PICKAXE, 1, TC_TEX_COBBLESTONE,          TC_TEX_COBBLESTONE,         TC_TEX_COBBLESTONE,         TC_TEX_COBBLESTONE,         TC_NAME_COBBLESTONE);
+
+    /* Keep v37 behavior: grass mining yields dirt, and crafting tables open the 3x3 grid. */
+    blockDefs[1].dropped_item_id = BLOCK_DIRT;
+    blockDefs[3].dropped_item_id = BLOCK_COBBLESTONE;
+    blockDefs[7].opens_crafting = 1;
+    blockDefs[7].behavior_flags = blockDefs[7].behavior_flags + TC_BLOCK_FLAG_OPENS_CRAFTING;
+
+    block_registry_ready = 1;
+}
+
+int blockRegistryKnown(uint block_id)
+{
+    if (block_id < (uint)16)
+    {
+        if (blockDefs[(int)block_id].used != 0) return 1;
+    }
+    return 0;
+}
+
+int blockRegistryRenderClass(uint block_id)
+{
+    if (block_id == (uint)0) return TC_BLOCK_RENDER_NONE;
+    if (blockRegistryKnown(block_id) != 0) return blockDefs[(int)block_id].render_class;
+    return TC_BLOCK_RENDER_FAST_CUBE;
+}
+
+int blockRegistryIsSolid(uint block_id)
+{
+    if (block_id == (uint)0) return 0;
+    if (blockRegistryKnown(block_id) != 0)
+    {
+        if ((blockDefs[(int)block_id].behavior_flags & TC_BLOCK_FLAG_SOLID) != 0) return 1;
+        return 0;
+    }
+    return 1;
+}
+
+int blockRegistryOccludesCube(uint block_id)
+{
+    if (block_id == (uint)0) return 0;
+    if (blockRegistryRenderClass(block_id) == TC_BLOCK_RENDER_CUSTOM_MODEL)
+    {
+        return blockRegistryIsSolid(block_id);
+    }
+    return blockRegistryIsSolid(block_id);
+}
+
+int blockRegistryIsPlaceable(uint block_id)
+{
+    if (blockRegistryKnown(block_id) != 0) return blockDefs[(int)block_id].placeable;
+    return 0;
+}
+
+int blockRegistryStopsSky(uint block_id)
+{
+    if (blockRegistryKnown(block_id) != 0) return blockDefs[(int)block_id].stops_sky_light;
+    return 1;
+}
+
+int blockRegistryLightEmission(uint block_id)
+{
+    if (blockRegistryKnown(block_id) != 0) return blockDefs[(int)block_id].light_emission;
+    return 0;
+}
+
+uint blockRegistryDroppedItem(uint block_id)
+{
+    if (blockRegistryKnown(block_id) != 0) return blockDefs[(int)block_id].dropped_item_id;
+    return (uint)0;
+}
+
+int blockRegistryDroppedCount(uint block_id)
+{
+    if (blockRegistryKnown(block_id) != 0) return blockDefs[(int)block_id].dropped_count;
+    return 0;
+}
+
+int blockRegistryOpensCrafting(uint block_id)
+{
+    if (blockRegistryKnown(block_id) != 0) return blockDefs[(int)block_id].opens_crafting;
+    return 0;
+}
+
+uint blockRegistryLinkedItem(uint block_id)
+{
+    if (blockRegistryKnown(block_id) != 0) return blockDefs[(int)block_id].linked_item_id;
+    return (uint)0;
+}
+
+uint blockRegistryDefaultBreakMs(uint block_id)
+{
+    if (blockRegistryKnown(block_id) != 0) return blockDefs[(int)block_id].default_break_ms;
+    return (uint)900;
+}
+
+int blockRegistryPreferredTool(uint block_id)
+{
+    if (blockRegistryKnown(block_id) != 0) return blockDefs[(int)block_id].preferred_tool;
+    return TC_TOOL_NONE;
+}
+
+uint blockRegistryPreferredBreakMs(uint block_id)
+{
+    if (blockRegistryKnown(block_id) != 0) return blockDefs[(int)block_id].preferred_break_ms;
+    return (uint)900;
+}
+
+int blockRegistryDropRequiredTool(uint block_id)
+{
+    if (blockRegistryKnown(block_id) != 0) return blockDefs[(int)block_id].drop_required_tool;
+    return TC_TOOL_NONE;
+}

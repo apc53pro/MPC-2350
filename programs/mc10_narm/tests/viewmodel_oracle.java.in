@@ -1,0 +1,79 @@
+import java.io.*;
+import java.util.*;
+/* Test-only GL call recorder. The two source methods are inserted at runtime
+ * from the owned installation, never packaged or checked in as Mojang inputs. */
+strictfp class GL11 {
+ static final int GL_TEXTURE_2D=0;static float[] m=new float[16],result;
+ static ArrayDeque<float[]> stack=new ArrayDeque<float[]>();
+ static void identity(){Arrays.fill(m,0);for(int i=0;i<16;i+=5)m[i]=1;stack.clear();}
+ static void glPushMatrix(){stack.push(m.clone());}static void glPopMatrix(){m=stack.pop();}
+ static void glTranslatef(float x,float y,float z){for(int r=0;r<12;r+=4)m[r+3]=m[r+3]+m[r]*x+m[r+1]*y+m[r+2]*z;}
+ static void glScalef(float x,float y,float z){for(int r=0;r<12;r+=4){m[r]*=x;m[r+1]*=y;m[r+2]*=z;}}
+ static void glRotatef(float a,float x,float y,float z){int axis=x!=0?0:y!=0?1:2;float rad=a*((float)Math.PI/180f),s=(float)Math.sin(rad),c=(float)Math.cos(rad);int p=axis==0?1:0,q=axis==2?1:2;if(axis==1)s=-s;for(int r=0;r<12;r+=4){float u=m[r+p],v=m[r+q];m[r+p]=u*c+v*s;m[r+q]=v*c-u*s;}}
+ static void glEnable(int x){}static void glDisable(int x){}static void glBindTexture(int x,int y){}
+ static void glColor4f(float a,float b,float c,float d){}static void glNormal3f(float a,float b,float c){}
+}
+class GL12{static final int GL_RESCALE_NORMAL=0;}
+class MathHelper{
+ static float[] table=new float[65536];static float sin(float x){return table[(int)(x*10430.378f)&65535];}
+ static float cos(float x){return table[(int)(x*10430.378f+16384f)&65535];}
+ static float sqrt_float(float x){return (float)Math.sqrt(x);}static float abs(float x){return x<0?-x:x;}
+ static int floor_double(double x){return (int)Math.floor(x);}
+}
+enum EnumAction{none,eat,drink,block,bow;}
+class EntityLiving{}
+class EntityPlayer extends EntityLiving{
+ float distanceWalkedModified,prevDistanceWalkedModified,prevCameraYaw,cameraYaw,prevCameraPitch,cameraPitch;
+}
+class EntityPlayerSP extends EntityPlayer{
+ float prevRotationPitch,rotationPitch,prevRotationYaw,rotationYaw;
+ float prevRenderArmPitch,renderArmPitch,prevRenderArmYaw,renderArmYaw;
+ float swingProgress,prevSwingProgress;double posX,posY,posZ;String skinUrl="";
+ int func_35205_Y(){return 0;}String getEntityTexture(){return "mob/char.png";}
+ float getSwingProgress(float p){float d=swingProgress-prevSwingProgress;if(d<0)++d;return prevSwingProgress+d*p;}
+}
+class Item{
+ static Item[] itemsList=new Item[2300];static Item map=new Item(358),potion=new Item(373);
+ int shiftedIndex;Item(int x){shiftedIndex=x;itemsList[x]=this;}int getColorFromDamage(int d){return 0xffffff;}
+ boolean shouldRotateAroundWhenRendering(){return shiftedIndex==346;}
+ static MapData getMapData(ItemStack s,World w){return new MapData();}
+}
+class ItemStack{
+ int itemID,damage;ItemStack(int id){itemID=id;if(Item.itemsList[id]==null)new Item(id);}
+ int getItemDamage(){return damage;}int getMaxItemUseDuration(){return 72000;}
+ EnumAction getItemUseAction(){return EnumAction.none;}Item getItem(){return Item.itemsList[itemID];}
+}
+class World{float getLightBrightness(int x,int y,int z){return 1;}int getLightBrightnessForSkyBlocks(int x,int y,int z,int n){return 0;}}
+class RenderEngine{int getTexture(String s){return 0;}int getTextureForDownloadableImage(String a,String b){return 0;}void bindTexture(int a){}}
+class RenderHelper{static void enableStandardItemLighting(){}static void disableStandardItemLighting(){}}
+class OpenGlHelper{static int lightmapEnabled;static void setLightmapTextureCoords(int a,float b,float c){}}
+class Minecraft{EntityPlayerSP thePlayer=new EntityPlayerSP();EntityLiving renderViewEntity=thePlayer;World theWorld=new World();RenderEngine renderEngine=new RenderEngine();}
+class MapData{}class MapItemRenderer{void renderMap(EntityPlayerSP p,RenderEngine r,MapData m){}}
+class Tessellator{static Tessellator instance=new Tessellator();void startDrawingQuads(){}void addVertexWithUV(double x,double y,double z,double u,double v){}void draw(){}}
+class Render{}
+class RenderPlayer extends Render{void drawFirstPersonHand(){GL11.glTranslatef(-5f/16f,2f/16f,0);GL11.glRotatef(.1f*(180f/(float)Math.PI),0,0,1);GL11.glScalef(1f/16f,1f/16f,1f/16f);GL11.result=GL11.m.clone();}}
+class RenderManager{static RenderManager instance=new RenderManager();Render getEntityRenderObject(EntityPlayerSP p){return new RenderPlayer();}}
+strictfp class ViewmodelOracle {
+ Minecraft mc=new Minecraft();ItemStack itemToRender;MapItemRenderer mapItemRenderer=new MapItemRenderer();
+ float prevEquippedProgress,equippedProgress;
+ void renderItem(EntityLiving p,ItemStack s,int pass){GL11.result=GL11.m.clone();}
+ __SOURCE_ITEM_METHOD__
+ __SOURCE_BOB_METHOD__
+ public static void main(String[] args)throws Exception{
+  DataInputStream data=new DataInputStream(new FileInputStream(args[0]));data.skipBytes(16);
+  for(int i=0;i<65536;++i)MathHelper.table[i]=Float.intBitsToFloat(Integer.reverseBytes(data.readInt()));data.close();
+  BufferedReader in=new BufferedReader(new InputStreamReader(System.in));String line;
+  while((line=in.readLine())!=null){String[] fields=line.split(" ");
+   if(fields[0].equals("atan")){double x=Double.longBitsToDouble(Long.parseUnsignedLong(fields[1],16));System.out.printf("%016x %08x%n",Double.doubleToRawLongBits(StrictMath.atan(x)),Float.floatToRawIntBits((float)Math.atan(x)*15f));continue;}
+   float[] v=new float[fields.length];for(int i=1;i<fields.length;++i)v[i]=Float.intBitsToFloat(Integer.parseUnsignedInt(fields[i],16));
+   ViewmodelOracle o=new ViewmodelOracle();EntityPlayerSP p=o.mc.thePlayer;
+   p.rotationYaw=v[1];p.rotationPitch=v[2];p.prevRotationYaw=v[1];p.prevRotationPitch=v[2];
+   p.renderArmYaw=v[3];p.renderArmPitch=v[4];p.prevRenderArmYaw=v[5];p.prevRenderArmPitch=v[6];
+   p.swingProgress=v[7];p.prevSwingProgress=v[8];o.equippedProgress=v[9];o.prevEquippedProgress=v[10];
+   p.distanceWalkedModified=v[13];p.prevDistanceWalkedModified=v[14];p.cameraYaw=v[15];p.prevCameraYaw=v[16];p.cameraPitch=v[17];p.prevCameraPitch=v[18];
+   int id=(int)v[12];o.itemToRender=id==0?null:new ItemStack(id);
+   GL11.identity();if(v[19]!=0)o.setupViewBobbing(v[11]);o.renderItemInFirstPerson(v[11]);
+   for(int i=0;i<16;++i)System.out.printf("%08x%s",Float.floatToRawIntBits(GL11.result[i]),i==15?"\n":" ");
+  }
+ }
+}

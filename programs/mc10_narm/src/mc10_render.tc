@@ -1,0 +1,1912 @@
+/*
+ * First source-derived Minecraft 1.0 terrain frame.
+ *
+ * RenderBlocks geometry/UV order is translated to NARM's projected textured
+ * quads. terrain.png has already been decoded to RGB332 by the host packer;
+ * this module only reads that converted payload. Unsupported presentation
+ * layers remain explicit rather than being replaced with invented behavior.
+ */
+
+void mc_wait_for_return(void);
+void mc_game_run(struct MCWorldInfo *world);
+#ifdef MC10_PLAYER_FOUNDATION
+float mc_game_partial_tick(void);
+void mc_hud_draw(void);
+void mc_viewmodel_capture_frame(float partial);
+void mc_viewmodel_draw(float partial);
+#endif
+#ifdef MC10_WORLD_SYSTEMS
+void mc_third_adjust_camera(void);
+void mc_third_capture_frame(float partial);
+void mc_third_draw(void);
+int mc_third_current_frame_mode(void);
+float mc_third_current_frame_partial(void);
+void mc_sky_draw(float partial);
+int mc_tp_world_tesr(int id,int metadata,int x,int y,int z,float partial);
+int mc_render_block_in_view(int x,int y,int z);
+#define MC_RENDER_TESR_CAPACITY 4096
+uint mc_render_tesr_keys[MC_RENDER_TESR_CAPACITY];
+int mc_render_tesr_count,mc_render_tesr_overflow,mc_render_pending_dynamic;
+int mc_render_is_tesr(uint id){return id==54||id==63||id==68;}
+void mc_render_tesr_add(int c,int index,uint id,uint metadata)
+{
+    if(mc_render_tesr_count>=MC_RENDER_TESR_CAPACITY){mc_render_tesr_overflow=1;return;}
+    mc_render_tesr_keys[mc_render_tesr_count]=(uint)index|((uint)c<<15)|(id<<19)|(metadata<<27);
+    mc_render_tesr_count=mc_render_tesr_count+1;
+    if((mc_render_tesr_count&63)==0)narm_yield();
+}
+void mc_render_tesr_key(uint key,float partial)
+{
+    int index=(int)(key&32767),c=(int)((key>>15)&15),x,z;uint id=(key>>19)&255,metadata=(key>>27)&15;
+    x=mc_runtime_chunks[c].chunk.x_position*16+(index>>11);
+    z=mc_runtime_chunks[c].chunk.z_position*16+((index>>7)&15);
+    if(mc_render_block_in_view(x,index&127,z))mc_tp_world_tesr((int)id,(int)metadata,x,index&127,z,partial);
+}
+void mc_render_draw_tesr(float partial)
+{
+    int i,c;uint id,metadata;
+    if(!mc_render_tesr_overflow)
+    {for(i=0;i<mc_render_tesr_count;i=i+1)mc_render_tesr_key(mc_render_tesr_keys[i],partial);return;}
+    /* Bounded-list overflow never omits models. The exact resident scan is
+     * deliberately slower, and remains synchronous before hand/HUD drawing. */
+    for(c=0;c<MC_RUNTIME_CHUNKS;c=c+1)if(mc_runtime_chunks[c].state==1)
+        for(i=0;i<MC_CHUNK_BLOCK_COUNT;i=i+1)
+        {
+            id=mc_chunk_get_block_id(&mc_runtime_chunks[c].chunk,i>>11,i&127,(i>>7)&15);
+            if(mc_render_is_tesr(id))
+            {
+                metadata=mc_chunk_get_block_metadata(&mc_runtime_chunks[c].chunk,i>>11,i&127,(i>>7)&15);
+                mc_render_tesr_key((uint)i|((uint)c<<15)|(id<<19)|(metadata<<27),partial);
+            }
+            if((i&1023)==1023)narm_yield();
+        }
+}
+#endif
+
+float mc_render_camera[18];
+int mc_render_origin_x;
+int mc_render_origin_z;
+int mc_render_faces;
+int mc_render_blocks_drawn;
+int mc_render_unsupported;
+int mc_render_missing_registry;
+int mc_render_terrain_ready;
+int mc_render_texture_override;
+int mc_render_force_mask;
+uint mc_render_grass_color;
+int mc_render_atlas_variant;
+int mc_render_sky_subtracted;
+uint mc_render_light_atlas[16 * 16384];
+int mc_render_frame_chunk;
+int mc_render_frame_cell;
+uint mc_render_frame_started;
+uint mc_render_frame_ms;
+float mc_render_view_x;
+float mc_render_view_y;
+float mc_render_view_z;
+
+/* Compact read-only surface display list, still below the former 4 MiB cap.
+ * Each entry stores resident/cell/id/metadata and six visibility/light values.
+ * Shapes/vertices/UVs still use the exact confirmed renderer; no quantization.
+ * Rebuilt per world entry; overflow uses the original scan without omissions. */
+#define MC_RENDER_CACHE_GROUPS 32768
+uint mc_render_cached_keys[MC_RENDER_CACHE_GROUPS];
+uint mc_render_cached_style[MC_RENDER_CACHE_GROUPS];
+int mc_render_cache_ready;
+int mc_render_cache_error;
+int mc_render_cache_group_count;
+int mc_render_cache_limit=MC_RENDER_CACHE_GROUPS;
+int mc_render_cache_cursor;
+int mc_render_cached_block;
+int mc_render_cached_standard;
+uint mc_render_current_style;
+int mc_render_light_key;
+uint mc_render_light_lookup[128];
+#ifdef MC10_WORLD_SYSTEMS
+uint mc_render_raw_light_pair;
+unsigned char mc_render_daylight_lookup[2048];
+int mc_render_daylight_previous=-1;
+#endif
+float mc_render_lookup_gamma=-1.0f;
+int mc_render_frame_batches;
+uint mc_render_cache_build_ms;
+int mc_render_show_hud=1;
+/* Profiler builds also run the interactive loop after measurement. */
+int mc_render_benchmark_running;
+uint mc_render_fps_started,mc_render_fps_frames,mc_render_fps_tenths;
+void mc_render_fps_reset(void)
+{mc_render_fps_started=narm_millis();mc_render_fps_frames=0;mc_render_fps_tenths=0;}
+void mc_render_fps_frame(void)
+{
+    uint now=narm_millis(),elapsed=(uint)(now-mc_render_fps_started);
+    mc_render_fps_frames=mc_render_fps_frames+1;
+    if(elapsed>=1000)
+    {mc_render_fps_tenths=mc_render_fps_frames*10000/elapsed;mc_render_fps_frames=0;mc_render_fps_started=now;}
+}
+void mc_render_draw_fps(void)
+{
+    mc_world_line[0]=0;mc_world_append(mc_world_line,160,"FPS: ");
+    mc_world_append_uint(mc_world_line,160,mc_render_fps_tenths/10);
+    mc_world_append(mc_world_line,160,".");mc_world_append_uint(mc_world_line,160,mc_render_fps_tenths%10);
+    mc_menu_draw_string(mc_world_line,4,4,0xffffff);
+}
+
+/* Eight-block spatial sections, indexed without reordering the display list.
+ * Run ends allow a rejected contiguous range to be skipped in one operation. */
+uint mc_render_run_end[MC_RENDER_CACHE_GROUPS];
+char mc_render_section_state[576];
+int mc_render_sections_enabled=1;
+int mc_render_groups_visited,mc_render_groups_skipped;
+int mc_render_last_visited,mc_render_last_skipped;
+#define MC_RENDER_GEOMETRY_QUADS 12288
+struct MCCachedQuad {float vertex[20];uint style;};
+#ifdef MC10_WORLD_SYSTEMS
+#include "mc10_workspace.tc"
+#define mc_render_geometry ((struct MCCachedQuad *)&mc_world_workspace[0])
+#else
+struct MCCachedQuad mc_render_geometry[MC_RENDER_GEOMETRY_QUADS];
+#endif
+uint mc_render_geometry_range[MC_RENDER_CACHE_GROUPS];
+int mc_render_geometry_enabled=1;
+int mc_render_geometry_limit=MC_RENDER_GEOMETRY_QUADS;
+int mc_render_geometry_count,mc_render_geometry_blocks;
+int mc_render_capture,mc_render_capture_overflow,mc_render_capture_fancy;
+/* The original submission path remains available for same-build comparisons.
+ * Only a complete cached group with at least one quad owns a center, at its
+ * first quad index. Empty groups and all incomplete groups use the old path. */
+int mc_render_submit_optimized=1;
+float mc_render_geometry_center[MC_RENDER_GEOMETRY_QUADS*3];
+int mc_render_geometry_origin_x,mc_render_geometry_origin_z;
+/* EntityRenderer.renderWorld enables GL_CULL_FACE for terrain pass 0, while
+ * pass 1 water disables it. Restrict this early proof to RenderBlocks ordinary
+ * opaque full cubes; special shapes and ambiguous legacy views stay unchanged.
+ * General native depth-occlusion is bit 1; early ordinary-cube backfaces bit 0.
+ * Geometry capture stays viewpoint-independent. Diagnostic face counts are
+ * enabled only for discarded warm-ups, never ordinary F3-disabled gameplay. */
+/* Normal play always enables eligible backface rejection; optional native
+ * occlusion is applied from Video Settings at game entry/resume. Benchmarks
+ * can still override both bits internally for explicit comparisons. */
+int mc_render_cull_mode=1;
+int mc_render_cull_diagnostics;
+int mc_render_cull_eligible,mc_render_cull_backfaces;
+int mc_render_capture_cull;
+int mc_render_cull_frame_allowed;
+uint mc_render_cull_face_mask=63;
+
+void mc_render_prepare_cull_view(void)
+{
+    int x,y,z;uint id;
+    mc_render_cull_frame_allowed=0;
+    if(!(mc_render_cull_mode&1))return;
+    x=(int)mc_render_view_x;if((float)x>mc_render_view_x)x=x-1;
+    y=(int)mc_render_view_y;if((float)y>mc_render_view_y)y=y-1;
+    z=(int)mc_render_view_z;if((float)z>mc_render_view_z)z=z-1;
+    /* The old two-sided renderer can show distant backfaces when the eye is
+     * inside connected solid terrain whose adjacent faces were never emitted.
+     * An unknown eye cell is equally ambiguous: preserve that entire frame. */
+    if(!mc_runtime_try_get_block(x+mc_render_origin_x,y,z+mc_render_origin_z,&id))return;
+    if(id&&(id>=256||!mc_blocks[id].present||mc_blocks[id].opaque_cube))return;
+    mc_render_cull_frame_allowed=1;
+}
+
+uint mc_render_opaque_front_mask(float x,float y,float z)
+{
+    float depth,radius,dx=mc_render_view_x-x,dy=mc_render_view_y-y,dz=mc_render_view_z-z;
+    uint mask=0;
+    if(!mc_render_cull_frame_allowed)return 63;
+    /* Coplanar ties and the near-plane/camera-inside cases remain on the old
+     * path. The margin exceeds binary32 rounding at resident-world scales. */
+    if(dx>=-.501f&&dx<=.501f&&dy>=-.501f&&dy<=.501f&&dz>=-.501f&&dz<=.501f)return 63;
+    depth=x*mc_render_camera[8]+y*mc_render_camera[9]+z*mc_render_camera[10]+mc_render_camera[11];
+    radius=.5f*((mc_render_camera[8]<0?-mc_render_camera[8]:mc_render_camera[8])+
+                  (mc_render_camera[9]<0?-mc_render_camera[9]:mc_render_camera[9])+
+                  (mc_render_camera[10]<0?-mc_render_camera[10]:mc_render_camera[10]));
+    if(depth-radius<=mc_render_camera[16]+.001f)return 63;
+    if(dy<=-.499f)mask=mask|1;if(dy>=.499f)mask=mask|2;
+    if(dz<=-.499f)mask=mask|4;if(dz>=.499f)mask=mask|8;
+    if(dx<=-.499f)mask=mask|16;if(dx>=.499f)mask=mask|32;
+    return mask;
+}
+
+int mc_render_block_in_view(int x,int y,int z);
+void mc_render_build_geometry(void);
+void mc_render_replay_geometry(uint range);
+#ifdef MC10_TILE_PROFILE
+void mc_render_replay_geometry_fast(uint range);
+#endif
+
+#ifdef MC10_TILE_PROFILE
+/* Bounded synchronous submission preserves quad order and original floats.
+ * Cached vertices remain in the world display list; dynamic shapes own a
+ * batch-local copy until drawTexturedList returns. */
+#define MC_RENDER_LIST_CAPACITY 256
+uint mc_render_list_commands[MC_RENDER_LIST_CAPACITY*7];
+float mc_render_list_vertices[MC_RENDER_LIST_CAPACITY*20];
+int mc_render_list_count;
+int mc_render_list_enabled=1;
+int mc_render_list_error;
+/* These four descriptor fields never vary in this renderer. Dynamic draws
+ * still write them explicitly; cached replay initializes all slots once. */
+int mc_render_list_template_ready;
+void mc_render_list_prepare_template(void)
+{
+    int i;uint *command=&mc_render_list_commands[0];
+    for(i=0;i<MC_RENDER_LIST_CAPACITY;i=i+1)
+    {
+        command[3]=256;command[4]=256;command[5]=0;command[6]=4;
+        command=command+7;
+    }
+    mc_render_list_template_ready=1;
+}
+void mc_render_list_flush(void)
+{
+    uint started;int result;
+    if(!mc_render_list_count)return;
+    started=0;if(mc_profile_active)started=narm_micros();
+    result=drawTexturedList(&mc_render_list_commands[0],(uint)mc_render_list_count,
+                            &mc_render_camera[0],(mc_render_cull_mode&2)?258:2);
+    if(mc_profile_active)mc_profile_draw_us=mc_profile_draw_us+(uint)(narm_micros()-started);
+    mc_render_list_count=0;
+    if(result<0)mc_render_list_error=result;
+}
+void mc_render_list_queue(float *vertices,int masked)
+{
+    int base;
+#ifdef MC10_WORLD_SYSTEMS
+    int dynamic_slot=-1;
+    if(mc_render_source_dynamic)
+    {
+        dynamic_slot=mc_tint_tile(mc_render_source_dynamic_key,mc_render_atlas_variant);
+        if(dynamic_slot<0){mc_render_list_error=-98;return;}
+    }
+#endif
+    if(mc_render_list_error)return;
+    if(mc_render_list_count==MC_RENDER_LIST_CAPACITY)mc_render_list_flush();
+    if(mc_render_list_error)return;
+    base=mc_render_list_count*7;
+    mc_render_list_commands[base]=(uint)vertices;
+    mc_render_list_commands[base+1]=(uint)&mc_render_light_atlas[mc_render_atlas_variant*16384];
+    mc_render_list_commands[base+2]=masked&&mc_asset_loaded_mask_bytes?(uint)&mc_asset_mask[0]:0;
+    mc_render_list_commands[base+3]=256;mc_render_list_commands[base+4]=256;
+#ifdef MC10_WORLD_SYSTEMS
+    if(mc_render_source_tint_slot)
+    {
+        mc_render_list_commands[base+1]=(uint)mc_block_mesh_tint_pixels(mc_render_source_tint_slot,mc_render_atlas_variant);
+        mc_render_list_commands[base+2]=masked?(uint)mc_block_mesh_tint_mask(mc_render_source_tint_slot):0;
+        mc_render_list_commands[base+3]=16;mc_render_list_commands[base+4]=16;
+    }
+    if(dynamic_slot>=0)
+    {
+        mc_render_list_commands[base+1]=(uint)&mc_tint_lru_pixels[dynamic_slot*64];
+        mc_render_list_commands[base+2]=masked?(uint)&mc_tint_lru_masks[dynamic_slot*8]:0;
+        mc_render_list_commands[base+3]=16;mc_render_list_commands[base+4]=16;
+    }
+#endif
+    mc_render_list_commands[base+5]=0;mc_render_list_commands[base+6]=4;
+    mc_render_list_count=mc_render_list_count+1;
+    mc_render_faces=mc_render_faces+1;
+}
+#endif
+
+int mc_render_section_id(uint key)
+{
+    int index=(int)(key&32767);
+    return (int)((key>>15)&15)*64+((index>>14)&1)*32+
+           ((index>>10)&1)*16+((index>>3)&15);
+}
+void mc_render_build_runs(void)
+{
+    int i,first=0,previous=-1,section;
+    for(i=0;i<mc_render_cache_group_count;i=i+1)
+    {
+        section=mc_render_section_id(mc_render_cached_keys[i]);
+        mc_render_run_end[i]=0;
+        if(section!=previous)
+        {if(i)mc_render_run_end[first]=(uint)i;first=i;previous=section;}
+    }
+    if(mc_render_cache_group_count)mc_render_run_end[first]=(uint)mc_render_cache_group_count;
+}
+float mc_render_abs(float value){return value<0?0-value:value;}
+int mc_render_section_visible(uint key)
+{
+    int section=mc_render_section_id(key),c=(int)((key>>15)&15),index=(int)(key&32767),axis,sign;
+    float x,y,z,depth,radius,a,b,d,minimum,margin,projection,half_screen;
+    if(mc_render_section_state[section])return mc_render_section_state[section]==1;
+    x=(float)(mc_runtime_chunks[c].chunk.x_position*16-mc_render_origin_x+((index>>11)&8)+4);
+    y=(float)((index&120)+4);
+    z=(float)(mc_runtime_chunks[c].chunk.z_position*16-mc_render_origin_z+((index>>7)&8)+4);
+    depth=x*mc_render_camera[8]+y*mc_render_camera[9]+z*mc_render_camera[10]+mc_render_camera[11];
+    radius=4.0f*(mc_render_abs(mc_render_camera[8])+mc_render_abs(mc_render_camera[9])+mc_render_abs(mc_render_camera[10]));
+    if(depth+radius+1.6f<mc_render_camera[16]-0.1f||depth-radius-1.6f>mc_render_camera[17]+0.1f)
+    {mc_render_section_state[section]=2;return 0;}
+    /* Bound the OLD per-block rejection expressions, including their 1.6
+     * margin. The extra 0.1 guards float rounding; false positives are safe. */
+    for(axis=0;axis<2;axis=axis+1)for(sign=-1;sign<=1;sign=sign+2)
+    {
+        projection=mc_render_camera[12+axis];half_screen=axis?120.0f:160.0f;
+        a=(float)sign*projection*mc_render_camera[axis*4]-half_screen*mc_render_camera[8];
+        b=(float)sign*projection*mc_render_camera[axis*4+1]-half_screen*mc_render_camera[9];
+        d=(float)sign*projection*mc_render_camera[axis*4+2]-half_screen*mc_render_camera[10];
+        minimum=x*a+y*b+z*d+(float)sign*projection*mc_render_camera[axis*4+3]-half_screen*mc_render_camera[11]-
+                4.0f*(mc_render_abs(a)+mc_render_abs(b)+mc_render_abs(d));
+        margin=1.6f*(half_screen+projection)+0.1f;
+        if(minimum>margin){mc_render_section_state[section]=2;return 0;}
+    }
+    mc_render_section_state[section]=1;return 1;
+}
+
+void mc_render_refresh_light_lookup(void)
+{
+    int level,side;float target,inverse,boosted,factor,gamma=mc_options.gamma_setting;
+    for(level=0;level<16;level=level+1)for(side=0;side<6;side=side+1)
+    {
+        factor=side==0?0.5f:(side==1?1.0f:(side<=3?0.8f:0.6f));
+        target=mc_runtime_world.light_brightness[level];inverse=1.0f-target;
+        boosted=1.0f-inverse*inverse*inverse*inverse;
+        target=(target*(1.0f-gamma)+boosted*gamma)*factor;
+        if(target<0)target=0;if(target>1)target=1;
+        mc_render_light_lookup[(level<<3)|side]=(uint)(target*15.0f+0.5f);
+    }
+    mc_render_lookup_gamma=gamma;
+#ifdef MC10_WORLD_SYSTEMS
+    mc_render_daylight_previous=-1;
+#endif
+}
+
+#ifdef MC10_WORLD_SYSTEMS
+void mc_render_prepare_daylight(void)
+{
+    int sky,block,side,level;
+    mc_render_sky_subtracted=mc_world_skylight;
+    if(mc_render_daylight_previous==mc_render_sky_subtracted)return;
+    for(sky=0;sky<16;sky=sky+1)for(block=0;block<16;block=block+1)
+    {
+        level=sky-mc_render_sky_subtracted;if(level<0)level=0;if(block>level)level=block;
+        for(side=0;side<6;side=side+1)
+            mc_render_daylight_lookup[((sky*16+block)<<3)|side]=(unsigned char)mc_render_light_lookup[(level<<3)|side];
+    }
+    mc_render_daylight_previous=mc_render_sky_subtracted;
+}
+int mc_render_geometry_light_variant(uint style)
+{return (int)mc_render_daylight_lookup[(((style>>10)&255)<<3)|(style&7)];}
+#endif
+
+uint mc_render_world_time_mod(uint modulus)
+{
+    uint remainder=0; int bit;
+    for (bit=63;bit>=0;bit=bit-1)
+    {
+        remainder=(remainder<<1)|
+            (bit>=32?((mc_runtime_world.info->world_time_hi>>(bit-32))&1):
+                     ((mc_runtime_world.info->world_time_lo>>bit)&1));
+        if (remainder>=modulus) remainder=remainder-modulus;
+    }
+    return remainder;
+}
+
+float mc_render_celestial_angle(void)
+{
+#ifdef MC10_WORLD_SYSTEMS
+    return mc_world_celestial_angle(0.0f);
+#else
+    float value=(float)mc_render_world_time_mod(24000)/24000.0f-0.25f;
+    float original;
+    if (value<0) value=value+1; if (value>1) value=value-1;
+    original=value;
+    value=1.0f-(narm_cos(value*3.141592654f)+1.0f)/2.0f;
+    return original+(value-original)/3.0f;
+#endif
+}
+void mc_render_apply_grass_tint(void)
+{
+    int index; int r,g,b;
+    char *pixels=(char *)&mc_asset_pixels[0];
+    int grass_r=(int)(mc_render_grass_color>>5);
+    int grass_g=(int)((mc_render_grass_color>>2)&7);
+    int grass_b=(int)(mc_render_grass_color&3);
+    for (index=0;index<65536;index=index+1)
+    {
+        uint color=(uint)pixels[index]&255;
+        int px=index&255;
+        int py=index>>8;
+        int tint=(px<16 && py<16) ||
+                 (px>=96 && px<128 && py>=32 && py<48) ||
+                 (px>=128 && px<144 && py>=48 && py<64);
+        if (tint)
+        {
+            r=((int)(color>>5)*grass_r+3)/7;
+            g=((int)((color>>2)&7)*grass_g+3)/7;
+            b=((int)(color&3)*grass_b+1)/3;
+            pixels[index]=(char)((r<<5)|(g<<2)|b);
+        }
+    }
+}
+
+void mc_render_prepare_light_atlas(void)
+{
+    int level,index; uint color; int r,g,b;
+    char *source=(char *)&mc_asset_pixels[0];
+    char *destination=(char *)&mc_render_light_atlas[0];
+    float angle=mc_render_celestial_angle();
+    float darkness=1.0f-(narm_cos(angle*6.283185307f)*2.0f+0.5f);
+    if (darkness<0) darkness=0; if (darkness>1) darkness=1;
+    darkness=1.0f-darkness;
+    if (mc_runtime_world.info->raining) darkness=darkness*(1.0f-5.0f/16.0f);
+    if (mc_runtime_world.info->thundering) darkness=darkness*(1.0f-5.0f/16.0f);
+    mc_render_sky_subtracted=(int)((1.0f-darkness)*11.0f);
+    for (level=0;level<16;level=level+1)
+        for (index=0;index<65536;index=index+1)
+        {
+            color=(uint)source[index]&255;
+            r=((int)(color>>5)*level+7)/15;
+            g=((int)((color>>2)&7)*level+7)/15;
+            b=((int)(color&3)*level+7)/15;
+            destination[level*65536+index]=(char)((r<<5)|(g<<2)|b);
+        }
+}
+
+void mc_render_set_light(int x,int y,int z,int side,int minimum)
+{
+    uint sky=15,block=0;int level;
+#ifndef MC10_WORLD_SYSTEMS
+    if(mc_render_cached_block)
+        level=(int)((mc_render_current_style>>(side*4))&15);
+    else
+#endif
+    {
+        if(side==0)y=y-1;else if(side==1)y=y+1;
+        else if(side==2)z=z-1;else if(side==3)z=z+1;
+        else if(side==4)x=x-1;else x=x+1;
+        mc_runtime_try_get_saved_light(1,x,y,z,&sky);
+        mc_runtime_try_get_saved_light(0,x,y,z,&block);
+#ifdef MC10_WORLD_SYSTEMS
+        if(minimum>(int)block)block=(uint)minimum;
+        mc_render_raw_light_pair=(sky<<4)|block;
+#endif
+        level=(int)sky-mc_render_sky_subtracted;if(level<0)level=0;
+        if((int)block>level)level=(int)block;if(minimum>level)level=minimum;
+        if(level>15)level=15;
+    }
+    mc_render_light_key=(level<<3)|side;
+    mc_render_atlas_variant=(int)mc_render_light_lookup[mc_render_light_key];
+}
+
+float mc_render_float_from_bits(uint bits)
+{
+    uint temporary = bits;
+    return *((float *)&temporary);
+}
+
+float mc_render_double_to_float(struct MCJDouble *value)
+{
+    uint biased = (value->hi >> 20) & 0x7ff;
+    uint fraction_hi = value->hi & 0xfffff;
+    float result;
+    int exponent;
+    int i;
+    if (biased == 0 && fraction_hi == 0 && value->lo == 0) return 0.0f;
+    if (biased == 0x7ff) return 0.0f;
+    result = biased == 0 ? 0.0f : 1.0f;
+    result = result + (float)fraction_hi / 1048576.0f;
+    result = result + (float)value->lo * 2.2204460492503131e-16f;
+    exponent = biased == 0 ? -1022 : (int)biased - 1023;
+    if (exponent > 0)
+        for (i = 0; i < exponent; i = i + 1) result = result * 2.0f;
+    else
+        for (i = 0; i > exponent; i = i - 1) result = result * 0.5f;
+    return (value->hi >> 31) ? -result : result;
+}
+
+void mc_render_setup_camera(void)
+{
+    float yaw = mc_render_float_from_bits(mc_runtime_player.yaw_bits) *
+                0.017453292519943295f;
+    float pitch = mc_render_float_from_bits(mc_runtime_player.pitch_bits) *
+                  0.017453292519943295f;
+    float sin_yaw = narm_sin(yaw);
+    float cos_yaw = narm_cos(yaw);
+    float sin_pitch = narm_sin(pitch);
+    float cos_pitch = narm_cos(pitch);
+    float view_x = -sin_yaw * cos_pitch;
+    float view_y = -sin_pitch;
+    float view_z = cos_yaw * cos_pitch;
+    float right_x = -cos_yaw;
+    float right_z = -sin_yaw;
+    float up_x = -sin_yaw * sin_pitch;
+    float up_y = cos_pitch;
+    float up_z = cos_yaw * sin_pitch;
+    float camera_x;
+    float camera_y;
+    float camera_z;
+
+    mc_render_origin_x = mc_runtime_center_x * 16;
+    mc_render_origin_z = mc_runtime_center_z * 16;
+    if (mc_runtime_player.present)
+    {
+        camera_x = mc_render_double_to_float(&mc_runtime_player.pos_x) -
+                   (float)mc_render_origin_x;
+        camera_y = mc_render_double_to_float(&mc_runtime_player.pos_y);
+        camera_z = mc_render_double_to_float(&mc_runtime_player.pos_z) -
+                   (float)mc_render_origin_z;
+    }
+    else
+    {
+        camera_x = (float)(mc_runtime_player.block_x - mc_render_origin_x) + 0.5f;
+        camera_y = (float)mc_runtime_player.block_y;
+        camera_z = (float)(mc_runtime_player.block_z - mc_render_origin_z) + 0.5f;
+    }
+
+    mc_render_camera[0] = right_x;
+    mc_render_camera[1] = 0.0f;
+    mc_render_camera[2] = right_z;
+    mc_render_camera[3] = 0.0f - camera_x * right_x - camera_z * right_z;
+    mc_render_camera[4] = up_x;
+    mc_render_camera[5] = up_y;
+    mc_render_camera[6] = up_z;
+    mc_render_camera[7] = 0.0f - camera_x * up_x - camera_y * up_y -
+                          camera_z * up_z;
+    mc_render_camera[8] = view_x;
+    mc_render_camera[9] = view_y;
+    mc_render_camera[10] = view_z;
+    mc_render_camera[11] = 0.0f - camera_x * view_x - camera_y * view_y -
+                           camera_z * view_z;
+    /*
+     * Keep the projection used by the device-confirmed first-frame build.
+     * FOV and render-distance settings remain stored by GameSettings, but
+     * applying them belongs to the interactive renderer where projection
+     * changes can be validated continuously.
+     */
+    mc_render_camera[12] = 171.375f;
+    mc_render_camera[13] = 171.375f;
+    mc_render_camera[14] = 160.0f;
+    mc_render_camera[15] = 120.0f;
+    mc_render_camera[16] = 0.05f;
+    mc_render_camera[17] = 48.0f;
+    mc_render_view_x=camera_x;mc_render_view_y=camera_y;mc_render_view_z=camera_z;
+#ifdef MC10_WORLD_SYSTEMS
+    mc_third_adjust_camera();
+#endif
+}
+
+void mc_render_quad(float x0, float y0, float z0, float u0, float v0,
+                    float x1, float y1, float z1, float u1, float v1,
+                    float x2, float y2, float z2, float u2, float v2,
+                    float x3, float y3, float z3, float u3, float v3,
+                    int masked)
+{
+    uint profile_started;struct MCCachedQuad *cached;
+    if(mc_render_capture)
+    {
+        if(mc_render_geometry_count>=mc_render_geometry_limit)
+        {mc_render_capture_overflow=1;return;}
+        cached=&mc_render_geometry[mc_render_geometry_count];
+        cached->vertex[0]=x0;cached->vertex[1]=y0;cached->vertex[2]=z0;cached->vertex[3]=u0;cached->vertex[4]=v0;
+        cached->vertex[5]=x1;cached->vertex[6]=y1;cached->vertex[7]=z1;cached->vertex[8]=u1;cached->vertex[9]=v1;
+        cached->vertex[10]=x2;cached->vertex[11]=y2;cached->vertex[12]=z2;cached->vertex[13]=u2;cached->vertex[14]=v2;
+        cached->vertex[15]=x3;cached->vertex[16]=y3;cached->vertex[17]=z3;cached->vertex[18]=u3;cached->vertex[19]=v3;
+        cached->style=(uint)mc_render_light_key|(masked?128:0)|(mc_render_capture_fancy?256:0)|(mc_render_capture_cull?512:0);
+#ifdef MC10_WORLD_SYSTEMS
+        cached->style=cached->style|(mc_render_raw_light_pair<<10)|((uint)mc_render_source_tint_slot<<18);
+        if(mc_render_source_dynamic)
+        {
+            if(!mc_render_source_recipe){mc_render_capture_overflow=1;return;}
+            cached->style=(cached->style&0x3ffff)|((uint)mc_render_source_recipe<<18)|0x80000000;
+        }
+#endif
+        mc_render_geometry_count=mc_render_geometry_count+1;return;
+    }
+#ifdef MC10_TILE_PROFILE
+    if(mc_render_list_enabled)
+    {
+        float *v;
+        if(mc_render_list_error)return;
+#ifdef MC10_WORLD_SYSTEMS
+        /* A tint miss may flush the list and reset its vertex arena cursor.
+         * Resolve BEFORE selecting/copying a mutable batch-local quad. */
+        if(mc_render_source_dynamic&&mc_tint_tile(mc_render_source_dynamic_key,mc_render_atlas_variant)<0)
+        {mc_render_list_error=-98;return;}
+#endif
+        if(mc_render_list_count==MC_RENDER_LIST_CAPACITY)mc_render_list_flush();
+        if(mc_render_list_error)return;
+        v=&mc_render_list_vertices[mc_render_list_count*20];
+        v[0]=x0;v[1]=y0;v[2]=z0;v[3]=u0;v[4]=v0;
+        v[5]=x1;v[6]=y1;v[7]=z1;v[8]=u1;v[9]=v1;
+        v[10]=x2;v[11]=y2;v[12]=z2;v[13]=u2;v[14]=v2;
+        v[15]=x3;v[16]=y3;v[17]=z3;v[18]=u3;v[19]=v3;
+        mc_render_list_queue(v,masked);return;
+    }
+#endif
+    profile_started=0;if(mc_profile_active)profile_started=narm_micros();
+#ifdef MC10_WORLD_SYSTEMS
+    if(mc_render_source_dynamic)
+    {
+        int dynamic_slot=mc_tint_tile(mc_render_source_dynamic_key,mc_render_atlas_variant);
+        if(dynamic_slot<0)return;
+        if(masked)fillQuad3DTexZMask(x0,y0,z0,u0,v0,x1,y1,z1,u1,v1,x2,y2,z2,u2,v2,x3,y3,z3,u3,v3,
+            &mc_tint_lru_pixels[dynamic_slot*64],16,16,0,mc_render_camera,&mc_tint_lru_masks[dynamic_slot*8]);
+        else fillQuad3DTexZ(x0,y0,z0,u0,v0,x1,y1,z1,u1,v1,x2,y2,z2,u2,v2,x3,y3,z3,u3,v3,
+            &mc_tint_lru_pixels[dynamic_slot*64],16,16,0,mc_render_camera);
+        if(mc_profile_active)mc_profile_draw_us=mc_profile_draw_us+(uint)(narm_micros()-profile_started);
+        mc_render_faces=mc_render_faces+1;return;
+    }
+    if(mc_render_source_tint_slot)
+    {
+        if(masked)fillQuad3DTexZMask(x0,y0,z0,u0,v0,x1,y1,z1,u1,v1,x2,y2,z2,u2,v2,x3,y3,z3,u3,v3,
+            mc_block_mesh_tint_pixels(mc_render_source_tint_slot,mc_render_atlas_variant),16,16,0,mc_render_camera,mc_block_mesh_tint_mask(mc_render_source_tint_slot));
+        else fillQuad3DTexZ(x0,y0,z0,u0,v0,x1,y1,z1,u1,v1,x2,y2,z2,u2,v2,x3,y3,z3,u3,v3,
+            mc_block_mesh_tint_pixels(mc_render_source_tint_slot,mc_render_atlas_variant),16,16,0,mc_render_camera);
+        if(mc_profile_active)mc_profile_draw_us=mc_profile_draw_us+(uint)(narm_micros()-profile_started);
+        mc_render_faces=mc_render_faces+1;return;
+    }
+#endif
+    if (masked && mc_asset_loaded_mask_bytes != 0)
+        fillQuad3DTexZMask(x0, y0, z0, u0, v0,
+                           x1, y1, z1, u1, v1,
+                           x2, y2, z2, u2, v2,
+                           x3, y3, z3, u3, v3,
+                           &mc_render_light_atlas[mc_render_atlas_variant*16384], 256, 256, 0,
+                           &mc_render_camera[0], &mc_asset_mask[0]);
+    else
+        fillQuad3DTexZ(x0, y0, z0, u0, v0,
+                       x1, y1, z1, u1, v1,
+                       x2, y2, z2, u2, v2,
+                       x3, y3, z3, u3, v3,
+                       &mc_render_light_atlas[mc_render_atlas_variant*16384], 256, 256, 0,
+                       &mc_render_camera[0]);
+    if(mc_profile_active)mc_profile_draw_us=mc_profile_draw_us+(uint)(narm_micros()-profile_started);
+    mc_render_faces = mc_render_faces + 1;
+}
+
+int mc_render_side_visible(int x, int y, int z, int side,
+                           float min_x, float min_y, float min_z,
+                           float max_x, float max_y, float max_z)
+{
+    uint neighbor;
+    if(mc_render_cached_standard)return (mc_render_current_style & ((uint)1<<(24+side)))!=0;
+    if (side == 0 && min_y > 0.0f) return 1;
+    if (side == 1 && max_y < 1.0f) return 1;
+    if (side == 2 && min_z > 0.0f) return 1;
+    if (side == 3 && max_z < 1.0f) return 1;
+    if (side == 4 && min_x > 0.0f) return 1;
+    if (side == 5 && max_x < 1.0f) return 1;
+    if (side == 0) y = y - 1;
+    else if (side == 1) y = y + 1;
+    else if (side == 2) z = z - 1;
+    else if (side == 3) z = z + 1;
+    else if (side == 4) x = x - 1;
+    else x = x + 1;
+    if (!mc_runtime_try_get_block(x, y, z, &neighbor)) return 0;
+    return !mc_block_is_opaque(neighbor);
+}
+
+/* ID-aware source visibility. Old profiler builds retain their exact helper. */
+int mc_render_source_side_visible(uint id,int x,int y,int z,int side,
+                                  float x0,float y0,float z0,float x1,float y1,float z1)
+{
+#ifdef MC10_WORLD_SYSTEMS
+    return mc_block_side_visible(id,x,y,z,side,x0,y0,z0,x1,y1,z1);
+#else
+    return mc_render_side_visible(x,y,z,side,x0,y0,z0,x1,y1,z1);
+#endif
+}
+void mc_render_source_bounds(uint id,uint metadata,int x,int y,int z,
+                             float *x0,float *y0,float *z0,float *x1,float *y1,float *z1)
+{
+#ifdef MC10_WORLD_SYSTEMS
+    mc_block_bounds_at(id,metadata,x,y,z,x0,y0,z0,x1,y1,z1);
+#else
+    mc_block_bounds_for_state(id,metadata,x0,y0,z0,x1,y1,z1);
+#endif
+}
+
+#ifdef MC10_WORLD_SYSTEMS
+void mc_render_source_quad(uint id,int x,int y,int z,float *v,uint descriptor)
+{
+    int dx=(int)(descriptor&7)-2,dy=(int)((descriptor>>3)&7)-2,dz=(int)((descriptor>>6)&7)-2;
+    int minimum=(int)((descriptor>>9)&15),side=(int)((descriptor>>24)&7);
+    float bx=(float)(x-mc_render_origin_x),by=(float)y,bz=(float)(z-mc_render_origin_z);
+    mc_render_set_light(x+dx,y+dy-1,z+dz,1,minimum);
+    mc_render_light_key=(mc_render_light_key&~7)|side;
+    mc_render_atlas_variant=(int)mc_render_light_lookup[mc_render_light_key];
+    mc_render_source_tint_slot=(int)((descriptor>>18)&63);mc_render_source_dynamic=0;
+    if(id==106)
+    {
+        int rgb=mc_block_color_at(id,0,x,z);if(rgb<0){mc_tint_error=1;return;}
+        mc_tint_begin_quad(143,(uint)rgb);
+        mc_render_quad(bx+v[0],by+v[1],bz+v[2],v[3]-240,v[4]-128,bx+v[5],by+v[6],bz+v[7],v[8]-240,v[9]-128,
+                       bx+v[10],by+v[11],bz+v[12],v[13]-240,v[14]-128,bx+v[15],by+v[16],bz+v[17],v[18]-240,v[19]-128,1);
+    }
+    else mc_render_quad(bx+v[0],by+v[1],bz+v[2],v[3],v[4],bx+v[5],by+v[6],bz+v[7],v[8],v[9],
+                        bx+v[10],by+v[11],bz+v[12],v[13],v[14],bx+v[15],by+v[16],bz+v[17],v[18],v[19],1);
+    mc_render_source_tint_slot=0;mc_render_source_dynamic=0;
+}
+#endif
+
+void mc_render_box_face(uint id, uint metadata, int x, int y, int z, int side,
+                        float min_x, float min_y, float min_z,
+                        float max_x, float max_y, float max_z)
+{
+#ifdef MC10_WORLD_SYSTEMS
+    mc_render_source_tint_slot=0;
+    mc_render_source_dynamic=0;
+#endif
+    int texture = mc_render_texture_override>=0?
+                  mc_render_texture_override:
+                  mc_block_texture(id, side, metadata, x, y, z);
+    int flip_texture=texture<0;
+    float tile_u;
+    float tile_v;
+    float x0 = (float)(x - mc_render_origin_x) + min_x;
+    float x1 = (float)(x - mc_render_origin_x) + max_x;
+    float y0 = (float)y + min_y;
+    float y1 = (float)y + max_y;
+    float z0 = (float)(z - mc_render_origin_z) + min_z;
+    float z1 = (float)(z - mc_render_origin_z) + max_z;
+    float u0;
+    float u1;
+    float v0;
+    float v1;
+    if (texture<0) texture=0-texture;
+    tile_u=(float)((texture&15)*16); tile_v=(float)(texture&240);
+#ifdef MC10_WORLD_SYSTEMS
+    if((id==2&&(texture==0||texture==38))||id==18)
+    {
+        int rgb=mc_block_color_at(id,metadata,x,z);if(rgb<0){mc_tint_error=1;return;}
+        mc_tint_begin_quad(texture,(uint)rgb);tile_u=0;tile_v=0;
+    }
+#endif
+    mc_render_set_light(x,y,z,side,mc_blocks[id].light_value);
+    if (side <= 1)
+    {
+        u0 = tile_u + min_x * 16.0f;
+        u1 = tile_u + max_x * 16.0f - 0.01f;
+        v0 = tile_v + min_z * 16.0f;
+        v1 = tile_v + max_z * 16.0f - 0.01f;
+        if (flip_texture) { float swap=u0; u0=u1; u1=swap; }
+        if (side == 0)
+            mc_render_quad(x0,y0,z1,u0,v1, x0,y0,z0,u0,v0,
+                           x1,y0,z0,u1,v0, x1,y0,z1,u1,v1,
+                           mc_render_force_mask || !mc_blocks[id].opaque_cube);
+        else
+            mc_render_quad(x1,y1,z1,u1,v1, x1,y1,z0,u1,v0,
+                           x0,y1,z0,u0,v0, x0,y1,z1,u0,v1,
+                           mc_render_force_mask || !mc_blocks[id].opaque_cube);
+    }
+    else if (side <= 3)
+    {
+        u0 = tile_u + min_x * 16.0f;
+        u1 = tile_u + max_x * 16.0f - 0.01f;
+        v0 = tile_v + (1.0f - max_y) * 16.0f;
+        v1 = tile_v + (1.0f - min_y) * 16.0f - 0.01f;
+        if (flip_texture) { float swap=u0; u0=u1; u1=swap; }
+        if (side == 2)
+            mc_render_quad(x0,y1,z0,u1,v0, x1,y1,z0,u0,v0,
+                           x1,y0,z0,u0,v1, x0,y0,z0,u1,v1,
+                           mc_render_force_mask || !mc_blocks[id].opaque_cube);
+        else
+            mc_render_quad(x0,y1,z1,u0,v0, x0,y0,z1,u0,v1,
+                           x1,y0,z1,u1,v1, x1,y1,z1,u1,v0,
+                           mc_render_force_mask || !mc_blocks[id].opaque_cube);
+    }
+    else
+    {
+        u0 = tile_u + min_z * 16.0f;
+        u1 = tile_u + max_z * 16.0f - 0.01f;
+        v0 = tile_v + (1.0f - max_y) * 16.0f;
+        v1 = tile_v + (1.0f - min_y) * 16.0f - 0.01f;
+        if (flip_texture) { float swap=u0; u0=u1; u1=swap; }
+        if (side == 4)
+            mc_render_quad(x0,y1,z1,u1,v0, x0,y1,z0,u0,v0,
+                           x0,y0,z0,u0,v1, x0,y0,z1,u1,v1,
+                           mc_render_force_mask || !mc_blocks[id].opaque_cube);
+        else
+            mc_render_quad(x1,y0,z1,u0,v1, x1,y0,z0,u1,v1,
+                           x1,y1,z0,u1,v0, x1,y1,z1,u0,v0,
+                           mc_render_force_mask || !mc_blocks[id].opaque_cube);
+    }
+}
+
+void mc_render_box(uint id, uint metadata, int x, int y, int z,
+                   float min_x, float min_y, float min_z,
+                   float max_x, float max_y, float max_z)
+{
+    int side,eligible,previous=mc_render_capture_cull,n;uint front=63;
+    eligible=mc_blocks[id].render_type==0&&mc_blocks[id].opaque_cube&&
+             min_x==0&&min_y==0&&min_z==0&&max_x==1&&max_y==1&&max_z==1;
+    mc_render_capture_cull=eligible;
+    if(!mc_render_capture&&eligible&&(mc_render_cull_mode&1))
+        front=mc_render_opaque_front_mask((float)(x-mc_render_origin_x)+.5f,(float)y+.5f,
+                                         (float)(z-mc_render_origin_z)+.5f);
+    for (side = 0; side < 6; side = side + 1)
+        if (mc_render_source_side_visible(id,x, y, z, side, min_x, min_y, min_z,
+                                   max_x, max_y, max_z))
+        {
+            n=1;
+            if(!mc_render_capture&&eligible&&mc_render_cull_diagnostics)
+            {
+                if(id==2&&side>=2&&mc_options.fancy_graphics&&mc_block_texture(id,side,metadata,x,y,z)==3)n=2;
+                mc_render_cull_eligible=mc_render_cull_eligible+n;
+            }
+            if(!(front&((uint)1<<side)))
+            {
+                if(mc_render_cull_diagnostics)mc_render_cull_backfaces=mc_render_cull_backfaces+n;
+                continue;
+            }
+            mc_render_box_face(id, metadata, x, y, z, side,
+                               min_x, min_y, min_z, max_x, max_y, max_z);
+            /*
+             * RenderBlocks.fancyGrass draws texture 38 as a biome-coloured
+             * masked overlay after an ordinary grass-side texture 3.
+             */
+            if (id==2 && side>=2 &&
+                mc_block_texture(id,side,metadata,x,y,z)==3 &&
+                mc_options.fancy_graphics)
+            {
+                mc_render_texture_override=38;
+                mc_render_force_mask=1;
+                mc_render_capture_fancy=1;
+                mc_render_box_face(id,metadata,x,y,z,side,
+                                   min_x,min_y,min_z,max_x,max_y,max_z);
+                mc_render_texture_override=-1;
+                mc_render_force_mask=0;
+                mc_render_capture_fancy=0;
+            }
+        }
+    mc_render_capture_cull=previous;
+}
+
+void mc_render_door(uint id,uint metadata,int x,int y,int z)
+{
+    float min_x,min_y,min_z,max_x,max_y,max_z; int side;
+    mc_block_bounds_for_state(id,metadata,&min_x,&min_y,&min_z,
+                              &max_x,&max_y,&max_z);
+    /* RenderBlocks.renderBlockDoor emits all six door faces.  It does not
+     * apply the ordinary opaque-neighbour culling used by renderStandardBlock. */
+    for (side=0;side<6;side=side+1)
+        mc_render_box_face(id,metadata,x,y,z,side,
+                           min_x,min_y,min_z,max_x,max_y,max_z);
+}
+
+void mc_render_cross_quad(float x0, float z0, float x1, float z1,
+                          float y0, float y1, int texture)
+{
+    float u0 = (float)((texture & 15) * 16);
+    float u1 = u0 + 15.99f;
+    float v0 = (float)(texture & 240);
+    float v1 = v0 + 15.99f;
+    mc_render_quad(x0,y1,z0,u0,v0, x0,y0,z0,u0,v1,
+                   x1,y0,z1,u1,v1, x1,y1,z1,u1,v0, 1);
+    mc_render_quad(x1,y1,z1,u0,v0, x1,y0,z1,u0,v1,
+                   x0,y0,z0,u1,v1, x0,y1,z0,u1,v0, 1);
+}
+
+void mc_render_crossed(uint id, uint metadata, int x, int y, int z, int crops)
+{
+    int texture = mc_block_texture(id, 0, metadata, x, y, z);
+    float bx = (float)(x - mc_render_origin_x);
+    float bz = (float)(z - mc_render_origin_z);
+    float by = (float)y - (crops ? 1.0f / 16.0f : 0.0f);
+    mc_render_set_light(x,y,z,1,mc_blocks[id].light_value);
+#ifdef MC10_WORLD_SYSTEMS
+    mc_render_source_dynamic=0;mc_render_source_tint_slot=0;
+    if(id==31&&metadata!=0)
+    {
+        int rgb=mc_block_color_at(id,metadata,x,z);if(rgb<0){mc_tint_error=1;return;}
+        mc_tint_begin_quad(texture,(uint)rgb);texture=0;
+    }
+#endif
+    if (!crops)
+    {
+        mc_render_cross_quad(bx + 0.05f, bz + 0.05f,
+                             bx + 0.95f, bz + 0.95f, by, by + 1.0f,
+                             texture);
+        mc_render_cross_quad(bx + 0.05f, bz + 0.95f,
+                             bx + 0.95f, bz + 0.05f, by, by + 1.0f,
+                             texture);
+    }
+    else
+    {
+        mc_render_cross_quad(bx + 0.25f, bz, bx + 0.25f, bz + 1.0f,
+                             by, by + 1.0f, texture);
+        mc_render_cross_quad(bx + 0.75f, bz + 1.0f, bx + 0.75f, bz,
+                             by, by + 1.0f, texture);
+        mc_render_cross_quad(bx, bz + 0.25f, bx + 1.0f, bz + 0.25f,
+                             by, by + 1.0f, texture);
+        mc_render_cross_quad(bx + 1.0f, bz + 0.75f, bx, bz + 0.75f,
+                             by, by + 1.0f, texture);
+    }
+}
+
+void mc_render_stairs(uint id, uint metadata, int x, int y, int z)
+{
+    if (metadata == 0)
+    {
+        mc_render_box(id, metadata, x,y,z, 0,0,0, 0.5f,0.5f,1);
+        mc_render_box(id, metadata, x,y,z, 0.5f,0,0, 1,1,1);
+    }
+    else if (metadata == 1)
+    {
+        mc_render_box(id, metadata, x,y,z, 0,0,0, 0.5f,1,1);
+        mc_render_box(id, metadata, x,y,z, 0.5f,0,0, 1,0.5f,1);
+    }
+    else if (metadata == 2)
+    {
+        mc_render_box(id, metadata, x,y,z, 0,0,0, 1,0.5f,0.5f);
+        mc_render_box(id, metadata, x,y,z, 0,0,0.5f, 1,1,1);
+    }
+    else if (metadata == 3)
+    {
+        mc_render_box(id, metadata, x,y,z, 0,0,0, 1,1,0.5f);
+        mc_render_box(id, metadata, x,y,z, 0,0,0.5f, 1,0.5f,1);
+    }
+}
+
+int mc_render_fence_connects(int x, int y, int z)
+{
+    uint id;
+    struct MCBlock *block;
+    if (!mc_runtime_try_get_block(x, y, z, &id)) return 0;
+    if (id == 85 || id == 107) return 1;
+    if (id >= 256 || !mc_blocks[id].present) return 0;
+    block = &mc_blocks[id];
+    return mc_material_is_opaque(block->material) && block->normal_block &&
+           block->material != MC_MATERIAL_PUMPKIN;
+}
+
+void mc_render_fence(uint id, uint metadata, int x, int y, int z)
+{
+    int nx = mc_render_fence_connects(x - 1, y, z);
+    int px = mc_render_fence_connects(x + 1, y, z);
+    int nz = mc_render_fence_connects(x, y, z - 1);
+    int pz = mc_render_fence_connects(x, y, z + 1);
+    int along_x = nx || px;
+    int along_z = nz || pz;
+    float x0 = nx ? 0.0f : 7.0f / 16.0f;
+    float x1 = px ? 1.0f : 9.0f / 16.0f;
+    float z0 = nz ? 0.0f : 7.0f / 16.0f;
+    float z1 = pz ? 1.0f : 9.0f / 16.0f;
+    mc_render_box(id,metadata,x,y,z, 6.0f/16.0f,0,6.0f/16.0f,
+                  10.0f/16.0f,1,10.0f/16.0f);
+    if (!along_x && !along_z) along_x = 1;
+    if (along_x)
+    {
+        mc_render_box(id,metadata,x,y,z, x0,12.0f/16.0f,7.0f/16.0f,
+                      x1,15.0f/16.0f,9.0f/16.0f);
+        mc_render_box(id,metadata,x,y,z, x0,6.0f/16.0f,7.0f/16.0f,
+                      x1,9.0f/16.0f,9.0f/16.0f);
+    }
+    if (along_z)
+    {
+        mc_render_box(id,metadata,x,y,z, 7.0f/16.0f,12.0f/16.0f,z0,
+                      9.0f/16.0f,15.0f/16.0f,z1);
+        mc_render_box(id,metadata,x,y,z, 7.0f/16.0f,6.0f/16.0f,z0,
+                      9.0f/16.0f,9.0f/16.0f,z1);
+    }
+}
+
+void mc_render_torch_at(float x,float y,float z,float lean_x,float lean_z)
+{
+    float u0=80.0f,u1=95.99f,v0=80.0f,v1=95.99f;
+    float top_u0=87.0f,top_u1=89.0f,top_v0=86.0f,top_v1=88.0f;
+    float cx=(float)(x-mc_render_origin_x)+0.5f;
+    float cz=(float)(z-mc_render_origin_z)+0.5f;
+    float low_x=cx+lean_x, low_z=cz+lean_z;
+    float radius=1.0f/16.0f;
+    mc_render_quad(cx+lean_x*0.375f-radius,y+0.625f,cz+lean_z*0.375f-radius,top_u0,top_v0,
+                   cx+lean_x*0.375f-radius,y+0.625f,cz+lean_z*0.375f+radius,top_u0,top_v1,
+                   cx+lean_x*0.375f+radius,y+0.625f,cz+lean_z*0.375f+radius,top_u1,top_v1,
+                   cx+lean_x*0.375f+radius,y+0.625f,cz+lean_z*0.375f-radius,top_u1,top_v0,1);
+    mc_render_quad(cx-radius,y+1.0f,cz-0.5f,u0,v0,
+                   low_x-radius,y,low_z-0.5f,u0,v1,
+                   low_x-radius,y,low_z+0.5f,u1,v1,
+                   cx-radius,y+1.0f,cz+0.5f,u1,v0,1);
+    mc_render_quad(cx+radius,y+1.0f,cz+0.5f,u0,v0,
+                   low_x+radius,y,low_z+0.5f,u0,v1,
+                   low_x+radius,y,low_z-0.5f,u1,v1,
+                   cx+radius,y+1.0f,cz-0.5f,u1,v0,1);
+    mc_render_quad(cx-0.5f,y+1.0f,cz+radius,u0,v0,
+                   low_x-0.5f,y,low_z+radius,u0,v1,
+                   low_x+0.5f,y,low_z+radius,u1,v1,
+                   cx+0.5f,y+1.0f,cz+radius,u1,v0,1);
+    mc_render_quad(cx+0.5f,y+1.0f,cz-radius,u0,v0,
+                   low_x+0.5f,y,low_z-radius,u0,v1,
+                   low_x-0.5f,y,low_z-radius,u1,v1,
+                   cx-0.5f,y+1.0f,cz-radius,u1,v0,1);
+}
+
+void mc_render_torch(uint metadata,int x,int y,int z)
+{
+    mc_render_set_light(x,y,z,1,14);
+    if (metadata==1) mc_render_torch_at((float)x-0.1f,(float)y+0.2f,(float)z,-0.4f,0);
+    else if (metadata==2) mc_render_torch_at((float)x+0.1f,(float)y+0.2f,(float)z,0.4f,0);
+    else if (metadata==3) mc_render_torch_at((float)x,(float)y+0.2f,(float)z-0.1f,0,-0.4f);
+    else if (metadata==4) mc_render_torch_at((float)x,(float)y+0.2f,(float)z+0.1f,0,0.4f);
+    else mc_render_torch_at((float)x,(float)y,(float)z,0,0);
+}
+
+void mc_render_ladder(uint metadata,int x,int y,int z)
+{
+    float bx=(float)(x-mc_render_origin_x); float by=(float)y;
+    float bz=(float)(z-mc_render_origin_z); float e=0.05f;
+    float u0=48.0f,u1=63.99f,v0=80.0f,v1=95.99f;
+    mc_render_set_light(x,y,z,1,0);
+    if (metadata==5) mc_render_quad(bx+e,by+1,bz+1,u0,v0,bx+e,by,bz+1,u0,v1,bx+e,by,bz,u1,v1,bx+e,by+1,bz,u1,v0,1);
+    else if (metadata==4) mc_render_quad(bx+1-e,by,bz+1,u1,v1,bx+1-e,by+1,bz+1,u1,v0,bx+1-e,by+1,bz,u0,v0,bx+1-e,by,bz,u0,v1,1);
+    else if (metadata==3) mc_render_quad(bx+1,by,bz+e,u1,v1,bx+1,by+1,bz+e,u1,v0,bx,by+1,bz+e,u0,v0,bx,by,bz+e,u0,v1,1);
+    else if (metadata==2) mc_render_quad(bx+1,by+1,bz+1-e,u0,v0,bx+1,by,bz+1-e,u0,v1,bx,by,bz+1-e,u1,v1,bx,by+1,bz+1-e,u1,v0,1);
+}
+
+int mc_render_pane_connects(int x,int y,int z)
+{
+    uint id; if (!mc_runtime_try_get_block(x,y,z,&id)) return 0;
+    return id==102 || id==20 || mc_block_is_opaque(id);
+}
+
+void mc_render_pane(uint id,uint metadata,int x,int y,int z)
+{
+    int nz=mc_render_pane_connects(x,y,z-1);
+    int pz=mc_render_pane_connects(x,y,z+1);
+    int nx=mc_render_pane_connects(x-1,y,z);
+    int px=mc_render_pane_connects(x+1,y,z);
+    int any=nx||px||nz||pz;
+    if ((!nx||!px) && any)
+    {
+        if (nx) mc_render_box(id,metadata,x,y,z,0,0,7.0f/16.0f,0.5f,1,9.0f/16.0f);
+        else if (px) mc_render_box(id,metadata,x,y,z,0.5f,0,7.0f/16.0f,1,1,9.0f/16.0f);
+    }
+    else mc_render_box(id,metadata,x,y,z,0,0,7.0f/16.0f,1,1,9.0f/16.0f);
+    if ((!nz||!pz) && any)
+    {
+        if (nz) mc_render_box(id,metadata,x,y,z,7.0f/16.0f,0,0,9.0f/16.0f,1,0.5f);
+        else if (pz) mc_render_box(id,metadata,x,y,z,7.0f/16.0f,0,0.5f,9.0f/16.0f,1,1);
+    }
+    else mc_render_box(id,metadata,x,y,z,7.0f/16.0f,0,0,9.0f/16.0f,1,1);
+}
+
+int mc_render_same_material(int material,int x,int y,int z)
+{
+    uint id; if (!mc_runtime_try_get_block(x,y,z,&id)) return 0;
+    return id<256 && mc_blocks[id].present && mc_blocks[id].material==material;
+}
+
+float mc_render_fluid_height(int material,int x,int y,int z)
+{
+    int i; int count=0; float total=0; uint id,metadata;
+    for (i=0;i<4;i=i+1)
+    {
+        int sx=x-(i&1); int sz=z-((i>>1)&1);
+        int got;
+        if (mc_render_same_material(material,sx,y+1,sz)) return 1.0f;
+        id=0; got=mc_runtime_try_get_block(sx,y,sz,&id);
+        if (got && id<256 &&
+            mc_blocks[id].present && mc_blocks[id].material==material)
+        {
+            mc_runtime_try_get_metadata(sx,y,sz,&metadata);
+            if (metadata>=8 || metadata==0)
+            { total=total+((float)((metadata>=8?0:metadata)+1)/9.0f)*10.0f; count=count+10; }
+            total=total+(float)((metadata>=8?0:metadata)+1)/9.0f; count=count+1;
+        }
+        else if (got && (id==0 || id>=256 || !mc_blocks[id].present ||
+                 !mc_materials[mc_blocks[id].material].blocks_movement)
+                ) { total=total+1.0f; count=count+1; }
+    }
+    if (count==0) return 1.0f;
+    return 1.0f-total/(float)count;
+}
+
+void mc_render_fluid(uint id,uint metadata,int x,int y,int z)
+{
+    int material=mc_blocks[id].material; int side; uint neighbor;
+    float h00=mc_render_fluid_height(material,x,y,z);
+    float h01=mc_render_fluid_height(material,x,y,z+1);
+    float h11=mc_render_fluid_height(material,x+1,y,z+1);
+    float h10=mc_render_fluid_height(material,x+1,y,z);
+    float bx=(float)(x-mc_render_origin_x); float by=(float)y;
+    float bz=(float)(z-mc_render_origin_z); float epsilon=0.001f;
+    int top_texture=mc_block_texture(id,1,metadata,x,y,z);
+    float tu=(float)((top_texture&15)*16); float tv=(float)(top_texture&240);
+    if (!mc_render_same_material(material,x,y+1,z))
+    {
+        mc_render_set_light(x,y,z,1,mc_blocks[id].light_value);
+        mc_render_quad(bx,by+h00-epsilon,bz,tu,tv,bx,by+h01-epsilon,bz+1,tu,tv+15.99f,
+                       bx+1,by+h11-epsilon,bz+1,tu+15.99f,tv+15.99f,bx+1,by+h10-epsilon,bz,tu+15.99f,tv,0);
+    }
+    if (!mc_render_same_material(material,x,y-1,z))
+    { mc_render_set_light(x,y,z,0,mc_blocks[id].light_value); mc_render_box_face(id,metadata,x,y,z,0,0,epsilon,0,1,1,1); }
+    for (side=0;side<4;side=side+1)
+    {
+        int nx=x,nz2=z; float ha,hb,x0,x1,z0,z1; int texture;
+        if (side==0) nz2=z-1; else if (side==1) nz2=z+1; else if (side==2) nx=x-1; else nx=x+1;
+        if (mc_render_same_material(material,nx,y,nz2)) continue;
+        texture=mc_block_texture(id,side+2,metadata,x,y,z); tu=(float)((texture&15)*16); tv=(float)(texture&240);
+        if (side==0) { ha=h00;hb=h10;x0=bx;x1=bx+1;z0=bz+epsilon;z1=z0; }
+        else if (side==1) { ha=h11;hb=h01;x0=bx+1;x1=bx;z0=bz+1-epsilon;z1=z0; }
+        else if (side==2) { ha=h01;hb=h00;x0=bx+epsilon;x1=x0;z0=bz+1;z1=bz; }
+        else { ha=h10;hb=h11;x0=bx+1-epsilon;x1=x0;z0=bz;z1=bz+1; }
+        mc_render_set_light(x,y,z,side+2,mc_blocks[id].light_value);
+        mc_render_quad(x0,by+ha,z0,tu,tv+(1-ha)*16,x1,by+hb,z1,tu+15.99f,tv+(1-hb)*16,
+                       x1,by,z1,tu+15.99f,tv+15.99f,x0,by,z0,tu,tv+15.99f,0);
+    }
+}
+
+int mc_render_block_in_view(int x,int y,int z)
+{
+    float bx=(float)(x-mc_render_origin_x)+.5f;
+    float by=(float)y+.5f;
+    float bz=(float)(z-mc_render_origin_z)+.5f;
+    float depth=bx*mc_render_camera[8]+by*mc_render_camera[9]+bz*mc_render_camera[10]+mc_render_camera[11];
+    float screen_x=bx*mc_render_camera[0]+by*mc_render_camera[1]+bz*mc_render_camera[2]+mc_render_camera[3];
+    float screen_y=bx*mc_render_camera[4]+by*mc_render_camera[5]+bz*mc_render_camera[6]+mc_render_camera[7];
+    /* Conservative cube/torch/fence bounds. Native near-plane clipping remains
+     * authoritative; this only rejects blocks wholly outside the view. */
+    if(depth+1.6f<mc_render_camera[16]||depth-1.6f>mc_render_camera[17])return 0;
+    if(screen_x*mc_render_camera[12]>160.0f*depth+1.6f*(160.0f+mc_render_camera[12])||
+       -screen_x*mc_render_camera[12]>160.0f*depth+1.6f*(160.0f+mc_render_camera[12])||
+       screen_y*mc_render_camera[13]>120.0f*depth+1.6f*(120.0f+mc_render_camera[13])||
+       -screen_y*mc_render_camera[13]>120.0f*depth+1.6f*(120.0f+mc_render_camera[13]))return 0;
+    return 1;
+}
+void mc_render_block(uint id, uint metadata, int x, int y, int z)
+{
+    struct MCBlock *block;
+    float min_x, min_y, min_z, max_x, max_y, max_z;
+    if(!mc_render_capture&&!mc_render_block_in_view(x,y,z))return;
+    if (id >= 256 || !mc_blocks[id].present)
+    {
+        if(mc_profile_enabled)mc_render_missing_registry = mc_render_missing_registry + 1;
+        return;
+    }
+    block = &mc_blocks[id];
+#ifdef MC10_WORLD_SYSTEMS
+    mc_render_source_tint_slot=0;mc_render_source_dynamic=0;
+    if(mc_block_mesh_has(id))
+    {
+        if(mc_block_mesh_render(id,metadata,x,y,z)<0)
+        {
+#ifdef MC10_TILE_PROFILE
+            mc_render_list_error=-90-mc_block_mesh_error;
+#endif
+        }
+        else if(mc_profile_enabled)mc_render_blocks_drawn=mc_render_blocks_drawn+1;
+        return;
+    }
+    /* These source layers are drawn after terrain by TileEntityRenderer.
+     * End-portal animated rendering remains an explicit visual placeholder. */
+    if(id==54||id==63||id==68||id==119)return;
+#endif
+    if (block->render_type == 0)
+    {
+        mc_render_source_bounds(id, metadata,x,y,z, &min_x,&min_y,&min_z,
+                                  &max_x,&max_y,&max_z);
+        mc_render_box(id,metadata,x,y,z,min_x,min_y,min_z,max_x,max_y,max_z);
+    }
+    else if (block->render_type == 1) mc_render_crossed(id,metadata,x,y,z,0);
+    else if (block->render_type == 2) mc_render_torch(metadata,x,y,z);
+    else if (block->render_type == 4) mc_render_fluid(id,metadata,x,y,z);
+    else if (block->render_type == 6) mc_render_crossed(id,metadata,x,y,z,1);
+    else if (block->render_type == 7) mc_render_door(id,metadata,x,y,z);
+    else if (block->render_type == 8) mc_render_ladder(metadata,x,y,z);
+    else if (block->render_type == 10) mc_render_stairs(id,metadata,x,y,z);
+    else if (block->render_type == 11) mc_render_fence(id,metadata,x,y,z);
+    else if (block->render_type == 18) mc_render_pane(id,metadata,x,y,z);
+    else
+    {
+        if(mc_profile_enabled)mc_render_unsupported = mc_render_unsupported + 1;
+        return;
+    }
+    if(mc_profile_enabled)mc_render_blocks_drawn = mc_render_blocks_drawn + 1;
+#ifdef MC10_WORLD_SYSTEMS
+    mc_render_source_dynamic=0;mc_render_source_tint_slot=0;
+#endif
+}
+
+int mc_render_build_cache(void)
+{
+    int c,index,x,y,z,lx,lz,side,standard;uint id,metadata,style,mask;
+    uint started=narm_millis();struct MCResidentChunk *resident;
+    float x0,y0,z0,x1,y1,z1;
+    mc_render_cache_ready=0;mc_render_cache_error=0;mc_render_cache_group_count=0;
+    mc_render_cached_block=0;mc_render_cached_standard=0;
+#ifdef MC10_WORLD_SYSTEMS
+    mc_render_tesr_count=0;mc_render_tesr_overflow=0;mc_render_pending_dynamic=0;
+    mc_tint_reset();
+#endif
+    mc_render_refresh_light_lookup();
+    for(c=0;c<MC_RUNTIME_CHUNKS&&!mc_render_cache_error;c=c+1)
+    {
+        resident=&mc_runtime_chunks[c];if(resident->state!=1)continue;
+        for(index=0;index<MC_CHUNK_BLOCK_COUNT&&!mc_render_cache_error;index=index+1)
+        {
+            lx=index>>11;lz=(index>>7)&15;y=index&127;
+            id=mc_chunk_get_block_id(&resident->chunk,lx,y,lz);
+            if(id!=0)
+            {
+                metadata=mc_chunk_get_block_metadata(&resident->chunk,lx,y,lz);
+                x=resident->chunk.x_position*16+lx;z=resident->chunk.z_position*16+lz;
+#ifdef MC10_WORLD_SYSTEMS
+                if(mc_block_static_status(id)>=2&&mc_block_static_status(id)<=3)mc_render_pending_dynamic=mc_render_pending_dynamic+1;
+                if(mc_render_is_tesr(id))mc_render_tesr_add(c,index,id,metadata);
+#endif
+                standard=id<256&&mc_blocks[id].present&&mc_blocks[id].render_type==0;
+                mask=0;
+                if(standard)
+                {
+                    mc_render_source_bounds(id,metadata,x,y,z,&x0,&y0,&z0,&x1,&y1,&z1);
+                    for(side=0;side<6;side=side+1)
+                        if(mc_render_source_side_visible(id,x,y,z,side,x0,y0,z0,x1,y1,z1))mask=mask|((uint)1<<side);
+                }
+                if((!standard||mask)
+#ifdef MC10_WORLD_SYSTEMS
+                   &&!mc_render_is_tesr(id)&&id!=119
+#endif
+                   )
+                {
+                    if(mc_render_cache_group_count>=mc_render_cache_limit){mc_render_cache_error=1;break;}
+                    style=mask<<24;
+                    if(id<256&&mc_blocks[id].present)
+                        for(side=0;side<6;side=side+1)
+                        {
+                            mc_render_set_light(x,y,z,side,mc_blocks[id].light_value);
+                            style=style|((uint)(mc_render_light_key>>3)<<(side*4));
+                        }
+                    mc_render_cached_keys[mc_render_cache_group_count]=(uint)index|((uint)c<<15)|(id<<19)|(metadata<<27)|(standard?0x80000000:0);
+                    mc_render_cached_style[mc_render_cache_group_count]=style;
+                    mc_render_cache_group_count=mc_render_cache_group_count+1;
+                }
+            }
+            if((index&1023)==1023)narm_yield();
+        }
+    }
+    mc_render_cache_ready=!mc_render_cache_error;
+    if(mc_render_cache_ready){mc_render_build_runs();mc_render_build_geometry();}
+    else {mc_render_geometry_count=0;mc_render_geometry_blocks=0;}
+    mc_render_cache_build_ms=(uint)(narm_millis()-started);
+    return mc_render_cache_ready;
+}
+
+/* Keep the legacy implementation's local frame independent of the cached
+ * fast path. NARMCC allocates scratch slots for the whole function. */
+void mc_render_cached_group_legacy(int cursor)
+{
+    uint key,id,metadata,range;int index,c,x,z;
+    key=mc_render_cached_keys[cursor];id=(key>>19)&255;metadata=(key>>27)&15;
+    index=(int)(key&32767);c=(int)((key>>15)&15);
+    x=mc_runtime_chunks[c].chunk.x_position*16+(index>>11);
+    z=mc_runtime_chunks[c].chunk.z_position*16+((index>>7)&15);
+    mc_render_current_style=mc_render_cached_style[cursor];
+    mc_render_cached_block=1;mc_render_cached_standard=(int)(key>>31);
+    if(!mc_render_capture&&mc_render_geometry_enabled&&(mc_render_geometry_range[cursor]&0x80000000))
+    {
+        if(mc_render_block_in_view(x,index&127,z))
+        {
+            range=mc_render_geometry_range[cursor];mc_render_cull_face_mask=63;
+            if((mc_render_cull_mode&1)&&(range&0x7fffc000)&&
+               mc_render_origin_x==mc_render_geometry_origin_x&&mc_render_origin_z==mc_render_geometry_origin_z&&
+               (mc_render_geometry[(int)(range&16383)].style&512))
+                mc_render_cull_face_mask=mc_render_opaque_front_mask((float)(x-mc_render_origin_x)+.5f,
+                                       (float)(index&127)+.5f,(float)(z-mc_render_origin_z)+.5f);
+            mc_render_replay_geometry(range);mc_render_cull_face_mask=63;
+            if(mc_profile_enabled)mc_render_blocks_drawn=mc_render_blocks_drawn+1;
+        }
+    }
+    else mc_render_block(id,metadata,x,index&127,z);
+    mc_render_cached_block=0;mc_render_cached_standard=0;
+}
+
+void mc_render_cached_group(int cursor)
+{
+    uint range;float *center;float bx,by,bz,depth,screen,bound;
+    if(!mc_render_submit_optimized||mc_render_capture||!mc_render_geometry_enabled||
+       mc_render_origin_x!=mc_render_geometry_origin_x||mc_render_origin_z!=mc_render_geometry_origin_z)
+    {mc_render_cached_group_legacy(cursor);return;}
+    range=mc_render_geometry_range[cursor];
+    if(!(range&0x80000000)||!(range&0x7fffc000))
+    {mc_render_cached_group_legacy(cursor);return;}
+    center=&mc_render_geometry_center[(int)(range&16383)*3];
+    bx=center[0];by=center[1];bz=center[2];
+    /* The same expressions, with each dot product deferred until needed.
+     * Repeated identical bounds are evaluated once without reassociation. */
+    depth=bx*mc_render_camera[8]+by*mc_render_camera[9]+bz*mc_render_camera[10]+mc_render_camera[11];
+    if(depth+1.6f<mc_render_camera[16]||depth-1.6f>mc_render_camera[17])return;
+    screen=bx*mc_render_camera[0]+by*mc_render_camera[1]+bz*mc_render_camera[2]+mc_render_camera[3];
+    bound=160.0f*depth+1.6f*(160.0f+mc_render_camera[12]);
+    if(screen*mc_render_camera[12]>bound||-screen*mc_render_camera[12]>bound)return;
+    screen=bx*mc_render_camera[4]+by*mc_render_camera[5]+bz*mc_render_camera[6]+mc_render_camera[7];
+    bound=120.0f*depth+1.6f*(120.0f+mc_render_camera[13]);
+    if(screen*mc_render_camera[13]>bound||-screen*mc_render_camera[13]>bound)return;
+    mc_render_cull_face_mask=63;
+    if((mc_render_cull_mode&1)&&(mc_render_geometry[(int)(range&16383)].style&512))
+        mc_render_cull_face_mask=mc_render_opaque_front_mask(bx,by,bz);
+#ifdef MC10_TILE_PROFILE
+    if(mc_render_list_enabled)mc_render_replay_geometry_fast(range);
+    else
+#endif
+    mc_render_replay_geometry(range);
+    mc_render_cull_face_mask=63;
+    if(mc_profile_enabled)mc_render_blocks_drawn=mc_render_blocks_drawn+1;
+}
+
+void mc_render_build_geometry(void)
+{
+    int i,start,index,c,x,z,fancy=mc_options.fancy_graphics;uint key,id;struct MCBlock *block;
+    mc_render_origin_x=mc_runtime_center_x*16;mc_render_origin_z=mc_runtime_center_z*16;
+    mc_render_geometry_origin_x=mc_render_origin_x;mc_render_geometry_origin_z=mc_render_origin_z;
+    mc_render_geometry_count=0;mc_render_geometry_blocks=0;
+    mc_render_capture=1;mc_render_capture_fancy=0;mc_options.fancy_graphics=1;
+    for(i=0;i<mc_render_cache_group_count;i=i+1)
+    {
+        mc_render_geometry_range[i]=0;key=mc_render_cached_keys[i];id=(key>>19)&255;
+        if(id<256&&mc_blocks[id].present)
+        {
+            block=&mc_blocks[id];
+            if(block->render_type==0||block->render_type==1||block->render_type==2||
+               block->render_type==4||block->render_type==6||block->render_type==7||
+               block->render_type==8||block->render_type==10||block->render_type==11||block->render_type==18
+#ifdef MC10_WORLD_SYSTEMS
+               ||mc_block_mesh_has(id)
+#endif
+               )
+            {
+                start=mc_render_geometry_count;mc_render_capture_overflow=0;
+                mc_render_cached_group_legacy(i);
+                if(mc_render_capture_overflow)mc_render_geometry_count=start;
+                else
+                {
+                    mc_render_geometry_range[i]=0x80000000|(uint)start|((uint)(mc_render_geometry_count-start)<<14);
+                    if(mc_render_geometry_count>start)
+                    {
+                        index=(int)(key&32767);c=(int)((key>>15)&15);
+                        x=mc_runtime_chunks[c].chunk.x_position*16+(index>>11);
+                        z=mc_runtime_chunks[c].chunk.z_position*16+((index>>7)&15);
+                        mc_render_geometry_center[start*3]=(float)(x-mc_render_origin_x)+.5f;
+                        mc_render_geometry_center[start*3+1]=(float)(index&127)+.5f;
+                        mc_render_geometry_center[start*3+2]=(float)(z-mc_render_origin_z)+.5f;
+                    }
+                    mc_render_geometry_blocks=mc_render_geometry_blocks+1;
+                }
+            }
+        }
+        if((i&63)==63)narm_yield();
+    }
+    mc_options.fancy_graphics=fancy;mc_render_capture=0;mc_render_capture_fancy=0;
+    mc_render_cached_block=0;mc_render_cached_standard=0;
+    mc_render_texture_override=-1;mc_render_force_mask=0;
+}
+void mc_render_replay_geometry(uint range)
+{
+    int i,start=(int)(range&16383),count=(int)((range&0x7fffffff)>>14);float *v;uint style;
+    int cull=mc_render_cull_mode&1,diagnostics=mc_render_cull_diagnostics;uint front=mc_render_cull_face_mask;
+    for(i=start;i<start+count;i=i+1)
+    {
+        style=mc_render_geometry[i].style;
+        if((style&256)&&!mc_options.fancy_graphics)continue;
+        if(cull&&(style&512))
+        {
+            if(diagnostics)mc_render_cull_eligible=mc_render_cull_eligible+1;
+            if(!(front&((uint)1<<(style&7))))
+            {if(diagnostics)mc_render_cull_backfaces=mc_render_cull_backfaces+1;continue;}
+        }
+#ifdef MC10_WORLD_SYSTEMS
+        mc_render_atlas_variant=mc_render_geometry_light_variant(style);
+        mc_render_source_dynamic=(style&0x80000000)!=0;
+        if(mc_render_source_dynamic)
+        {mc_render_source_tint_slot=0;mc_render_source_dynamic_key=mc_tint_recipes[((style>>18)&8191)-1];}
+        else mc_render_source_tint_slot=(int)((style>>18)&63);
+#else
+        mc_render_atlas_variant=(int)mc_render_light_lookup[style&127];
+#endif
+        v=&mc_render_geometry[i].vertex[0];
+#ifdef MC10_TILE_PROFILE
+        if(mc_render_list_enabled)
+            mc_render_list_queue(v,(int)((style>>7)&1));
+        else
+#endif
+        mc_render_quad(v[0],v[1],v[2],v[3],v[4],v[5],v[6],v[7],v[8],v[9],
+                       v[10],v[11],v[12],v[13],v[14],v[15],v[16],v[17],v[18],v[19],(int)((style>>7)&1));
+    }
+#ifdef MC10_WORLD_SYSTEMS
+    mc_render_source_tint_slot=0;mc_render_source_dynamic=0;
+#endif
+}
+
+#ifdef MC10_TILE_PROFILE
+void mc_render_replay_geometry_fast(uint range)
+{
+    struct MCCachedQuad *quad=&mc_render_geometry[(int)(range&16383)];
+    struct MCCachedQuad *last=quad+(int)((range&0x7fffffff)>>14);
+    uint *command=&mc_render_list_commands[mc_render_list_count*7];
+    uint style,mask=mc_asset_loaded_mask_bytes?(uint)&mc_asset_mask[0]:0;
+    int fancy=mc_options.fancy_graphics,cull=mc_render_cull_mode&1,diagnostics=mc_render_cull_diagnostics;
+    uint front=mc_render_cull_face_mask;
+    if(!mc_render_list_template_ready)mc_render_list_prepare_template();
+    for(;quad<last;quad=quad+1)
+    {
+        style=quad->style;
+        if((style&256)&&!fancy)continue;
+        if(cull&&(style&512))
+        {
+            if(diagnostics)mc_render_cull_eligible=mc_render_cull_eligible+1;
+            if(!(front&((uint)1<<(style&7))))
+            {if(diagnostics)mc_render_cull_backfaces=mc_render_cull_backfaces+1;continue;}
+        }
+#ifdef MC10_WORLD_SYSTEMS
+        mc_render_atlas_variant=mc_render_geometry_light_variant(style);
+        if(style&0x80000000)
+        {
+            mc_render_source_dynamic=1;mc_render_source_tint_slot=0;
+            mc_render_source_dynamic_key=mc_tint_recipes[((style>>18)&8191)-1];
+            mc_render_list_queue(&quad->vertex[0],(int)((style>>7)&1));
+            mc_render_source_dynamic=0;command=&mc_render_list_commands[mc_render_list_count*7];continue;
+        }
+#else
+        mc_render_atlas_variant=(int)mc_render_light_lookup[style&127];
+#endif
+        if(mc_render_list_error)continue;
+        if(mc_render_list_count==MC_RENDER_LIST_CAPACITY)
+        {mc_render_list_flush();command=&mc_render_list_commands[0];}
+        if(mc_render_list_error)continue;
+        command[0]=(uint)&quad->vertex[0];
+        command[1]=(uint)&mc_render_light_atlas[mc_render_atlas_variant*16384];
+        command[2]=(style&128)?mask:0;
+#ifdef MC10_WORLD_SYSTEMS
+        mc_render_source_tint_slot=(int)((style>>18)&63);
+        command[3]=256;command[4]=256;
+        if(mc_render_source_tint_slot)
+        {
+            command[1]=(uint)mc_block_mesh_tint_pixels(mc_render_source_tint_slot,mc_render_atlas_variant);
+            command[2]=(style&128)?(uint)mc_block_mesh_tint_mask(mc_render_source_tint_slot):0;
+            command[3]=16;command[4]=16;
+        }
+#endif
+        command=command+7;
+        mc_render_list_count=mc_render_list_count+1;
+        mc_render_faces=mc_render_faces+1;
+    }
+#ifdef MC10_WORLD_SYSTEMS
+    mc_render_source_tint_slot=0;mc_render_source_dynamic=0;
+#endif
+}
+#endif
+
+int mc_render_prepare_assets(void)
+{
+    if (!mc_blocks_ready || !mc_runtime_access_ok) return 0;
+#ifdef MC10_WORLD_SYSTEMS
+    if(!mc_block_mesh_open())return 0;
+    if(!mc_block_colors_open())return 0;
+#endif
+    /*
+     * BlockGrass.getBlockColor uses ColorizerGrass.getGrassColor(0.5,1.0).
+     * Until WorldChunkManager/GenLayer is resident, use that exact source
+     * fallback instead of inventing a green or leaving the tint mask grey.
+     */
+    if (!mc_asset_load_image("misc/grasscolor.png")) return 0;
+    if (mc_asset_loaded_width != 256 || mc_asset_loaded_height != 256) return 0;
+    mc_render_grass_color=(uint)((char *)&mc_asset_pixels[0])[127*256+127]&255;
+    if (!mc_asset_load_image("terrain.png")) return 0;
+    if (mc_asset_loaded_width != 256 || mc_asset_loaded_height != 256) return 0;
+    mc_render_apply_grass_tint();
+    mc_render_prepare_light_atlas();
+    mc_render_refresh_light_lookup();
+    mc_render_terrain_ready = 1;
+    mc_render_texture_override=-1;
+    mc_render_force_mask=0;
+    return 1;
+}
+
+void mc_render_begin_frame(void)
+{
+    uint profile_started;int i;
+#ifdef MC10_TILE_PROFILE
+    mc_render_list_flush();
+#endif
+    if(!mc_profile_active)mc_profile_begin();
+    profile_started=0;if(mc_profile_active)profile_started=narm_micros();
+    mc_render_faces = 0; mc_render_blocks_drawn = 0;
+    mc_render_cull_face_mask=63;mc_render_cull_eligible=0;mc_render_cull_backfaces=0;
+    mc_render_unsupported = 0; mc_render_missing_registry = 0;
+#ifdef MC10_WORLD_SYSTEMS
+    if(mc_profile_enabled)mc_render_unsupported=mc_render_pending_dynamic;
+#endif
+    mc_render_setup_camera();
+    mc_render_prepare_cull_view();
+    narm_half_clear(MC_COLOR_BLACK);
+#ifdef MC10_WORLD_SYSTEMS
+    mc_sky_draw(mc_game_partial_tick());
+#endif
+    mc_render_frame_chunk=0;mc_render_frame_cell=0;if(mc_profile_enabled)mc_render_frame_started=narm_millis();
+    mc_render_cache_cursor=0;mc_render_frame_batches=0;
+    mc_render_groups_visited=0;mc_render_groups_skipped=0;
+    for(i=0;i<576;i=i+1)mc_render_section_state[i]=0;
+    if(mc_render_lookup_gamma!=mc_options.gamma_setting)mc_render_refresh_light_lookup();
+#ifdef MC10_WORLD_SYSTEMS
+    mc_render_prepare_daylight();
+#endif
+#ifdef MC10_PLAYER_FOUNDATION
+    mc_viewmodel_capture_frame(mc_game_partial_tick());
+#endif
+#ifdef MC10_WORLD_SYSTEMS
+    mc_third_capture_frame(mc_game_partial_tick());
+#endif
+    if(mc_profile_active)mc_profile_setup_us=mc_profile_setup_us+(uint)(narm_micros()-profile_started);
+}
+
+void mc_render_profile_value(uint microseconds)
+{
+    mc_world_append_uint(mc_world_line,160,microseconds/1000);
+    mc_world_append(mc_world_line,160,".");
+    mc_world_append_uint(mc_world_line,160,(microseconds/100)%10);
+}
+void mc_render_profile_pair(char *first,uint first_us,char *second,uint second_us,int y)
+{
+    mc_world_line[0]=0;mc_world_append(mc_world_line,160,first);
+    mc_render_profile_value(first_us);mc_world_append(mc_world_line,160,second);
+    mc_render_profile_value(second_us);mc_menu_draw_string(mc_world_line,4,y,0xa0a0a0);
+}
+
+int mc_render_step_frame(void)
+{
+    int scanned=0,index,lx,lz,y,x,z,last_faces=mc_render_faces;uint id,metadata,end;struct MCResidentChunk *resident;
+    uint profile_started=0,started=narm_millis();if(mc_profile_active)profile_started=narm_micros();
+    if(mc_profile_enabled)mc_render_frame_batches=mc_render_frame_batches+1;
+    while(mc_render_cache_ready?mc_render_cache_cursor<mc_render_cache_group_count:mc_render_frame_chunk<MC_RUNTIME_CHUNKS)
+    {
+        if(mc_render_cache_ready)
+        {
+            end=mc_render_run_end[mc_render_cache_cursor];
+            if(mc_render_sections_enabled&&end&&!mc_render_section_visible(mc_render_cached_keys[mc_render_cache_cursor]))
+            {if(mc_profile_enabled)mc_render_groups_skipped=mc_render_groups_skipped+(int)end-mc_render_cache_cursor;mc_render_cache_cursor=(int)end;}
+            else
+            {
+                if(mc_profile_enabled)mc_render_groups_visited=mc_render_groups_visited+1;
+                if(mc_render_submit_optimized)mc_render_cached_group(mc_render_cache_cursor);
+                else mc_render_cached_group_legacy(mc_render_cache_cursor);
+                mc_render_cache_cursor=mc_render_cache_cursor+1;
+            }
+        }
+        else
+        {
+        resident=&mc_runtime_chunks[mc_render_frame_chunk];
+        if(resident->state!=1){mc_render_frame_chunk=mc_render_frame_chunk+1;mc_render_frame_cell=0;continue;}
+        index=mc_render_frame_cell;mc_render_frame_cell=index+1;
+        if(mc_render_frame_cell==MC_CHUNK_BLOCK_COUNT){mc_render_frame_chunk=mc_render_frame_chunk+1;mc_render_frame_cell=0;}
+        lx=index>>11;lz=(index>>7)&15;y=index&127;
+        id=mc_chunk_get_block_id(&resident->chunk,lx,y,lz);
+        if(id!=0)
+        {
+            metadata=mc_chunk_get_block_metadata(&resident->chunk,lx,y,lz);
+            x=resident->chunk.x_position*16+lx;z=resident->chunk.z_position*16+lz;
+            mc_render_block(id,metadata,x,y,z);
+        }
+        }
+        scanned=scanned+1;
+#ifdef MC10_TILE_PROFILE
+        if(mc_render_list_error)
+        {mc_render_list_flush();mc_profile_cancel();return -1;}
+#endif
+        /* Time-bounded pumping replaces the eight-solid-block cap. */
+        if((scanned&15)==0||mc_render_faces-last_faces>=16)
+        {last_faces=mc_render_faces;if((uint)(narm_millis()-started)>=8)
+            {
+#ifdef MC10_TILE_PROFILE
+                mc_render_list_flush();
+                if(mc_render_list_error){mc_profile_cancel();return -1;}
+#endif
+                if(mc_profile_active)mc_profile_render_us=mc_profile_render_us+(uint)(narm_micros()-profile_started);return 0;
+            }}
+    }
+#ifdef MC10_TILE_PROFILE
+    mc_render_list_flush();
+    if(mc_render_list_error){mc_profile_cancel();return -1;}
+#endif
+    if(mc_profile_active)mc_profile_render_us=mc_profile_render_us+(uint)(narm_micros()-profile_started);
+    if(mc_profile_enabled)mc_render_frame_ms=(uint)(narm_millis()-mc_render_frame_started);
+#ifdef MC10_PLAYER_FOUNDATION
+    /* The hand has its own depth pass over the completed world. The gameplay
+     * HUD is required content even with optional F3 diagnostics disabled. */
+    profile_started=0;if(mc_profile_active)profile_started=narm_micros();
+#ifdef MC10_WORLD_SYSTEMS
+    mc_render_draw_tesr(mc_third_current_frame_partial());
+    if(mc_third_current_frame_mode()>0)mc_third_draw();
+    else mc_viewmodel_draw(mc_game_partial_tick());
+#else
+    mc_viewmodel_draw(mc_game_partial_tick());
+#endif
+    if(mc_profile_active)mc_profile_render_us=mc_profile_render_us+(uint)(narm_micros()-profile_started);
+    profile_started=0;if(mc_profile_active)profile_started=narm_micros();
+    mc_hud_draw();
+    if(mc_profile_active)mc_profile_hud_us=mc_profile_hud_us+(uint)(narm_micros()-profile_started);
+#endif
+    if(!mc_profile_enabled)
+    {mc_render_fps_frame();mc_render_draw_fps();}
+    else if(mc_render_show_hud)
+    {
+    profile_started=narm_micros();
+#ifdef MC10_AUTOPROFILE
+    mc_menu_draw_string("Minecraft 1.0 - auto profile", 4, 4, 0xffffff);
+#else
+    mc_menu_draw_string("Minecraft 1.0 - interactive", 4, 4, 0xffffff);
+#endif
+    mc_world_line[0] = 0; mc_world_append(mc_world_line,160,"Faces: ");
+    mc_world_append_int(mc_world_line,160,mc_profile_valid?mc_profile_last.faces:mc_render_faces);
+    mc_world_append(mc_world_line,160,"  pending: ");
+    mc_world_append_int(mc_world_line,160,mc_profile_valid?mc_profile_last.pending:mc_render_unsupported);
+    mc_menu_draw_string(mc_world_line,4,14,0xffff55);
+    mc_world_line[0]=0;mc_world_append(mc_world_line,160,"Frame ms: ");mc_world_append_uint(mc_world_line,160,mc_profile_valid?mc_profile_last.total_us/1000:mc_render_frame_ms);
+    mc_world_append(mc_world_line,160,"  ticks: ");mc_world_append_int(mc_world_line,160,mc_profile_valid?mc_profile_last.ticks:mc_player.ticks);
+    mc_menu_draw_string(mc_world_line,4,24,0xa0a0a0);
+    mc_world_line[0]=0;mc_world_append(mc_world_line,160,mc_render_cache_ready?"Surface cache: ":"Cache full: scan ");
+    mc_world_append_int(mc_world_line,160,mc_render_cache_group_count);mc_world_append(mc_world_line,160," batches: ");
+    mc_world_append_int(mc_world_line,160,mc_profile_valid?mc_profile_last.batches:mc_render_frame_batches);mc_menu_draw_string(mc_world_line,4,34,0xa0a0a0);
+    if(mc_profile_valid)
+    {
+        mc_render_profile_pair("Gen: ",mc_profile_last.geometry_us," Draw: ",mc_profile_last.draw_us,44);
+        mc_render_profile_pair("Input: ",mc_profile_last.input_us," Tick: ",mc_profile_last.tick_us,54);
+        mc_render_profile_pair("Yield: ",mc_profile_last.yield_us," Other: ",mc_profile_last.other_us,64);
+        mc_render_profile_pair("Setup: ",mc_profile_last.setup_us," UI: ",mc_profile_last.ui_us,74);
+        mc_render_profile_pair("HUD: ",mc_profile_last.hud_us," Present: ",mc_profile_last.present_us,84);
+        mc_world_line[0]=0;mc_world_append(mc_world_line,160,"Visited: ");mc_world_append_int(mc_world_line,160,mc_render_last_visited);
+        mc_world_append(mc_world_line,160," skipped: ");mc_world_append_int(mc_world_line,160,mc_render_last_skipped);
+        mc_menu_draw_string(mc_world_line,4,94,0xa0a0a0);
+        mc_world_line[0]=0;mc_world_append(mc_world_line,160,"Geometry: ");mc_world_append_int(mc_world_line,160,mc_render_geometry_count);
+        mc_world_append(mc_world_line,160," cached blocks: ");mc_world_append_int(mc_world_line,160,mc_render_geometry_blocks);
+        mc_menu_draw_string(mc_world_line,4,104,0xa0a0a0);
+        mc_menu_draw_string("Profile: previous frame, wall ms",4,114,0xa0a0a0);
+    }
+    else mc_menu_draw_string("Profile: collecting first frame",4,44,0xa0a0a0);
+#ifdef MC10_AUTOPROFILE
+    if(mc_render_benchmark_running)
+        mc_menu_draw_string("Benchmark running - ESC: cancel",4,229,0xffffff);
+    else
+#endif
+    mc_menu_draw_string("Arrows: look ESC: pause F3: profiler",4,229,0xffffff);
+#ifndef MC10_PLAYER_FOUNDATION
+    narm_half_line(157,120,163,120,MC_COLOR_WHITE);narm_half_line(160,117,160,123,MC_COLOR_WHITE);
+#endif
+    mc_profile_hud_us=mc_profile_hud_us+(uint)(narm_micros()-profile_started);
+    }
+    profile_started=0;if(mc_profile_active)profile_started=narm_micros();
+    narm_half_present();
+    if(mc_profile_active)
+    {
+        mc_profile_present_us=mc_profile_present_us+(uint)(narm_micros()-profile_started);
+        mc_profile_ui_us=mc_profile_hud_us+mc_profile_present_us;
+        mc_profile_finish(mc_render_faces,mc_render_frame_batches,mc_render_unsupported,mc_player.ticks);
+    }
+    if(mc_profile_enabled){mc_render_last_visited=mc_render_groups_visited;mc_render_last_skipped=mc_render_groups_skipped;}
+    if(mc_profile_active)mc_render_frame_ms=mc_profile_last.total_us/1000;
+    return 1;
+}
+
+void mc_render_static_world_wait(struct MCWorldInfo *world)
+{
+    mc_game_run(world);
+}
+#if defined(MC10_PLAYER_FOUNDATION) && !defined(MC10_AUTOPROFILE)
+/* Streaming recompiles the SAME slot/cell-ordered display list in bounded
+ * pumps. No frame may use it until completion. The synchronous compiler above
+ * remains the profiler/oracle path; capacity overflow still selects its exact
+ * non-dropping scan fallback. No framebuffer operation occurs in these pumps. */
+int mc_render_rebuild_state;
+int mc_render_rebuild_chunk,mc_render_rebuild_cell_index;
+int mc_render_rebuild_cursor,mc_render_rebuild_first,mc_render_rebuild_previous;
+uint mc_render_rebuild_started;
+int mc_render_rebuild_bad_id;
+int mc_render_rebuild_bad_x,mc_render_rebuild_bad_y,mc_render_rebuild_bad_z;
+
+int mc_render_rebuild_block_error(void)
+{return mc_render_rebuild_bad_id!=0;}
+
+void mc_render_rebuild_cancel(void)
+{
+    mc_render_rebuild_state=0;mc_render_cache_ready=0;
+    mc_render_geometry_count=0;mc_render_geometry_blocks=0;
+    mc_render_capture=0;mc_render_capture_fancy=0;
+    mc_render_cached_block=0;mc_render_cached_standard=0;
+    mc_render_texture_override=-1;mc_render_force_mask=0;
+    mc_render_rebuild_bad_id=0;
+    mc_render_rebuild_bad_x=0;mc_render_rebuild_bad_y=0;mc_render_rebuild_bad_z=0;
+#ifdef MC10_WORLD_SYSTEMS
+    mc_render_tesr_count=0;mc_render_tesr_overflow=0;mc_render_pending_dynamic=0;
+    mc_render_source_tint_slot=0;
+    mc_render_source_dynamic=0;
+#endif
+}
+
+void mc_render_rebuild_begin(void)
+{
+    int i;
+    mc_render_rebuild_cancel();
+    mc_render_cache_error=0;mc_render_cache_group_count=0;
+    mc_render_cache_cursor=0;mc_render_rebuild_chunk=0;
+    mc_render_rebuild_cell_index=0;mc_render_rebuild_cursor=0;
+    mc_render_rebuild_first=0;mc_render_rebuild_previous=-1;
+    mc_render_origin_x=mc_runtime_center_x*16;
+    mc_render_origin_z=mc_runtime_center_z*16;
+    mc_render_geometry_origin_x=mc_render_origin_x;
+    mc_render_geometry_origin_z=mc_render_origin_z;
+    for(i=0;i<576;i=i+1)mc_render_section_state[i]=0;
+    mc_render_refresh_light_lookup();
+    mc_render_rebuild_started=narm_millis();mc_render_rebuild_state=1;
+#ifdef MC10_WORLD_SYSTEMS
+    mc_block_mesh_error=0;
+    mc_tint_reset();
+#ifdef MC10_TILE_PROFILE
+    mc_render_list_error=0;
+#endif
+#endif
+}
+
+/* Same integer packing, visibility/light calls and traversal as build_cache. */
+void mc_render_rebuild_surface_cell(int c,int index)
+{
+    int x,y,z,lx,lz,side,standard,type;uint id,metadata,style,mask;
+    struct MCResidentChunk *resident=&mc_runtime_chunks[c];
+    float x0,y0,z0,x1,y1,z1;
+    lx=index>>11;lz=(index>>7)&15;y=index&127;
+    id=mc_chunk_get_block_id(&resident->chunk,lx,y,lz);
+    if(id==0)return;
+    x=resident->chunk.x_position*16+lx;z=resident->chunk.z_position*16+lz;
+    type=-1;if(id<256&&mc_blocks[id].present)type=mc_blocks[id].render_type;
+    /* Never publish an invisible/unsafe resident block. All loaded cells,
+     * including buried cells and validation-only overflow tails, are checked.
+     * The exact supported RenderBlocks cases are unchanged, not approximated. */
+#ifdef MC10_WORLD_SYSTEMS
+    if(mc_block_static_status(id)==0||mc_block_static_status(id)==4)
+#else
+    if(type!=0&&type!=1&&type!=2&&type!=4&&type!=6&&type!=7&&type!=8&&
+       type!=10&&type!=11&&type!=18)
+#endif
+    {
+        if(!mc_render_rebuild_bad_id)
+        {
+            mc_render_rebuild_bad_id=(int)id;mc_render_rebuild_bad_x=x;
+            mc_render_rebuild_bad_y=y;mc_render_rebuild_bad_z=z;
+        }
+        return;
+    }
+    metadata=mc_chunk_get_block_metadata(&resident->chunk,lx,y,lz);
+#ifdef MC10_WORLD_SYSTEMS
+    if(mc_block_static_status(id)>=2&&mc_block_static_status(id)<=3)mc_render_pending_dynamic=mc_render_pending_dynamic+1;
+    if(mc_render_is_tesr(id)){mc_render_tesr_add(c,index,id,metadata);return;}
+    if(id==119)return; /* Animated End-portal layer is explicitly unported. */
+#endif
+    if(mc_render_cache_error)return; /* Same pass, validation only after full. */
+    standard=id<256&&mc_blocks[id].present&&mc_blocks[id].render_type==0;
+    mask=0;
+    if(standard)
+    {
+        mc_render_source_bounds(id,metadata,x,y,z,&x0,&y0,&z0,&x1,&y1,&z1);
+        for(side=0;side<6;side=side+1)
+            if(mc_render_source_side_visible(id,x,y,z,side,x0,y0,z0,x1,y1,z1))mask=mask|((uint)1<<side);
+    }
+    if(!standard||mask)
+    {
+        if(mc_render_cache_group_count>=mc_render_cache_limit)
+        {mc_render_cache_error=1;return;}
+        style=mask<<24;
+        if(id<256&&mc_blocks[id].present)
+            for(side=0;side<6;side=side+1)
+            {
+                mc_render_set_light(x,y,z,side,mc_blocks[id].light_value);
+                style=style|((uint)(mc_render_light_key>>3)<<(side*4));
+            }
+        mc_render_cached_keys[mc_render_cache_group_count]=(uint)index|((uint)c<<15)|(id<<19)|(metadata<<27)|(standard?0x80000000:0);
+        mc_render_cached_style[mc_render_cache_group_count]=style;
+        mc_render_cache_group_count=mc_render_cache_group_count+1;
+    }
+}
+
+/* A complete block is the indivisible geometry/capacity rollback unit. Never
+ * leak capture mode or forced Fancy into pause/options between pumps. */
+void mc_render_rebuild_geometry_group(int i)
+{
+    int start,index,c,x,z,fancy=mc_options.fancy_graphics;
+    uint key,id;struct MCBlock *block;
+    mc_render_geometry_range[i]=0;key=mc_render_cached_keys[i];id=(key>>19)&255;
+    if(id<256&&mc_blocks[id].present)
+    {
+        block=&mc_blocks[id];
+        if(block->render_type==0||block->render_type==1||block->render_type==2||
+           block->render_type==4||block->render_type==6||block->render_type==7||
+           block->render_type==8||block->render_type==10||block->render_type==11||block->render_type==18
+#ifdef MC10_WORLD_SYSTEMS
+           ||mc_block_mesh_has(id)
+#endif
+           )
+        {
+            start=mc_render_geometry_count;mc_render_capture_overflow=0;
+            mc_render_capture=1;mc_render_capture_fancy=0;mc_options.fancy_graphics=1;
+            mc_render_cached_group_legacy(i);
+            mc_options.fancy_graphics=fancy;mc_render_capture=0;mc_render_capture_fancy=0;
+            if(mc_render_capture_overflow)mc_render_geometry_count=start;
+            else
+            {
+                mc_render_geometry_range[i]=0x80000000|(uint)start|((uint)(mc_render_geometry_count-start)<<14);
+                if(mc_render_geometry_count>start)
+                {
+                    index=(int)(key&32767);c=(int)((key>>15)&15);
+                    x=mc_runtime_chunks[c].chunk.x_position*16+(index>>11);
+                    z=mc_runtime_chunks[c].chunk.z_position*16+((index>>7)&15);
+                    mc_render_geometry_center[start*3]=(float)(x-mc_render_origin_x)+.5f;
+                    mc_render_geometry_center[start*3+1]=(float)(index&127)+.5f;
+                    mc_render_geometry_center[start*3+2]=(float)(z-mc_render_origin_z)+.5f;
+                }
+                mc_render_geometry_blocks=mc_render_geometry_blocks+1;
+            }
+        }
+    }
+    mc_render_cached_block=0;mc_render_cached_standard=0;
+    mc_render_texture_override=-1;mc_render_force_mask=0;
+}
+
+/* Return 0 pending, 1 finished. The caller must check block_error before making
+ * either the cache or exact scan fallback accessible to rendering/physics.
+ * Required budget clocks are not profiler diagnostics. One cell/group may
+ * overrun 4ms; an arbitrary half-block suspension would change capture state. */
+int mc_render_rebuild_step(void)
+{
+    int count=0,i,section;uint started=narm_millis();
+    if(mc_render_rebuild_state==0)return 1;
+    if(mc_render_rebuild_state==1)
+    {
+        while(mc_render_rebuild_chunk<MC_RUNTIME_CHUNKS&&count<128)
+        {
+            if(mc_runtime_chunks[mc_render_rebuild_chunk].state!=1)
+            {mc_render_rebuild_chunk=mc_render_rebuild_chunk+1;mc_render_rebuild_cell_index=0;continue;}
+            mc_render_rebuild_surface_cell(mc_render_rebuild_chunk,mc_render_rebuild_cell_index);
+            mc_render_rebuild_cell_index=mc_render_rebuild_cell_index+1;count=count+1;
+            if(mc_render_rebuild_bad_id)
+            {
+                mc_render_rebuild_state=0;mc_render_geometry_count=0;mc_render_geometry_blocks=0;
+                mc_render_cache_build_ms=(uint)(narm_millis()-mc_render_rebuild_started);
+                return 1;
+            }
+            if(mc_render_rebuild_cell_index==MC_CHUNK_BLOCK_COUNT)
+            {mc_render_rebuild_chunk=mc_render_rebuild_chunk+1;mc_render_rebuild_cell_index=0;}
+            if((count&15)==0&&(uint)(narm_millis()-started)>=4)break;
+        }
+        if(mc_render_rebuild_chunk==MC_RUNTIME_CHUNKS)
+        {
+            if(mc_render_cache_error)
+            {
+                mc_render_rebuild_state=0;mc_render_geometry_count=0;mc_render_geometry_blocks=0;
+                mc_render_cache_build_ms=(uint)(narm_millis()-mc_render_rebuild_started);
+                return 1;
+            }
+            mc_render_rebuild_state=2;
+        }
+        return 0;
+    }
+    if(mc_render_rebuild_state==2)
+    {
+        while(mc_render_rebuild_cursor<mc_render_cache_group_count&&count<128)
+        {
+            i=mc_render_rebuild_cursor;section=mc_render_section_id(mc_render_cached_keys[i]);
+            mc_render_run_end[i]=0;
+            if(section!=mc_render_rebuild_previous)
+            {
+                if(i)mc_render_run_end[mc_render_rebuild_first]=(uint)i;
+                mc_render_rebuild_first=i;mc_render_rebuild_previous=section;
+            }
+            mc_render_rebuild_cursor=i+1;count=count+1;
+        }
+        if(mc_render_rebuild_cursor==mc_render_cache_group_count)
+        {
+            if(mc_render_cache_group_count)mc_render_run_end[mc_render_rebuild_first]=(uint)mc_render_cache_group_count;
+            mc_render_rebuild_cursor=0;mc_render_rebuild_state=3;
+        }
+        return 0;
+    }
+    while(mc_render_rebuild_cursor<mc_render_cache_group_count&&count<8)
+    {
+        mc_render_rebuild_geometry_group(mc_render_rebuild_cursor);
+        mc_render_rebuild_cursor=mc_render_rebuild_cursor+1;count=count+1;
+        if((uint)(narm_millis()-started)>=4)break;
+    }
+    if(mc_render_rebuild_cursor<mc_render_cache_group_count)return 0;
+    mc_render_cache_ready=1;mc_render_rebuild_state=0;
+    mc_render_cache_build_ms=(uint)(narm_millis()-mc_render_rebuild_started);
+    return 1;
+}
+#endif

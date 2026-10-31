@@ -1,0 +1,65 @@
+/* Isolated actual-Thumb probe; no firmware addresses or MCU emulation. */
+#include "narm.tch"
+typedef unsigned int uint;
+#define MC10_PLAYER_FOUNDATION 1
+#include "src/mc10_u64.tc"
+#include "src/mc10_java_double.tc"
+#include "src/mc10_fp64.tc"
+#include "src/mc10_math.tc"
+#include "src/mc10_assets.tc"
+#include "mc10_atan.tc"
+struct MCItemStack{int id;int count;int damage;int tag_offset;int tag_bytes;};
+struct MCItemStack mc_inventory_slots[40];int mc_inventory_selected;
+struct MCItemStack *mc_inventory_current(void){return &mc_inventory_slots[mc_inventory_selected];}
+void mc_inventory_empty(struct MCItemStack *s){s->id=0;s->count=0;s->damage=0;s->tag_offset=0;s->tag_bytes=0;}
+void mc_inventory_copy(struct MCItemStack *a,struct MCItemStack *b){a->id=b->id;a->count=b->count;a->damage=b->damage;a->tag_offset=b->tag_offset;a->tag_bytes=b->tag_bytes;}
+struct MCPhysicalPlayer{float yaw;float pitch;int grounded;int sneak;int water;};struct MCPhysicalPlayer mc_player;
+struct MCPhysicalRuntime{int health;int block_x;int block_y;int block_z;};struct MCPhysicalRuntime mc_runtime_player;
+struct MCSettings{int view_bobbing;int render_distance;int fancy;};struct MCSettings mc_options;
+int mc_render_sky_subtracted,mc_render_origin_x,mc_render_origin_z;
+float mc_render_view_x,mc_render_view_y,mc_render_view_z,mc_render_camera[18];
+uint mc_render_grass_color=0x3c,mc_render_light_lookup[128];
+int mc_runtime_try_get_saved_light(int sky,int x,int y,int z,uint *out){*out=sky?15:0;return 1;}
+int mc_runtime_try_get_block(int x,int y,int z,uint *out){*out=0;return 1;}
+int mc_runtime_try_get_metadata(int x,int y,int z,uint *out){*out=0;return 1;}
+int mc_item_flat_block_icon(int id,int damage){return -1;}
+uint fixture_item_pixels[64],fixture_item_mask[8];
+int mc_player_ui_icon(struct MCItemStack *s,uint **p,uint **m){*p=&fixture_item_pixels[0];*m=&fixture_item_mask[0];return s->count>0&&s->id>=256;}
+#include "mc10_viewmodel.tc"
+uint probe_control[16],probe_input[64],probe_output[64];
+int main(void)
+{
+    int i,result;float *v=(float *)&probe_input[0];uint *out=&probe_output[0];
+    probe_control[1]=(uint)&mc_math_sine[0];probe_control[2]=(uint)&probe_input[0];probe_control[3]=(uint)&probe_output[0];
+    probe_control[5]=(uint)&mc_vm_skin[0];probe_control[6]=(uint)&mc_vm_skin_mask[0];
+    probe_control[7]=(uint)&fixture_item_pixels[0];probe_control[8]=(uint)&fixture_item_mask[0];
+    if(probe_control[0]==0)return (int)&probe_control[0];
+    if(probe_control[0]==2)
+    {mc_fp_init();result=mc_fp_atan(mc_fp_bits(probe_input[0],probe_input[1]));out[0]=mc_fp_values[result].lo;out[1]=mc_fp_values[result].hi;return 0;}
+    if(probe_control[0]==3)
+    {
+        if(probe_control[4]){mc_fp_init();mc_player.grounded=1;mc_runtime_player.health=20;mc_viewmodel_init();probe_control[4]=0;}
+        mc_viewmodel_begin_tick();
+        mc_inventory_selected=(int)probe_input[3];
+        mc_inventory_slots[mc_inventory_selected].id=(int)probe_input[0];mc_inventory_slots[mc_inventory_selected].count=(int)probe_input[1];mc_inventory_slots[mc_inventory_selected].damage=(int)probe_input[2];
+        mc_player.yaw=v[4];mc_player.pitch=v[5];if(probe_input[6])mc_viewmodel_swing();
+        mc_player.grounded=(int)probe_input[7];mc_player.sneak=(int)probe_input[8];mc_runtime_player.health=(int)probe_input[9];
+        for(i=0;i<6;i=i+1){mc_fp_values[i].lo=probe_input[10+i*2];mc_fp_values[i].hi=probe_input[11+i*2];}
+        mc_viewmodel_tick();
+        out[0]=*((uint *)&mc_vm_equipped);out[1]=*((uint *)&mc_vm_previous_equipped);
+        out[2]=*((uint *)&mc_vm_swing);out[3]=*((uint *)&mc_vm_previous_swing);
+        out[4]=*((uint *)&mc_vm_arm_yaw);out[5]=*((uint *)&mc_vm_arm_pitch);
+        out[6]=*((uint *)&mc_vm_walk);out[7]=*((uint *)&mc_vm_camera_yaw);out[8]=*((uint *)&mc_vm_camera_pitch);
+        out[9]=(uint)mc_vm_swing_ticks;out[10]=(uint)mc_vm_swinging;out[11]=(uint)mc_vm_stack.id;out[12]=(uint)mc_vm_stack.count;
+        return 0;
+    }
+    mc_player.yaw=v[0];mc_player.pitch=v[1];
+    mc_vm_arm_yaw=v[2];mc_vm_arm_pitch=v[3];mc_vm_previous_arm_yaw=v[4];mc_vm_previous_arm_pitch=v[5];
+    mc_vm_swing=v[6];mc_vm_previous_swing=v[7];mc_vm_equipped=v[8];mc_vm_previous_equipped=v[9];
+    mc_vm_stack.id=(int)v[11];mc_vm_stack.count=mc_vm_stack.id?1:0;
+    mc_vm_walk=v[12];mc_vm_previous_walk=v[13];mc_vm_camera_yaw=v[14];mc_vm_previous_camera_yaw=v[15];mc_vm_camera_pitch=v[16];mc_vm_previous_camera_pitch=v[17];
+    mc_options.view_bobbing=(int)v[18];
+    mc_fp_init();mc_vm_item_matrix(v[10],!mc_vm_stack.count);
+    for(i=0;i<16;i=i+1)out[i]=*((uint *)&mc_vm_matrix[i]);
+    return 0;
+}

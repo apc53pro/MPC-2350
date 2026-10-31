@@ -1,0 +1,84 @@
+/* NARM-only wall-clock diagnostics, not Minecraft gameplay state.
+ * Drawing is nested in render time; ticks are nested in pump time.
+ * Explicit yields are measured, but implicit preemption stays in its caller.
+ * Unsigned differences handle the 32-bit micros rollover (<71 minute sample).
+ */
+struct MCFrameProfile
+{
+    uint total_us;
+    uint geometry_us;
+    uint draw_us;
+    uint input_us;
+    uint tick_us;
+    uint yield_us;
+    uint setup_us;
+    uint ui_us;
+    uint other_us;
+    uint hud_us;
+    uint present_us;
+    int faces;
+    int batches;
+    int pending;
+    int ticks;
+};
+struct MCFrameProfile mc_profile_last;
+int mc_profile_enabled=1;
+int mc_profile_active;
+int mc_profile_valid;
+uint mc_profile_started;
+uint mc_profile_render_us;
+uint mc_profile_draw_us;
+uint mc_profile_pump_us;
+uint mc_profile_tick_us;
+uint mc_profile_yield_us;
+uint mc_profile_setup_us;
+uint mc_profile_ui_us;
+uint mc_profile_hud_us;
+uint mc_profile_present_us;
+
+void mc_profile_begin(void)
+{
+    if(!mc_profile_enabled)return;
+    mc_profile_render_us=0;mc_profile_draw_us=0;mc_profile_pump_us=0;
+    mc_profile_tick_us=0;mc_profile_yield_us=0;mc_profile_setup_us=0;mc_profile_ui_us=0;
+    mc_profile_hud_us=0;mc_profile_present_us=0;
+    mc_profile_started=narm_micros();mc_profile_active=1;
+}
+void mc_profile_cancel(void)
+{
+    mc_profile_active=0;
+}
+void mc_profile_yield(void)
+{
+    uint started=0;if(mc_profile_active)started=narm_micros();
+    narm_yield();
+    if(mc_profile_active)mc_profile_yield_us=mc_profile_yield_us+(uint)(narm_micros()-started);
+}
+void mc_profile_finish(int faces,int batches,int pending,int ticks)
+{
+    uint ended,accounted;
+    if(!mc_profile_active)return;
+    ended=narm_micros();
+    mc_profile_last.total_us=(uint)(ended-mc_profile_started);
+    mc_profile_last.draw_us=mc_profile_draw_us;
+    mc_profile_last.geometry_us=mc_profile_render_us>=mc_profile_draw_us?
+        mc_profile_render_us-mc_profile_draw_us:0;
+    mc_profile_last.tick_us=mc_profile_tick_us;
+    mc_profile_last.input_us=mc_profile_pump_us>=mc_profile_tick_us?
+        mc_profile_pump_us-mc_profile_tick_us:0;
+    mc_profile_last.yield_us=mc_profile_yield_us;
+    mc_profile_last.setup_us=mc_profile_setup_us;
+    mc_profile_last.ui_us=mc_profile_ui_us;
+    mc_profile_last.hud_us=mc_profile_hud_us;mc_profile_last.present_us=mc_profile_present_us;
+    accounted=mc_profile_render_us+mc_profile_pump_us+mc_profile_yield_us+
+              mc_profile_setup_us+mc_profile_ui_us;
+    mc_profile_last.other_us=mc_profile_last.total_us>=accounted?
+        mc_profile_last.total_us-accounted:0;
+    mc_profile_last.faces=faces;mc_profile_last.batches=batches;
+    mc_profile_last.pending=pending;mc_profile_last.ticks=ticks;
+    mc_profile_valid=1;
+    /* Keep measuring between frames: the post-present yield and next input
+     * pump belong to the following sample, not an unmeasured gap. */
+    mc_profile_begin();
+    mc_profile_started=ended;
+}

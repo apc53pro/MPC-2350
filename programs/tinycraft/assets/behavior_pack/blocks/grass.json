@@ -1,0 +1,27 @@
+{
+  "format_version": "1.21.80",
+  "minecraft:block": {
+    "description": { "identifier": "tinycraft:grass" },
+    "components": {
+      "minecraft:destructible_by_mining": { "seconds_to_destroy": 0.75 },
+      "minecraft:collision_box": true,
+      "minecraft:selection_box": true,
+      "minecraft:loot": "loot_tables/blocks/grass.json",
+      "minecraft:material_instances": {
+        "*": { "texture": "tinycraft:grass_side", "render_method": "opaque" },
+        "up": { "texture": "tinycraft:grass_top", "render_method": "opaque" },
+        "down": { "texture": "tinycraft:dirt", "render_method": "opaque" }
+      },
+      "tinycraft:runtime": {
+        "block_id": 1,
+        "render_class": "fast_cube",
+        "ui_color": 28,
+        "preferred_tool": "shovel",
+        "preferred_break_seconds": 0.4,
+        "icon_texture": "grass_side",
+        "name_label": "grass",
+        "item": "tinycraft:grass"
+      }
+    }
+  }
+}

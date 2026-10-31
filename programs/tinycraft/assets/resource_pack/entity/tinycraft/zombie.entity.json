@@ -1,0 +1,17 @@
+{
+  "format_version": "1.10.0",
+  "minecraft:client_entity": {
+    "description": {
+      "identifier": "tinycraft:zombie",
+      "materials": { "default": "entity_alphatest" },
+      "textures": { "default": "textures/entity/zombie/zombie" },
+      "geometry": { "default": "geometry.tinycraft.zombie" },
+      "render_controllers": ["controller.render.tinycraft.zombie"],
+      "tinycraft:runtime": {
+        "texture_id": 17,
+        "texture_name": "entity/zombie",
+        "render_kind": "cuboids"
+      }
+    }
+  }
+}

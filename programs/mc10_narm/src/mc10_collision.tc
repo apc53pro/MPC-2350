@@ -1,0 +1,159 @@
+/* AxisAlignedBB and World.getCollidingBoundingBoxes, with binary64 handles.
+ * Entity-object collisions are an explicit dependency of the entity milestone. */
+#define MC_COLLISION_MAX 512
+struct MCAABB { int low[3];int high[3]; };
+struct MCAABB mc_collision_boxes[MC_COLLISION_MAX];
+int mc_collision_count;
+int mc_collision_error;
+
+void mc_box_copy(struct MCAABB *out,struct MCAABB *in)
+{int a;for(a=0;a<3;a=a+1){out->low[a]=in->low[a];out->high[a]=in->high[a];}}
+void mc_box_offset(struct MCAABB *box,int x,int y,int z)
+{int d[3];int a;d[0]=x;d[1]=y;d[2]=z;for(a=0;a<3;a=a+1){box->low[a]=mc_fp_add(box->low[a],d[a]);box->high[a]=mc_fp_add(box->high[a],d[a]);}}
+void mc_box_expand(struct MCAABB *out,struct MCAABB *box,int x,int y,int z)
+{int d[3];int a;d[0]=x;d[1]=y;d[2]=z;for(a=0;a<3;a=a+1){out->low[a]=mc_fp_sub(box->low[a],d[a]);out->high[a]=mc_fp_add(box->high[a],d[a]);}}
+void mc_box_sweep(struct MCAABB *out,struct MCAABB *box,int x,int y,int z)
+{
+    int d[3];int a;d[0]=x;d[1]=y;d[2]=z;mc_box_copy(out,box);
+    for(a=0;a<3;a=a+1) if(mc_fp_lt(d[a],D0))out->low[a]=mc_fp_add(out->low[a],d[a]);
+        else if(mc_fp_gt(d[a],D0))out->high[a]=mc_fp_add(out->high[a],d[a]);
+}
+int mc_box_intersects(struct MCAABB *a,struct MCAABB *b)
+{int i;for(i=0;i<3;i=i+1)if(!mc_fp_gt(b->high[i],a->low[i])||!mc_fp_lt(b->low[i],a->high[i]))return 0;return 1;}
+int mc_box_axis_offset(struct MCAABB *obstacle,struct MCAABB *box,int d,int axis)
+{
+    int a,gap;
+    for(a=0;a<3;a=a+1) if(a!=axis && (!mc_fp_gt(box->high[a],obstacle->low[a])||!mc_fp_lt(box->low[a],obstacle->high[a])))return d;
+    if(mc_fp_gt(d,D0)&&mc_fp_le(box->high[axis],obstacle->low[axis]))
+    {gap=mc_fp_sub(obstacle->low[axis],box->high[axis]);if(mc_fp_lt(gap,d))d=gap;}
+    if(mc_fp_lt(d,D0)&&mc_fp_ge(box->low[axis],obstacle->high[axis]))
+    {gap=mc_fp_sub(obstacle->high[axis],box->low[axis]);if(mc_fp_gt(gap,d))d=gap;}
+    return d;
+}
+int mc_collision_block(int x,int y,int z,uint *id)
+{
+    if(!mc_runtime_try_get_block(x,y,z,id)){mc_collision_error=1;return 0;}
+    if(*id!=0 && (*id>=256||!mc_blocks[*id].present)){mc_collision_error=2;return 0;}
+    return 1;
+}
+int mc_collision_connects(int id,int x,int y,int z)
+{
+    uint neighbor;if(!mc_collision_block(x,y,z,&neighbor))return 0;
+    if(id==85
+#ifdef MC10_WORLD_SYSTEMS
+       ||id==113
+#endif
+      ) return neighbor==(uint)id||neighbor==107||
+        (neighbor!=0&&mc_material_is_opaque(mc_blocks[neighbor].material)&&mc_blocks[neighbor].normal_block&&mc_blocks[neighbor].material!=MC_MATERIAL_PUMPKIN);
+#ifdef MC10_WORLD_SYSTEMS
+    return neighbor==(uint)id||neighbor==20||neighbor==18||mc_block_is_opaque(neighbor);
+#else
+    return neighbor==102||mc_block_is_opaque(neighbor);
+#endif
+}
+void mc_collision_add(struct MCAABB *query,int x,int y,int z,
+                       float x0,float y0,float z0,float x1,float y1,float z1,int fence)
+{
+    struct MCAABB box;
+    box.low[0]=fence?mc_fp_f32((float)x+x0):mc_fp_add(mc_fp_i32(x),mc_fp_f32(x0));
+    box.low[1]=mc_fp_add(mc_fp_i32(y),mc_fp_f32(y0));
+    box.low[2]=fence?mc_fp_f32((float)z+z0):mc_fp_add(mc_fp_i32(z),mc_fp_f32(z0));
+    box.high[0]=fence==2?mc_fp_f32((float)(x+1)-(1.0f-x1)):(fence?mc_fp_f32((float)x+x1):mc_fp_add(mc_fp_i32(x),mc_fp_f32(x1)));
+    box.high[1]=fence==2?mc_fp_f32((float)(y+1)-(1.0f-y1)):(fence?mc_fp_f32((float)y+y1):mc_fp_add(mc_fp_i32(y),mc_fp_f32(y1)));
+    box.high[2]=fence==2?mc_fp_f32((float)(z+1)-(1.0f-z1)):(fence?mc_fp_f32((float)z+z1):mc_fp_add(mc_fp_i32(z),mc_fp_f32(z1)));
+    if(!mc_box_intersects(&box,query))return;
+    if(mc_collision_count>=MC_COLLISION_MAX){mc_collision_error=3;return;}
+    mc_box_copy(&mc_collision_boxes[mc_collision_count],&box);mc_collision_count=mc_collision_count+1;
+}
+void mc_collision_shape(struct MCAABB *query,uint id,uint metadata,int x,int y,int z)
+{
+    float x0,y0,z0,x1,y1,z1;int nx,px,nz,pz,any;
+#ifdef MC10_WORLD_SYSTEMS
+    if(id==36){mc_collision_error=4;return;} /* Requires persisted TileEntityPiston state. */
+    if(id==6||id==8||id==27||id==28||id==30||id==32||id==38||id==39||id==40||id==51||id==55||id==63||id==66||id==68||id==69||id==70||id==75||id==76||id==77||id==83||id==90||id==104||id==105||id==106||id==115||id==119)return;
+    if(id==78){if((metadata&7)>=3)mc_collision_add(query,x,y,z,0,0,0,1,.5f,1,0);return;}
+    if(id==81){mc_collision_add(query,x,y,z,.0625f,0,.0625f,.9375f,.9375f,.9375f,2);return;}
+    if(id==88){mc_collision_add(query,x,y,z,0,0,0,1,.875f,1,0);return;}
+    if(id==92){mc_collision_add(query,x,y,z,(float)(1+metadata*2)/16.0f,0,.0625f,.9375f,.4375f,.9375f,2);return;}
+    if(id==29||id==33||id==60){mc_collision_add(query,x,y,z,0,0,0,1,1,1,0);return;}
+    if(id==107){if(!(metadata&4))mc_collision_add(query,x,y,z,0,0,0,1,1.5f,1,0);return;}
+    if(id==117){mc_collision_add(query,x,y,z,.4375f,0,.4375f,.5625f,.875f,.5625f,0);mc_collision_add(query,x,y,z,0,0,0,1,.125f,1,0);return;}
+    if(id==118){mc_collision_add(query,x,y,z,0,0,0,1,.3125f,1,0);mc_collision_add(query,x,y,z,0,0,0,.125f,1,1,0);mc_collision_add(query,x,y,z,0,0,0,1,1,.125f,0);mc_collision_add(query,x,y,z,.875f,0,0,1,1,1,0);mc_collision_add(query,x,y,z,0,0,.875f,1,1,1,0);return;}
+    if(id==120){mc_collision_add(query,x,y,z,0,0,0,1,.8125f,1,0);if(metadata&4)mc_collision_add(query,x,y,z,.3125f,.8125f,.3125f,.6875f,1,.6875f,0);return;}
+    if(id==34)
+    {
+        int d=metadata&7;
+        if(d==0){mc_collision_add(query,x,y,z,0,0,0,1,.25f,1,0);mc_collision_add(query,x,y,z,.375f,.25f,.375f,.625f,1,.625f,0);}
+        else if(d==1){mc_collision_add(query,x,y,z,0,.75f,0,1,1,1,0);mc_collision_add(query,x,y,z,.375f,0,.375f,.625f,.75f,.625f,0);}
+        else if(d==2){mc_collision_add(query,x,y,z,0,0,0,1,1,.25f,0);mc_collision_add(query,x,y,z,.25f,.375f,.25f,.75f,.625f,1,0);}
+        else if(d==3){mc_collision_add(query,x,y,z,0,0,.75f,1,1,1,0);mc_collision_add(query,x,y,z,.25f,.375f,0,.75f,.625f,.75f,0);}
+        else if(d==4){mc_collision_add(query,x,y,z,0,0,0,.25f,1,1,0);mc_collision_add(query,x,y,z,.375f,.25f,.25f,.625f,.75f,1,0);}
+        else if(d==5){mc_collision_add(query,x,y,z,.75f,0,0,1,1,1,0);mc_collision_add(query,x,y,z,0,.375f,.25f,.75f,.625f,.75f,0);}
+        return;
+    }
+#endif
+    if(id==0||id==9||id==10||id==11||id==31||id==37||id==50||id==59||id==72)return;
+    if(id==53||id==67
+#ifdef MC10_WORLD_SYSTEMS
+       ||id==108||id==109||id==114
+#endif
+      )
+    {
+        if(metadata==0){mc_collision_add(query,x,y,z,0,0,0,.5f,.5f,1,0);mc_collision_add(query,x,y,z,.5f,0,0,1,1,1,0);}
+        else if(metadata==1){mc_collision_add(query,x,y,z,0,0,0,.5f,1,1,0);mc_collision_add(query,x,y,z,.5f,0,0,1,.5f,1,0);}
+        else if(metadata==2){mc_collision_add(query,x,y,z,0,0,0,1,.5f,.5f,0);mc_collision_add(query,x,y,z,0,0,.5f,1,1,1,0);}
+        else if(metadata==3){mc_collision_add(query,x,y,z,0,0,0,1,1,.5f,0);mc_collision_add(query,x,y,z,0,0,.5f,1,.5f,1,0);}
+        return;
+    }
+    if(id==85||id==102
+#ifdef MC10_WORLD_SYSTEMS
+       ||id==113||id==101
+#endif
+      )
+    {
+        nx=mc_collision_connects(id,x-1,y,z);px=mc_collision_connects(id,x+1,y,z);
+        nz=mc_collision_connects(id,x,y,z-1);pz=mc_collision_connects(id,x,y,z+1);any=nx||px||nz||pz;
+        if(id==85
+#ifdef MC10_WORLD_SYSTEMS
+           ||id==113
+#endif
+          ){mc_collision_add(query,x,y,z,nx?0:.375f,0,nz?0:.375f,px?1:.625f,1.5f,pz?1:.625f,1);return;}
+        if((!nx||!px)&&any)
+        {if(nx&&!px)mc_collision_add(query,x,y,z,0,0,.4375f,.5f,1,.5625f,0);else if(!nx&&px)mc_collision_add(query,x,y,z,.5f,0,.4375f,1,1,.5625f,0);}
+        else mc_collision_add(query,x,y,z,0,0,.4375f,1,1,.5625f,0);
+        if((!nz||!pz)&&any)
+        {if(nz&&!pz)mc_collision_add(query,x,y,z,.4375f,0,0,.5625f,1,.5f,0);else if(!nz&&pz)mc_collision_add(query,x,y,z,.4375f,0,.5f,.5625f,1,1,0);}
+        else mc_collision_add(query,x,y,z,.4375f,0,0,.5625f,1,1,0);
+        return;
+    }
+    if(id==65)
+    {
+        x0=0;y0=0;z0=0;x1=1;y1=1;z1=1;
+        if(metadata==2)z0=.875f;else if(metadata==3)z1=.125f;else if(metadata==4)x0=.875f;else if(metadata==5)x1=.125f;
+    }
+    else mc_block_bounds_for_state(id,metadata,&x0,&y0,&z0,&x1,&y1,&z1);
+    mc_collision_add(query,x,y,z,x0,y0,z0,x1,y1,z1,0);
+}
+int mc_collision_query(struct MCAABB *box)
+{
+    int x0=mc_fp_floor(box->low[0]),x1=mc_fp_floor(mc_fp_add(box->high[0],D1));
+    int y0=mc_fp_floor(box->low[1]),y1=mc_fp_floor(mc_fp_add(box->high[1],D1));
+    int z0=mc_fp_floor(box->low[2]),z1=mc_fp_floor(mc_fp_add(box->high[2],D1));
+    int x,y,z;uint id,metadata;
+    mc_collision_count=0;
+    for(x=x0;x<x1;x=x+1)for(z=z0;z<z1;z=z+1)
+    {
+        if(!mc_runtime_chunk_exists(mc_region_floor_div(x,16),mc_region_floor_div(z,16))){mc_collision_error=1;return 0;}
+        for(y=y0-1;y<y1;y=y+1)
+        {
+            if(!mc_collision_block(x,y,z,&id))return 0;
+            if(id==0)continue;
+            mc_runtime_try_get_metadata(x,y,z,&metadata);mc_collision_shape(box,id,metadata,x,y,z);
+            if(mc_collision_error||mc_fp_error)return 0;
+        }
+    }
+    return mc_collision_count;
+}
+int mc_collision_resolve(struct MCAABB *box,int d,int axis)
+{int i;for(i=0;i<mc_collision_count;i=i+1)d=mc_box_axis_offset(&mc_collision_boxes[i],box,d,axis);return d;}
+

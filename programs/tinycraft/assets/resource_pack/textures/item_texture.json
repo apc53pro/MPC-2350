@@ -1,0 +1,36 @@
+{
+  "resource_pack_name": "tinycraft",
+  "texture_name": "atlas.items",
+  "texture_data": {
+    "tinycraft:stick": {
+      "textures": "textures/items/stick",
+      "tinycraft_texture_id": 12,
+      "tinycraft_runtime_name": "item/stick"
+    },
+    "tinycraft:wooden_pickaxe": {
+      "textures": "textures/items/wood_pickaxe",
+      "tinycraft_texture_id": 13,
+      "tinycraft_runtime_name": "item/wood_pickaxe"
+    },
+    "tinycraft:wooden_sword": {
+      "textures": "textures/items/wood_sword",
+      "tinycraft_texture_id": 14,
+      "tinycraft_runtime_name": "item/wood_sword"
+    },
+    "tinycraft:wooden_shovel": {
+      "textures": "textures/items/wood_shovel",
+      "tinycraft_texture_id": 15,
+      "tinycraft_runtime_name": "item/wood_shovel"
+    },
+    "tinycraft:wooden_axe": {
+      "textures": "textures/items/wood_axe",
+      "tinycraft_texture_id": 16,
+      "tinycraft_runtime_name": "item/wood_axe"
+    },
+    "tinycraft:raw_porkchop": {
+      "textures": "textures/items/porkchop_raw",
+      "tinycraft_texture_id": 21,
+      "tinycraft_runtime_name": "item/raw_porkchop"
+    }
+  }
+}

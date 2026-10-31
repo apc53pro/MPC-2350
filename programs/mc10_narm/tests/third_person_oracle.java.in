@@ -1,0 +1,89 @@
+import java.io.*;
+import java.util.*;
+class Entity{}
+class EntityLiving extends Entity{float yOffset=1.62f,rotationYaw,rotationPitch,prevRotationYaw,prevRotationPitch,renderYawOffset;double prevPosX,prevPosY,prevPosZ,posX,posY,posZ;boolean isPlayerSleeping(){return false;}}
+strictfp class GL11{
+ static float[]m=new float[16],result;static ArrayDeque<float[]>stack=new ArrayDeque<float[]>();static final int GL_RESCALE_NORMAL=0,GL_COLOR_MATERIAL=0;
+ static void identity(){Arrays.fill(m,0);for(int i=0;i<16;i+=5)m[i]=1;stack.clear();}static void glPushMatrix(){stack.push(m.clone());}static void glPopMatrix(){m=stack.pop();}
+ static void glEnable(int x){}static void glDisable(int x){}static void glColor4f(float a,float b,float c,float d){}static void glScalef(float x,float y,float z){for(int r=0;r<12;r+=4){m[r]*=x;m[r+1]*=y;m[r+2]*=z;}}
+ static void glDepthMask(boolean b){}static void glNormal3f(float x,float y,float z){}
+ static void glTranslatef(float x,float y,float z){for(int r=0;r<12;r+=4)m[r+3]=m[r+3]+m[r]*x+m[r+1]*y+m[r+2]*z;}
+ static void glRotatef(float a,float x,float y,float z){int axis=x!=0?0:y!=0?1:2;float rad=a*((float)Math.PI/180f),s=(float)Math.sin(rad),c=(float)Math.cos(rad);if((x+y+z)<0)s=-s;int p=axis==0?1:0,q=axis==2?1:2;if(axis==1)s=-s;for(int r=0;r<12;r+=4){float u=m[r+p],v=m[r+q];m[r+p]=u*c+v*s;m[r+q]=v*c-u*s;}}
+}
+class Settings{int thirdPersonView;boolean debugCamEnable;}
+class GL12{static final int GL_RESCALE_NORMAL=0;}
+class RenderHelper{static void enableStandardItemLighting(){}static void disableStandardItemLighting(){}}
+class RenderEngine{int getTexture(String s){return 0;}void bindTexture(int x){}}
+class RenderManager{static RenderManager instance=new RenderManager();float playerViewY;void renderEntityWithPosYaw(EntityLiving p,double x,double y,double z,float yaw,float partial){GL11.glTranslatef((float)x,(float)y-p.yOffset,(float)z);GL11.glRotatef(180-p.renderYawOffset,0,1,0);GL11.glScalef(-.9375f,-.9375f,.9375f);GL11.glTranslatef(0,-1.5078125f,0);GL11.result=GL11.m.clone();}}
+class RenderGlobal{boolean func_27307_a(double x,double y,double z,float p){return false;}}
+class Minecraft{EntityLiving renderViewEntity=new EntityLiving(),thePlayer=renderViewEntity;Settings gameSettings=new Settings();World theWorld=new World();RenderGlobal renderGlobal=new RenderGlobal();RenderEngine renderEngine=new RenderEngine();}
+class InventoryOracle{
+ Minecraft mc=new Minecraft();int field_40216_e=72,field_40215_f=37,xSize=176,ySize=166;float xSize_lo,ySize_lo;void drawTexturedModalRect(int a,int b,int c,int d,int e,int f){}void func_40218_g(){}
+ __SOURCE_INVENTORY__
+ void draw(){drawGuiContainerBackgroundLayer(.5f,0,0);}
+}
+class CameraOracle{
+ Minecraft mc=new Minecraft();float thirdPersonDistance=4,thirdPersonDistanceTemp=4,prevCamRoll,camRoll,prevDebugCamYaw,debugCamYaw,prevDebugCamPitch,debugCamPitch;boolean cloudFog;
+ __SOURCE_CAMERA__
+ void camera(float p){orientCamera(p);}
+}
+class ModelBase{public float onGround;public boolean isRiding;}
+class ModelRenderer{
+ public float textureWidth=64,textureHeight=32,rotateAngleX,rotateAngleY,rotateAngleZ,rotationPointX,rotationPointY,rotationPointZ;public boolean mirror,showModel=true;int u,v;ArrayList<ModelBox>boxes=new ArrayList<ModelBox>();
+ ModelRenderer(ModelBase b,int u,int v){this.u=u;this.v=v;}void addBox(float x,float y,float z,int w,int h,int d,float inflate){boxes.add(new ModelBox(this,u,v,x,y,z,w,h,d,inflate));}void setRotationPoint(float x,float y,float z){rotationPointX=x;rotationPointY=y;rotationPointZ=z;}
+ ModelRenderer setTextureSize(int w,int h){textureWidth=w;textureHeight=h;return this;}
+ void render(float scale){if(!showModel)return;GL11.glPushMatrix();GL11.glTranslatef(rotationPointX*scale,rotationPointY*scale,rotationPointZ*scale);if(rotateAngleZ!=0)GL11.glRotatef(rotateAngleZ*(180f/(float)Math.PI),0,0,1);if(rotateAngleY!=0)GL11.glRotatef(rotateAngleY*(180f/(float)Math.PI),0,1,0);if(rotateAngleX!=0)GL11.glRotatef(rotateAngleX*(180f/(float)Math.PI),1,0,0);for(ModelBox b:boxes)b.func_40670_a(Tessellator.instance,scale);GL11.glPopMatrix();}
+}
+class MathHelper{
+ static float[]table=new float[65536];static float sin(float x){return table[(int)(x*10430.378f)&65535];}static float cos(float x){return table[(int)(x*10430.378f+16384f)&65535];}
+ static float sqrt_float(float x){return(float)Math.sqrt(x);}static float sqrt_double(double x){return(float)Math.sqrt(x);}static int floor_double(double x){int v=(int)x;return x<v?v-1:v;}
+}
+class Tessellator{static Tessellator instance=new Tessellator();static ArrayList<float[]>points=new ArrayList<float[]>();static String texture;void startDrawingQuads(){}void setNormal(float x,float y,float z){}void addVertexWithUV(double xx,double yy,double zz,double u,double v){float x=(float)xx,y=(float)yy,z=(float)zz;points.add(new float[]{GL11.m[0]*x+GL11.m[1]*y+GL11.m[2]*z+GL11.m[3],GL11.m[4]*x+GL11.m[5]*y+GL11.m[6]*z+GL11.m[7],GL11.m[8]*x+GL11.m[9]*y+GL11.m[10]*z+GL11.m[11],(float)u,(float)v});}void draw(){}}
+__MODEL_BIPED__
+__MODEL_BOX__
+__TEXTURED_QUAD__
+__POSITION_VERTEX__
+__VEC3D__
+__MODEL_CHEST__
+__MODEL_LARGE_CHEST__
+__SIGN_MODEL__
+class TileEntity{}
+class TileEntityChest extends TileEntity{World worldObj=new World();int metadata,xCoord,yCoord,zCoord;float field_35149_g,field_35148_f;TileEntityChest field_35152_b,field_35150_d,field_35153_c,field_35151_e;Block getBlockType(){return Block.chest;}int getBlockMetadata(){return metadata;}void func_35147_g(){}}
+class TileEntitySign extends TileEntity{int metadata,id;String[]signText={"","","",""};int lineBeingEdited=-1;Block getBlockType(){return id==63?Block.signPost:Block.signWall;}int getBlockMetadata(){return metadata;}}
+class FontRenderer{int getStringWidth(String s){return 0;}void drawString(String s,int x,int y,int color){}}
+class TileEntitySpecialRenderer{void bindTextureByName(String s){Tessellator.texture=s;}FontRenderer getFontRenderer(){return new FontRenderer();}}
+class BlockChest extends Block{void unifyAdjacentChests(World w,int x,int y,int z){}}
+class ClosedChestOracle extends TileEntitySpecialRenderer{ModelChest field_35377_b=new ModelChest(),field_35378_c=new ModelLargeChest();__SOURCE_CHEST__}
+class SignOracle extends TileEntitySpecialRenderer{SignModel signModel=new SignModel();__SOURCE_SIGN__}
+class MovingObjectPosition{Vec3D hitVec;MovingObjectPosition(int x,int y,int z,int side,Vec3D hit){hitVec=hit;}}
+class Block{
+ static Block[]blocksList=new Block[256];static Block bed=new Block(),chest=new BlockChest(),signPost=new Block(),signWall=new Block();int blockID=26;double minX,minY,minZ,maxX,maxY,maxZ;Block(){blocksList[1]=this;}
+ void setBlockBoundsBasedOnState(World w,int x,int y,int z){}Object getCollisionBoundingBoxFromPool(World w,int x,int y,int z){return this;}boolean canCollideCheck(int m,boolean liquids){return true;}
+ __BLOCK_RAY__
+ __INSIDE_YZ__
+ __INSIDE_XZ__
+ __INSIDE_XY__
+}
+class World{
+ int bx,by,bz;int getBlockId(int x,int y,int z){return x==bx&&y==by&&z==bz?1:0;}int getBlockMetadata(int x,int y,int z){return 0;}
+ MovingObjectPosition rayTraceBlocks(Vec3D a,Vec3D b){return rayTraceBlocks_do_do(a,b,false,false);}
+ __WORLD_RAY__
+}
+strictfp class ThirdPersonOracle{
+ static float f(String s){return Float.intBitsToFloat(Integer.parseUnsignedInt(s,16));}static double d(String s){return Double.longBitsToDouble(Long.parseUnsignedLong(s,16));}
+ static void out(float f){System.out.printf("%08x ",Float.floatToRawIntBits(f));}
+ public static void main(String[]args)throws Exception{
+  DataInputStream data=new DataInputStream(new FileInputStream(args[0]));data.skipBytes(16);for(int i=0;i<65536;i++)MathHelper.table[i]=Float.intBitsToFloat(Integer.reverseBytes(data.readInt()));data.close();
+  BufferedReader in=new BufferedReader(new InputStreamReader(System.in));String line;while((line=in.readLine())!=null){String[]v=line.split(" ");
+   if(v[0].equals("atan2")){System.out.printf("%016x%n",Double.doubleToRawLongBits(StrictMath.atan2(d(v[1]),d(v[2]))));continue;}
+   if(v[0].equals("preview")){InventoryOracle o=new InventoryOracle();o.xSize_lo=Integer.parseInt(v[1]);o.ySize_lo=Integer.parseInt(v[2]);GL11.identity();o.draw();for(float f:GL11.result)out(f);System.out.println();continue;}
+   if(v[0].equals("tesr")){int id=Integer.parseInt(v[1]),meta=Integer.parseInt(v[2]),east=Integer.parseInt(v[3]),south=Integer.parseInt(v[4]);GL11.identity();Tessellator.points.clear();if(id==54){TileEntityChest t=new TileEntityChest();t.metadata=meta;if(east!=0)t.field_35153_c=new TileEntityChest();if(south!=0)t.field_35151_e=new TileEntityChest();new ClosedChestOracle().func_35376_a(t,0,0,0,.5f);}else{TileEntitySign t=new TileEntitySign();t.id=id;t.metadata=meta;new SignOracle().renderTileEntitySignAt(t,0,0,0,.5f);}System.out.print(Tessellator.texture+" ");for(float[]p:Tessellator.points)for(float f:p)out(f);System.out.println();continue;}
+   if(v[0].equals("camera")){CameraOracle c=new CameraOracle();c.mc.gameSettings.thirdPersonView=Integer.parseInt(v[1]);EntityLiving p=c.mc.renderViewEntity;p.rotationYaw=p.prevRotationYaw=f(v[2]);p.rotationPitch=p.prevRotationPitch=f(v[3]);p.posX=p.prevPosX=d(v[4]);p.posY=p.prevPosY=d(v[5]);p.posZ=p.prevPosZ=d(v[6]);c.mc.theWorld.bx=Integer.parseInt(v[7]);c.mc.theWorld.by=Integer.parseInt(v[8]);c.mc.theWorld.bz=Integer.parseInt(v[9]);Block b=new Block();b.minX=f(v[10]);b.minY=f(v[11]);b.minZ=f(v[12]);b.maxX=f(v[13]);b.maxY=f(v[14]);b.maxZ=f(v[15]);GL11.identity();c.camera(.5f);GL11.glTranslatef(-(float)p.posX,-(float)p.posY,-(float)p.posZ);for(int i=0;i<12;i++)out(i>=8?-GL11.m[i]:GL11.m[i]);System.out.println();continue;}
+   if(v[0].equals("angles")){ModelBiped b=new ModelBiped();b.onGround=f(v[6]);b.isSneak=Integer.parseInt(v[7])!=0;b.field_1278_i=Integer.parseInt(v[8]);b.setRotationAngles(f(v[1]),f(v[2]),f(v[3]),f(v[4]),f(v[5]),1f/16f);
+    ModelRenderer[]parts={b.bipedHead,b.bipedBody,b.bipedRightArm,b.bipedLeftArm,b.bipedRightLeg,b.bipedLeftLeg,b.bipedHeadwear};for(ModelRenderer p:parts){out(p.rotateAngleX);out(p.rotateAngleY);out(p.rotateAngleZ);}for(ModelRenderer p:parts){out(p.rotationPointX);out(p.rotationPointY);out(p.rotationPointZ);}System.out.println();continue;}
+   if(v[0].equals("ray")){World w=new World();w.bx=Integer.parseInt(v[7]);w.by=Integer.parseInt(v[8]);w.bz=Integer.parseInt(v[9]);Block b=new Block();b.minX=f(v[10]);b.minY=f(v[11]);b.minZ=f(v[12]);b.maxX=f(v[13]);b.maxY=f(v[14]);b.maxZ=f(v[15]);MovingObjectPosition hit=w.rayTraceBlocks_do_do(Vec3D.createVector(d(v[1]),d(v[2]),d(v[3])),Vec3D.createVector(d(v[4]),d(v[5]),d(v[6])),false,false);if(hit==null)System.out.println("none");else System.out.printf("%016x %016x %016x%n",Double.doubleToRawLongBits(hit.hitVec.xCoord),Double.doubleToRawLongBits(hit.hitVec.yCoord),Double.doubleToRawLongBits(hit.hitVec.zCoord));continue;}
+   if(v[0].equals("box")){int part=Integer.parseInt(v[1]);float inflate=f(v[2]);int[]u={0,16,40,40,0,0,32},t={0,16,16,16,16,16,0},width={8,8,4,4,4,4,8},height={8,12,12,12,12,12,8},depth={8,4,4,4,4,4,8};float[]mins={-4,-8,-4,-4,0,-2,-3,-2,-2,-1,-2,-2,-2,0,-2,-2,0,-2,-4,-8,-4};ModelRenderer r=new ModelRenderer(null,0,0);r.mirror=part==3||part==5;TexturedQuad.all.clear();new ModelBox(r,u[part],t[part],mins[part*3],mins[part*3+1],mins[part*3+2],width[part],height[part],depth[part],inflate);for(TexturedQuad q:TexturedQuad.all)for(PositionTextureVertex p:q.vertexPositions){out((float)p.vector3D.xCoord);out((float)p.vector3D.yCoord);out((float)p.vector3D.zCoord);out(p.texturePositionX*64);out(p.texturePositionY*32);}System.out.println();continue;}
+  }
+ }
+}
+

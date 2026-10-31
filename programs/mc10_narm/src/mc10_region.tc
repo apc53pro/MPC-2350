@@ -1,0 +1,416 @@
+/*
+ * Minecraft 1.0 RegionFile/RegionFileCache/ThreadedChunkLoader read path.
+ *
+ * Region caching and threaded writes are outside this read-only milestone.
+ * The on-disk header, sector addressing, compression dispatch, root/Level
+ * validation, coordinate relocation, and ChunkLoader byte-array bindings
+ * reproduce the 1.0 source behavior for existing McRegion saves.
+ */
+
+#define MC_REGION_OK 0
+#define MC_REGION_ERR_PATH -20
+#define MC_REGION_ERR_IO -21
+#define MC_REGION_ERR_HEADER -22
+#define MC_REGION_ERR_MISSING -23
+#define MC_REGION_ERR_SECTOR -24
+#define MC_REGION_ERR_LENGTH -25
+#define MC_REGION_ERR_COMPRESSION -26
+#define MC_REGION_ERR_NBT -27
+#define MC_REGION_ERR_LEVEL -28
+#define MC_REGION_ERR_BLOCKS -29
+#define MC_REGION_ERR_ARRAY -30
+
+unsigned char mc_region_header_bytes[5];
+struct MCChunk mc_region_chunk;
+int mc_region_status;
+int mc_region_chunk_x;
+int mc_region_chunk_z;
+int mc_region_region_x;
+int mc_region_region_z;
+int mc_region_local_x;
+int mc_region_local_z;
+uint mc_region_sector_offset;
+uint mc_region_sector_count;
+uint mc_region_timestamp;
+uint mc_region_record_length;
+uint mc_region_compressed_bytes;
+uint mc_region_raw_bytes;
+int mc_region_compression;
+int mc_region_relocated;
+int mc_region_spawn_local_x;
+int mc_region_spawn_local_z;
+uint mc_region_spawn_block;
+uint mc_region_spawn_metadata;
+uint mc_region_spawn_height;
+uint mc_region_block_hash;
+uint mc_region_non_air;
+int mc_region_height_min;
+int mc_region_height_max;
+
+int mc_region_floor_div(int value, int divisor)
+{
+    int quotient = value / divisor;
+    int remainder = value % divisor;
+    if (remainder < 0) quotient = quotient - 1;
+    return quotient;
+}
+
+int mc_region_read_exact(char *path, void *buffer, uint offset, uint bytes)
+{
+    return narm_file_read(path, buffer, offset, bytes, NARM_STORAGE_SD) ==
+           (int)bytes;
+}
+
+int mc_region_make_path(struct MCWorldInfo *world)
+{
+    mc_world_path_begin(world->folder);
+    mc_world_append(mc_world_path, MC_WORLD_PATH_CAP, "/region/r.");
+    mc_world_append_int(mc_world_path, MC_WORLD_PATH_CAP, mc_region_region_x);
+    mc_world_append(mc_world_path, MC_WORLD_PATH_CAP, ".");
+    mc_world_append_int(mc_world_path, MC_WORLD_PATH_CAP, mc_region_region_z);
+    mc_world_append(mc_world_path, MC_WORLD_PATH_CAP, ".mcr");
+    return mc_world_strlen(mc_world_path) < MC_WORLD_PATH_CAP - 1;
+}
+
+int mc_region_copy_array(int level, char *key, char *destination,
+                         int expected_length)
+{
+    int offset;
+    int length;
+    int i;
+    if (mc_nbt_get_byte_array(level, key, &offset, &length) != 1)
+        return MC_REGION_ERR_ARRAY;
+    if (length != expected_length) return MC_REGION_ERR_ARRAY;
+    for (i = 0; i < length; i = i + 1)
+        destination[i] = (char)mc_nbt_bytes[offset + i];
+    return MC_REGION_OK;
+}
+
+int mc_region_list_count(int level, char *key)
+{
+    int list = mc_nbt_compound_find(level, key);
+    if (list < 0 || mc_nbt_tags[list].type != MC_NBT_LIST) return 0;
+    return mc_nbt_list_tag_count(list);
+}
+
+char *mc_region_error_text(int status)
+{
+    if (status == MC_REGION_ERR_PATH) return "REGION PATH TOO LONG";
+    if (status == MC_REGION_ERR_IO) return "REGION IO FAIL";
+    if (status == MC_REGION_ERR_HEADER) return "REGION HEADER INVALID";
+    if (status == MC_REGION_ERR_MISSING) return "CHUNK NOT SAVED";
+    if (status == MC_REGION_ERR_SECTOR) return "CHUNK SECTOR INVALID";
+    if (status == MC_REGION_ERR_LENGTH) return "CHUNK LENGTH INVALID";
+    if (status == MC_REGION_ERR_COMPRESSION) return "CHUNK COMPRESSION INVALID";
+    if (status == MC_REGION_ERR_NBT) return "CHUNK NBT INVALID";
+    if (status == MC_REGION_ERR_LEVEL) return "CHUNK LEVEL MISSING";
+    if (status == MC_REGION_ERR_BLOCKS) return "CHUNK BLOCKS MISSING";
+    if (status == MC_REGION_ERR_ARRAY) return "CHUNK ARRAY INVALID";
+    return "SPAWN CHUNK LOAD FAIL";
+}
+
+int mc_region_load_chunk(struct MCWorldInfo *world, int chunk_x, int chunk_z,
+                         struct MCChunk *chunk,
+                         struct MCNibbleArray *data_map,
+                         struct MCNibbleArray *skylight_map,
+                         struct MCNibbleArray *blocklight_map,
+                         char *blocks, char *metadata, char *skylight,
+                         char *blocklight, char *heightmap)
+{
+    uint file_size;
+    uint entry_index;
+    uint location;
+    uint record_offset;
+    uint payload_bytes;
+    int root;
+    int level;
+    int stored_x;
+    int stored_z;
+    int terrain;
+    int result;
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("region_enter",0))return MC_REGION_ERR_IO;
+#endif
+    mc_region_chunk_x = chunk_x;
+    mc_region_chunk_z = chunk_z;
+    mc_region_region_x = mc_region_floor_div(mc_region_chunk_x, 32);
+    mc_region_region_z = mc_region_floor_div(mc_region_chunk_z, 32);
+    mc_region_local_x = mc_region_chunk_x & 31;
+    mc_region_local_z = mc_region_chunk_z & 31;
+    mc_region_relocated = 0;
+    if (!mc_region_make_path(world)) return MC_REGION_ERR_PATH;
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("region_path_ready",0))return MC_REGION_ERR_IO;
+#endif
+    if (!narm_file_exists(mc_world_path, NARM_STORAGE_SD))
+        return MC_REGION_ERR_MISSING;
+    if (narm_file_size(mc_world_path, NARM_STORAGE_SD, &file_size) < 0)
+        return MC_REGION_ERR_IO;
+    if (file_size < 8192 || (file_size & 4095) != 0)
+        return MC_REGION_ERR_HEADER;
+
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("region_header_begin",file_size))return MC_REGION_ERR_IO;
+#endif
+    entry_index = (uint)(mc_region_local_x + mc_region_local_z * 32);
+    if (!mc_region_read_exact(mc_world_path, mc_region_header_bytes,
+                              entry_index * 4, 4)) return MC_REGION_ERR_IO;
+    location = mc_nbt_be32(mc_region_header_bytes);
+    if (location == 0) return MC_REGION_ERR_MISSING;
+    mc_region_sector_offset = location >> 8;
+    mc_region_sector_count = location & 255;
+    if (mc_region_sector_offset < 2 || mc_region_sector_count == 0 ||
+        mc_region_sector_offset + mc_region_sector_count > file_size / 4096)
+        return MC_REGION_ERR_SECTOR;
+
+    if (!mc_region_read_exact(mc_world_path, mc_region_header_bytes,
+                              4096 + entry_index * 4, 4))
+        return MC_REGION_ERR_IO;
+    mc_region_timestamp = mc_nbt_be32(mc_region_header_bytes);
+    record_offset = mc_region_sector_offset * 4096;
+    if (!mc_region_read_exact(mc_world_path, mc_region_header_bytes,
+                              record_offset, 5)) return MC_REGION_ERR_IO;
+    mc_region_record_length = mc_nbt_be32(mc_region_header_bytes);
+    mc_region_compression = (uint)mc_region_header_bytes[4] & 255;
+    if (mc_region_record_length < 1 ||
+        mc_region_record_length > mc_region_sector_count * 4096 - 4)
+        return MC_REGION_ERR_LENGTH;
+    payload_bytes = mc_region_record_length - 1;
+    mc_region_compressed_bytes = payload_bytes;
+    if (payload_bytes > MC_NBT_IO_BYTES) return MC_REGION_ERR_LENGTH;
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("payload_read_begin",payload_bytes))return MC_REGION_ERR_IO;
+#endif
+    if (!mc_region_read_exact(mc_world_path, mc_nbt_file_data,
+                              record_offset + 5, payload_bytes))
+        return MC_REGION_ERR_IO;
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("payload_read_done",payload_bytes))return MC_REGION_ERR_IO;
+    if(!mc_startup_checkpoint("inflate_begin",mc_region_compression))return MC_REGION_ERR_IO;
+#endif
+    if (mc_region_compression == 1)
+        result = mc_nbt_gzip_inflate(mc_nbt_file_data, payload_bytes,
+                                     mc_nbt_io, MC_NBT_IO_BYTES,
+                                     &mc_region_raw_bytes);
+    else if (mc_region_compression == 2)
+        result = mc_nbt_zlib_inflate(mc_nbt_file_data, payload_bytes,
+                                     mc_nbt_io, MC_NBT_IO_BYTES,
+                                     &mc_region_raw_bytes);
+    else return MC_REGION_ERR_COMPRESSION;
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("inflate_done",result))return MC_REGION_ERR_IO;
+#endif
+    if (result < 0) return MC_REGION_ERR_COMPRESSION;
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("nbt_parse_begin",mc_region_raw_bytes))return MC_REGION_ERR_IO;
+    result=mc_nbt_parse(mc_nbt_io, mc_region_raw_bytes, &root);
+    if(!mc_startup_checkpoint("nbt_parse_done",result))return MC_REGION_ERR_IO;
+    if (result < 0)
+#else
+    if (mc_nbt_parse(mc_nbt_io, mc_region_raw_bytes, &root) < 0)
+#endif
+        return MC_REGION_ERR_NBT;
+    level = mc_nbt_compound_find(root, "Level");
+    if (level < 0 || mc_nbt_tags[level].type != MC_NBT_COMPOUND)
+        return MC_REGION_ERR_LEVEL;
+    if (mc_nbt_compound_find(level, "Blocks") < 0)
+        return MC_REGION_ERR_BLOCKS;
+
+    stored_x = 0; stored_z = 0;
+    mc_nbt_get_int(level, "xPos", &stored_x);
+    mc_nbt_get_int(level, "zPos", &stored_z);
+    if (stored_x != mc_region_chunk_x || stored_z != mc_region_chunk_z)
+        mc_region_relocated = 1;
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("copy_arrays_begin",0))return MC_REGION_ERR_IO;
+#endif
+    result = mc_region_copy_array(level, "Blocks", blocks,
+                                  MC_CHUNK_BLOCK_COUNT);
+    if (result < 0) return result;
+    result = mc_region_copy_array(level, "Data", metadata,
+                                  MC_CHUNK_NIBBLE_BYTES);
+    if (result < 0) return result;
+    result = mc_region_copy_array(level, "SkyLight", skylight,
+                                  MC_CHUNK_NIBBLE_BYTES);
+    if (result < 0) return result;
+    result = mc_region_copy_array(level, "BlockLight", blocklight,
+                                  MC_CHUNK_NIBBLE_BYTES);
+    if (result < 0) return result;
+    result = mc_region_copy_array(level, "HeightMap", heightmap, 256);
+    if (result < 0) return result;
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("copy_arrays_done",0))return MC_REGION_ERR_IO;
+#endif
+
+    mc_nibble_array_bind(data_map, metadata, 7);
+    mc_nibble_array_bind(skylight_map, skylight, 7);
+    mc_nibble_array_bind(blocklight_map, blocklight, 7);
+    mc_chunk_bind(chunk, blocks, heightmap, data_map, skylight_map,
+                  blocklight_map, mc_region_chunk_x, mc_region_chunk_z);
+    mc_nbt_get_long_bits(level, "LastUpdate", &chunk->last_update_hi,
+                         &chunk->last_update_lo);
+    terrain = 0;
+    mc_nbt_get_boolean(level, "TerrainPopulated", &terrain);
+    chunk->is_terrain_populated = terrain;
+    chunk->entity_count = mc_region_list_count(level, "Entities");
+    chunk->tile_entity_count =
+        mc_region_list_count(level, "TileEntities");
+    chunk->tile_tick_count = mc_region_list_count(level, "TileTicks");
+    chunk->has_entities = chunk->entity_count > 0;
+#ifdef MC10_STARTUP_DIAGNOSTIC
+    if(!mc_startup_checkpoint("region_done",0))return MC_REGION_ERR_IO;
+#endif
+    return MC_REGION_OK;
+}
+
+int mc_region_load_spawn(struct MCWorldInfo *world)
+{
+    int result;
+    int i;
+    uint value;
+    mc_region_spawn_local_x = world->spawn_x & 15;
+    mc_region_spawn_local_z = world->spawn_z & 15;
+    result = mc_region_load_chunk(
+        world, mc_region_floor_div(world->spawn_x, 16),
+        mc_region_floor_div(world->spawn_z, 16), &mc_region_chunk,
+        &mc_chunk_data, &mc_chunk_skylight_map, &mc_chunk_blocklight_map,
+        mc_chunk_blocks, mc_chunk_metadata, mc_chunk_skylight,
+        mc_chunk_blocklight, mc_chunk_heightmap);
+    if (result < 0) return result;
+
+    mc_region_spawn_height = mc_chunk_get_height_value(
+        &mc_region_chunk, mc_region_spawn_local_x, mc_region_spawn_local_z);
+    mc_region_spawn_block = mc_chunk_get_block_id(
+        &mc_region_chunk, mc_region_spawn_local_x, world->spawn_y,
+        mc_region_spawn_local_z);
+    mc_region_spawn_metadata = mc_chunk_get_block_metadata(
+        &mc_region_chunk, mc_region_spawn_local_x, world->spawn_y,
+        mc_region_spawn_local_z);
+    mc_region_block_hash = 0x811c9dc5;
+    mc_region_non_air = 0;
+    for (i = 0; i < MC_CHUNK_BLOCK_COUNT; i = i + 1)
+    {
+        value = (uint)mc_chunk_blocks[i] & 255;
+        mc_region_block_hash = (mc_region_block_hash ^ value) * 0x01000193;
+        if (value != 0) mc_region_non_air = mc_region_non_air + 1;
+    }
+    mc_region_height_min = 255;
+    mc_region_height_max = 0;
+    for (i = 0; i < 256; i = i + 1)
+    {
+        value = (uint)mc_chunk_heightmap[i] & 255;
+        if ((int)value < mc_region_height_min) mc_region_height_min = (int)value;
+        if ((int)value > mc_region_height_max) mc_region_height_max = (int)value;
+    }
+    return MC_REGION_OK;
+}
+
+uint mc_region_height_color(int height)
+{
+    uint level = (uint)height >> 4;
+    if (level > 7) level = 7;
+    return (level << 5) | (level << 2) | (level >> 1);
+}
+
+void mc_region_draw_preview(void)
+{
+    int x;
+    int z;
+    int px = 216;
+    int py = 56;
+    int height;
+    for (z = 0; z < 16; z = z + 1)
+        for (x = 0; x < 16; x = x + 1)
+        {
+            height = (int)mc_chunk_get_height_value(&mc_region_chunk, x, z);
+            narm_half_fill_rect(px + x * 6, py + z * 6,
+                                px + x * 6 + 6, py + z * 6 + 6,
+                                mc_region_height_color(height));
+        }
+    x = px + mc_region_spawn_local_x * 6;
+    z = py + mc_region_spawn_local_z * 6;
+    narm_half_line(x, z, x + 5, z, MC_COLOR_YELLOW);
+    narm_half_line(x, z, x, z + 5, MC_COLOR_YELLOW);
+    narm_half_line(x + 5, z, x + 5, z + 5, MC_COLOR_YELLOW);
+    narm_half_line(x, z + 5, x + 5, z + 5, MC_COLOR_YELLOW);
+}
+
+void mc_region_draw_status(struct MCWorldInfo *world)
+{
+    mc_world_draw_tiled_background();
+    mc_menu_draw_centered_string(world->level_name, 160, 10, 0xffffff);
+    if (mc_region_status < 0)
+    {
+        mc_menu_draw_centered_string("SPAWN CHUNK LOAD FAILED", 160, 34,
+                                     0xff5555);
+        mc_menu_draw_centered_string(mc_region_error_text(mc_region_status),
+                                     160, 54, 0xffffff);
+        mc_menu_draw_centered_string(mc_world_path, 160, 72, 0xa0a0a0);
+    }
+    else
+    {
+        mc_menu_draw_centered_string("SPAWN CHUNK LOADED", 160, 26, 0x55ff55);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Chunk: ");
+        mc_world_append_int(mc_world_line, 160, mc_region_chunk_x);
+        mc_world_append(mc_world_line, 160, ", ");
+        mc_world_append_int(mc_world_line, 160, mc_region_chunk_z);
+        mc_menu_draw_string(mc_world_line, 8, 48, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Region: ");
+        mc_world_append_int(mc_world_line, 160, mc_region_region_x);
+        mc_world_append(mc_world_line, 160, ", ");
+        mc_world_append_int(mc_world_line, 160, mc_region_region_z);
+        mc_menu_draw_string(mc_world_line, 8, 61, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Compression: ");
+        mc_world_append(mc_world_line, 160, mc_region_compression == 1 ? "gzip" : "zlib");
+        mc_menu_draw_string(mc_world_line, 8, 74, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "NBT bytes: ");
+        mc_world_append_uint(mc_world_line, 160, mc_region_raw_bytes);
+        mc_menu_draw_string(mc_world_line, 8, 87, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Spawn block: ");
+        mc_world_append_uint(mc_world_line, 160, mc_region_spawn_block);
+        mc_world_append(mc_world_line, 160, ":");
+        mc_world_append_uint(mc_world_line, 160, mc_region_spawn_metadata);
+        mc_menu_draw_string(mc_world_line, 8, 100, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Height: ");
+        mc_world_append_uint(mc_world_line, 160, mc_region_spawn_height);
+        mc_world_append(mc_world_line, 160, "  range ");
+        mc_world_append_int(mc_world_line, 160, mc_region_height_min);
+        mc_world_append(mc_world_line, 160, "-");
+        mc_world_append_int(mc_world_line, 160, mc_region_height_max);
+        mc_menu_draw_string(mc_world_line, 8, 113, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Non-air: ");
+        mc_world_append_uint(mc_world_line, 160, mc_region_non_air);
+        mc_menu_draw_string(mc_world_line, 8, 126, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Block hash: ");
+        mc_world_append_hex8(mc_world_line, 160, mc_region_block_hash);
+        mc_menu_draw_string(mc_world_line, 8, 139, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Entities: ");
+        mc_world_append_int(mc_world_line, 160, mc_region_chunk.entity_count);
+        mc_world_append(mc_world_line, 160, "  Tiles: ");
+        mc_world_append_int(mc_world_line, 160, mc_region_chunk.tile_entity_count);
+        mc_menu_draw_string(mc_world_line, 8, 152, 0xffffff);
+        mc_world_line[0] = 0; mc_world_append(mc_world_line, 160, "Terrain populated: ");
+        mc_world_append(mc_world_line, 160,
+                        mc_region_chunk.is_terrain_populated ? "yes" : "no");
+        mc_menu_draw_string(mc_world_line, 8, 165, 0xffffff);
+        mc_region_draw_preview();
+        mc_menu_draw_string("Height map", 235, 157, 0xa0a0a0);
+    }
+    mc_menu_draw_centered_string("Press Escape or Enter", 160, 214, 0xa0a0a0);
+    narm_half_present();
+}
+
+void mc_region_spawn_wait(struct MCWorldInfo *world)
+{
+    unsigned key, action, mods, character;
+    mc_region_status = mc_region_load_spawn(world);
+    mc_region_draw_status(world);
+    for (;;)
+    {
+        while (narm_next_key_event(&key, &action, &mods, &character) > 0)
+            if (action == NARM_KEY_ACTION_PRESS &&
+                (key == NARM_KEY_ESCAPE || key == NARM_KEY_ENTER)) return;
+        if (narm_poll_system_event() == NARM_EVENT_CLOSE_REQUESTED) return;
+        narm_sleep_ms(4);
+    }
+}

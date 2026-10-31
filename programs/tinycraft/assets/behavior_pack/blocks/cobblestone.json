@@ -1,0 +1,24 @@
+{
+  "format_version": "1.21.80",
+  "minecraft:block": {
+    "description": { "identifier": "tinycraft:cobblestone" },
+    "components": {
+      "minecraft:destructible_by_mining": { "seconds_to_destroy": 7.5 },
+      "minecraft:collision_box": true,
+      "minecraft:selection_box": true,
+      "minecraft:loot": "loot_tables/blocks/cobblestone.json",
+      "minecraft:material_instances": {
+        "*": { "texture": "tinycraft:cobblestone", "render_method": "opaque" }
+      },
+      "tinycraft:runtime": {
+        "block_id": 8,
+        "render_class": "fast_cube",
+        "ui_color": 146,
+        "preferred_tool": "pickaxe",
+        "preferred_break_seconds": 1.5,
+        "name_label": "cobblestone",
+        "item": "tinycraft:cobblestone"
+      }
+    }
+  }
+}

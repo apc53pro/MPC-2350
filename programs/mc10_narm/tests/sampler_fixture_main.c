@@ -1,0 +1,37 @@
+int main(void)
+{
+ int view,pair,order,index,mode,stop;struct MCPlayerState saved;
+ reset_view();saved=mc_runtime_player;
+ assert(mc_sampler_collect()&&frames==48&&mc_bench_completed==40);
+ assert(!memcmp(&saved,&mc_runtime_player,sizeof(saved))&&mc_render_show_hud==1&&!fixture_flags&&!mc_profile_active);
+ for(view=0;view<4;view++)
+ {
+  index=view*12;assert(frame_flags[index]==257&&frame_flags[index+1]==1);
+  for(pair=0;pair<5;pair++)for(order=0;order<2;order++)
+  {
+   mode=(view+pair+order)&1;index=view*12+2+pair*2+order;
+   assert(frame_flags[index]==(mode?1:257));
+   assert(frame_pitch[index]==(view>=2?0xc2b40000:saved.pitch_bits));
+   assert(frame_yaw[index]==saved.yaw_bits&&frame_hud[index]==((view&1)==0));
+   assert(mc_sampler_samples[mode*20+view*5+pair].order==(uint)order);
+  }
+ }
+ mc_sampler_format_log();assert(!mc_bench_full&&mc_bench_length<MC_BENCH_LOG_CAP);
+ max_write=17;assert(mc_bench_write_log()&&io_writes>1&&!strcmp(created_path,FIXTURE_SECOND_PATH));
+ assert(file_length==mc_bench_length&&!memcmp(file_data,mc_bench_log,file_length));
+ corrupt_read=1;assert(!mc_bench_write_log());corrupt_read=0;
+ write_zero=1;assert(!mc_bench_write_log());write_zero=0;
+ for(stop=0;stop<48;stop++)
+ {
+  reset_view();saved=mc_runtime_player;cancel_after=stop;
+  assert(!mc_sampler_collect()&&!fixture_flags&&!mc_profile_active);
+  assert(!memcmp(&saved,&mc_runtime_player,sizeof(saved))&&mc_render_show_hud==1);
+ }
+ reset_view();forced_event=NARM_EVENT_FOCUS_LOST;assert(!mc_sampler_collect()&&!fixture_flags);
+ reset_view();fixture_bad_mode=1;assert(!mc_sampler_collect()&&!fixture_flags);fixture_bad_mode=0;
+ reset_view();fixture_old_firmware=1;assert(!mc_sampler_collect()&&!frames);
+ assert(mc_benchmark_main()==1&&!frames);fixture_old_firmware=0;
+ fixture_test_result_handoff(48,40);
+ reset_view();max_write=100000;assert(mc_benchmark_main()==0&&frames==48&&mc_bench_completed==40&&!fixture_flags&&!game_calls);
+ mc_sampler_format_log();fwrite(mc_bench_log,1,mc_bench_length,stdout);return 0;
+}

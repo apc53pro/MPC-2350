@@ -1,0 +1,171 @@
+/* FILEMGR's drawing primitives target the firmware-owned 640x480 VGA4 surface.
+ * Text is packed into a transparent bit mask and sent in one service call per
+ * string. There is no private framebuffer or per-pixel firmware call loop. */
+
+#define FM_TEXT_MAX 96
+uint fmTextBits[384];
+char fmNumber[16];
+
+/* Use an application-specific name: fillRect2D is a compiler builtin for the
+ * separate 320x240 RGB332 surface, not a normal overridable C function. */
+void fmFillRect(int x0, int y0, int x1, int y1, uint color)
+{
+    if (x1 < 0 || y1 < 0 || x0 >= SCREEN_W || y0 >= SCREEN_H) return;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 >= SCREEN_W) x1 = SCREEN_W - 1;
+    if (y1 >= SCREEN_H) y1 = SCREEN_H - 1;
+    if (x1 < x0 || y1 < y0) return;
+    narm_fill_rect(x0, y0, x1, y1, color & (uint)15);
+}
+
+void drawBox(int x0, int y0, int x1, int y1, uint border, uint inside)
+{
+    fmFillRect(x0, y0, x1, y1, inside);
+    narm_line(x0, y0, x1, y0, border);
+    narm_line(x0, y1, x1, y1, border);
+    narm_line(x0, y0, x0, y1, border);
+    narm_line(x1, y0, x1, y1, border);
+}
+
+void drawScreenBorder()
+{
+    narm_line(0, 0, 639, 0, (uint)10);
+}
+
+int fastGlyphRow(int ch, int row)
+{
+    int idx;
+    if (ch >= 97 && ch <= 122) ch = ch - 32;
+    if (row < 0 || row > 6) return 0;
+    /* The original 5x7 table predates several punctuation marks used by the
+     * refreshed UI. Keep those marks legible instead of a question mark. */
+    if (ch == 124) { if (row < 7) return 4; return 0; }
+    if (ch == 43) { if (row == 3) return 31; if (row > 0 && row < 6) return 4; return 0; }
+    if (ch == 61) { if (row == 2 || row == 4) return 31; return 0; }
+    if (ch == 33) { if (row < 4 || row == 6) return 4; return 0; }
+    if (ch == 37) { if (row == 0 || row == 1) return 25; if (row == 2) return 2; if (row == 3) return 4; if (row == 4) return 8; return 19; }
+    if (ch < 32 || ch > 95) ch = 63;
+    idx = ch - 32;
+    if (row < 4) return (int)((fontLo[idx] >> (uint)((3 - row) * 5)) & (uint)31);
+    return (int)((fontHi[idx] >> (uint)((6 - row) * 5)) & (uint)31);
+}
+
+/* width/height are the visible glyph dimensions; advance includes spacing. */
+void fmTextRaster(char text[], int len, int maxChars, int x, int y,
+                  int glyphW, int glyphH, int advance, uint color)
+{
+    int count;
+    int width;
+    int words;
+    int i;
+    int py;
+    int px;
+    int row;
+    int pattern;
+    uint bit;
+    count = 0;
+    while (count < len && count < maxChars && count < FM_TEXT_MAX)
+    {
+        if (text[count] == 0) break;
+        count = count + 1;
+    }
+    if (count == 0) return;
+    width = (count - 1) * advance + glyphW;
+    words = (width * glyphH + 31) / 32;
+    if (words > 384) return;
+    i = 0;
+    while (i < words) { fmTextBits[i] = 0; i = i + 1; }
+    i = 0;
+    while (i < count)
+    {
+        py = 0;
+        while (py < glyphH)
+        {
+            row = py * 7 / glyphH;
+            pattern = fastGlyphRow((int)text[i], row);
+            px = 0;
+            while (px < glyphW)
+            {
+                if ((pattern & (16 >> (px * 5 / glyphW))) != 0)
+                {
+                    bit = (uint)(py * width + i * advance + px);
+                    fmTextBits[bit >> (uint)5] = fmTextBits[bit >> (uint)5] |
+                        ((uint)1 << ((uint)31 - (bit & (uint)31)));
+                }
+                px = px + 1;
+            }
+            py = py + 1;
+        }
+        i = i + 1;
+    }
+    narm_vga4_glyph(x, y, width, glyphH, fmTextBits, color & (uint)15);
+}
+
+void drawGlyph(int x, int y, int s, int ch, uint color)
+{
+    char letter[2];
+    letter[0] = (char)ch;
+    letter[1] = 0;
+    fmTextRaster(letter, 1, 1, x, y, 5 * s, 7 * s, 6 * s, color);
+}
+
+void drawText(char text[], int len, int x, int y, int s, uint color)
+{
+    fmTextRaster(text, len, FM_TEXT_MAX, x, y, 5 * s, 7 * s, 6 * s, color);
+}
+
+void drawTextMax(char text[], int len, int maxChars, int x, int y, int s, uint color)
+{
+    fmTextRaster(text, len, maxChars, x, y, 5 * s, 7 * s, 6 * s, color);
+}
+
+void uiTextN(char text[], int len, int maxChars, int x, int y, uint color)
+{
+    fmTextRaster(text, len, maxChars, x, y, 7, 10, 8, color);
+}
+
+void uiText(char text[], int x, int y, uint color)
+{
+    uiTextN(text, FM_TEXT_MAX, FM_TEXT_MAX, x, y, color);
+}
+
+int fmFormatUInt(uint value)
+{
+    uint divisor;
+    uint digit;
+    int started;
+    int count;
+    divisor = (uint)1000000000;
+    started = 0;
+    count = 0;
+    while (divisor > 0)
+    {
+        digit = value / divisor;
+        if (digit != 0 || started != 0 || divisor == 1)
+        {
+            fmNumber[count] = (char)(48 + (int)digit);
+            count = count + 1;
+            started = 1;
+        }
+        value = value % divisor;
+        divisor = divisor / (uint)10;
+    }
+    fmNumber[count] = 0;
+    return count;
+}
+
+void drawUInt(uint value, int x, int y, int s, uint color)
+{
+    int count;
+    count = fmFormatUInt(value);
+    drawText(fmNumber, count, x, y, s, color);
+}
+
+void uiUInt(uint value, int x, int y, uint color)
+{
+    int count;
+    count = fmFormatUInt(value);
+    uiTextN(fmNumber, count, count, x, y, color);
+}
+

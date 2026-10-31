@@ -1,0 +1,12 @@
+{
+  "format_version": "1.20.30",
+  "minecraft:item": {
+    "description": { "identifier": "tinycraft:stick", "category": "Items" },
+    "components": {
+      "minecraft:max_stack_size": 64,
+      "minecraft:icon": { "texture": "tinycraft:stick" },
+      "minecraft:display_name": { "value": "item.tinycraft:stick.name" },
+      "tinycraft:runtime": { "item_id": 20, "kind": "resource", "render": "flat" }
+    }
+  }
+}

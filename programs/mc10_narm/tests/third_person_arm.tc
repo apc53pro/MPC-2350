@@ -1,0 +1,77 @@
+/* Isolated actual NARMCC Thumb CPU test. No device emulation. */
+#include "narm.tch"
+typedef unsigned int uint;
+#define MC10_PLAYER_FOUNDATION 1
+#define MC10_WORLD_SYSTEMS 1
+#include "src/mc10_u64.tc"
+#include "src/mc10_java_double.tc"
+#include "src/mc10_fp64.tc"
+#include "src/mc10_math.tc"
+#include "src/mc10_assets.tc"
+#include "src/mc10_atan.tc"
+#include "src/mc10_items.tc"
+struct MCItemStack mc_inventory_slots[40];int mc_inventory_selected;
+struct MCItemStack *mc_inventory_current(void){return &mc_inventory_slots[mc_inventory_selected];}
+void mc_inventory_empty(struct MCItemStack *s){s->id=0;s->count=0;s->damage=0;s->tag_offset=0;s->tag_bytes=0;}
+void mc_inventory_copy(struct MCItemStack *a,struct MCItemStack *b){a->id=b->id;a->count=b->count;a->damage=b->damage;a->tag_offset=b->tag_offset;a->tag_bytes=b->tag_bytes;}
+struct TestPlayer{float yaw;float pitch;int grounded;int sneak;int water;};struct TestPlayer mc_player;
+struct TestRuntime{int health;int block_x;int block_y;int block_z;uint yaw_bits;uint pitch_bits;struct MCJDouble pos_x;struct MCJDouble pos_y;struct MCJDouble pos_z;};struct TestRuntime mc_runtime_player;
+struct TestSettings{int view_bobbing;int render_distance;int fancy_graphics;};struct TestSettings mc_options;
+int mc_render_sky_subtracted,mc_render_origin_x,mc_render_origin_z;
+float mc_render_view_x,mc_render_view_y,mc_render_view_z,mc_render_camera[18];uint mc_render_grass_color=0x3c,mc_render_light_lookup[128];
+float mc_render_float_from_bits(uint bits){return *((float *)&bits);}
+float mc_render_double_to_float(struct MCJDouble *v){int value=mc_fp_bits(v->lo,v->hi);return mc_fp_to_f32(value);}
+void mc_world_append(char *out,int count,char *text){int i=0,j=0;while(out[i]&&i<count)i=i+1;while(text[j]&&i<count-1){out[i]=text[j];i=i+1;j=j+1;}out[i]=0;}
+int fixture_block_xyz[3];float fixture_bounds[6];
+int mc_runtime_try_get_block(int x,int y,int z,uint *out){*out=x==fixture_block_xyz[0]&&y==fixture_block_xyz[1]&&z==fixture_block_xyz[2]?1:0;return 1;}
+int mc_runtime_try_get_metadata(int x,int y,int z,uint *out){*out=0;return 1;}
+int mc_runtime_try_get_saved_light(int sky,int x,int y,int z,uint *out){*out=sky?15:0;return 1;}
+int mc_block_ray_collidable(int id,int metadata,int liquids){return id>0;}
+int mc_block_is_opaque(uint id){return id==1;}
+void mc_block_bounds_at(uint id,uint metadata,int x,int y,int z,float *x0,float *y0,float *z0,float *x1,float *y1,float *z1)
+{*x0=fixture_bounds[0];*y0=fixture_bounds[1];*z0=fixture_bounds[2];*x1=fixture_bounds[3];*y1=fixture_bounds[4];*z1=fixture_bounds[5];}
+uint fixture_item_pixels[64],fixture_item_mask[8];
+int mc_player_ui_icon(struct MCItemStack *s,uint **p,uint **m){*p=&fixture_item_pixels[0];*m=&fixture_item_mask[0];return s->count>0&&s->id>=256;}
+#define MC_UI_ICON_COUNT 48
+uint mc_ui_icon_pixels[48*64],mc_ui_icon_masks[48*8];int mc_ui_icon_ids[48],mc_ui_icon_damage[48],mc_ui_icon_used;
+uint probe_control[16],probe_input[64],probe_output[64];int probe_face_index,probe_face_request;
+void fixture_quad(float x0,float y0,float z0,float u0,float v0,float x1,float y1,float z1,float u1,float v1,float x2,float y2,float z2,float u2,float v2,float x3,float y3,float z3,float u3,float v3,uint *texture,uint width,uint height,uint flags,float *transform,uint *mask)
+{
+    int i;float vertices[20];vertices[0]=x0;vertices[1]=y0;vertices[2]=z0;vertices[3]=u0;vertices[4]=v0;vertices[5]=x1;vertices[6]=y1;vertices[7]=z1;vertices[8]=u1;vertices[9]=v1;vertices[10]=x2;vertices[11]=y2;vertices[12]=z2;vertices[13]=u2;vertices[14]=v2;vertices[15]=x3;vertices[16]=y3;vertices[17]=z3;vertices[18]=u3;vertices[19]=v3;
+    if(probe_face_index==probe_face_request){for(i=0;i<20;i=i+1)probe_output[i]=*((uint *)&vertices[i]);for(i=0;i<18;i=i+1)probe_output[20+i]=*((uint *)&transform[i]);probe_output[38]=width;probe_output[39]=height;}
+    probe_face_index=probe_face_index+1;
+}
+#define fillQuad3DTexZMask fixture_quad
+#include "mc10_viewmodel.tc"
+#include "mc10_third_person.tc"
+int main(void)
+{
+    int i,result,start[3],end[3],hit[3];float *v=(float *)&probe_input[0];uint *out=&probe_output[0];
+    probe_control[1]=(uint)&mc_math_sine[0];probe_control[2]=(uint)&probe_input[0];probe_control[3]=(uint)&probe_output[0];
+    if(probe_control[0]==0)return (int)&probe_control[0];mc_fp_init();
+    if(probe_control[0]==1)
+    {mc_tp_angles(v[0],v[1],v[2],v[3],v[4],v[5],(int)probe_input[6],(int)probe_input[7]);for(i=0;i<21;i=i+1){out[i]=*((uint *)&mc_tp_rot[i]);out[21+i]=*((uint *)&mc_tp_pivot[i]);}return 0;}
+    if(probe_control[0]==2)
+    {result=mc_tp_atan2(mc_fp_bits(probe_input[0],probe_input[1]),mc_fp_bits(probe_input[2],probe_input[3]));out[0]=mc_fp_values[result].lo;out[1]=mc_fp_values[result].hi;return 0;}
+    if(probe_control[0]==3)
+    {
+        for(i=0;i<3;i=i+1){start[i]=mc_fp_bits(probe_input[i*2],probe_input[i*2+1]);end[i]=mc_fp_bits(probe_input[6+i*2],probe_input[7+i*2]);fixture_block_xyz[i]=(int)probe_input[12+i];}
+        for(i=0;i<6;i=i+1)fixture_bounds[i]=v[15+i];out[0]=(uint)mc_tp_ray(start,end,hit);out[7]=(uint)mc_fp_error;
+        if(out[0])for(i=0;i<3;i=i+1){out[1+i*2]=mc_fp_values[hit[i]].lo;out[2+i*2]=mc_fp_values[hit[i]].hi;}return 0;
+    }
+    if(probe_control[0]==4)
+    {
+        mc_third_mode=(int)probe_input[0];mc_runtime_player.yaw_bits=probe_input[1];mc_runtime_player.pitch_bits=probe_input[2];mc_runtime_player.pos_x.lo=probe_input[3];mc_runtime_player.pos_x.hi=probe_input[4];mc_runtime_player.pos_y.lo=probe_input[5];mc_runtime_player.pos_y.hi=probe_input[6];mc_runtime_player.pos_z.lo=probe_input[7];mc_runtime_player.pos_z.hi=probe_input[8];
+        for(i=0;i<3;i=i+1)fixture_block_xyz[i]=(int)probe_input[9+i];for(i=0;i<6;i=i+1)fixture_bounds[i]=v[12+i];mc_third_adjust_camera();
+        for(i=0;i<18;i=i+1)out[i]=*((uint *)&mc_render_camera[i]);out[18]=*((uint *)&mc_third_distance);out[19]=(uint)mc_fp_error;return 0;
+    }
+    if(probe_control[0]==5||probe_control[0]==6)
+    {
+        mc_tp_projection_active=0;mc_tp_gui_active=0;mc_vm_hand_fov=70;mc_vm_hand_far=48;mc_vm_world_light=1;mc_vm_identity();for(i=0;i<16;i=i+1){mc_tp_base[i]=mc_vm_matrix[i];mc_tp_object_base[i]=mc_vm_matrix[i];}for(i=0;i<21;i=i+1){mc_tp_rot[i]=0;mc_tp_pivot[i]=0;}probe_face_index=0;
+        if(probe_control[0]==5){probe_face_request=(int)probe_input[2];mc_tp_model_box((int)probe_input[0],v[1],&mc_vm_skin[0],&mc_vm_skin_mask[0]);}
+        else{probe_face_request=(int)probe_input[11];mc_tp_object_width=64;mc_tp_object_height=64;for(i=0;i<256;i=i+1)mc_tp_object_mask[i]=0xffffffff;mc_tp_object_box((int)probe_input[0],(int)probe_input[1],v[2],v[3],v[4],(int)probe_input[5],(int)probe_input[6],(int)probe_input[7],v[8],v[9],v[10]);}
+        out[40]=(uint)probe_face_index;return 0;
+    }
+    return -1;
+}
+

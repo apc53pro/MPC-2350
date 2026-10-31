@@ -1,0 +1,1095 @@
+void transformHeldItemMeshVertex()
+{
+    item_mesh_tx = item_mesh_base_x + item_mesh_lx * item_mesh_rot_c - item_mesh_ly * item_mesh_rot_s;
+    item_mesh_ty = item_mesh_base_y + item_mesh_lx * item_mesh_rot_s + item_mesh_ly * item_mesh_rot_c;
+    item_mesh_tz = item_mesh_base_z + item_mesh_lz + item_mesh_ly * item_mesh_tilt_z;
+}
+
+void transformDroppedItemMeshVertex()
+{
+    item_mesh_rx = item_mesh_lx * drop_rot_c - item_mesh_lz * drop_rot_s;
+    item_mesh_rz = item_mesh_lx * drop_rot_s + item_mesh_lz * drop_rot_c;
+
+    item_mesh_tx = item_cx * block_world_size + item_mesh_rx * item_mesh_scale * cam_right_x + item_mesh_rz * item_mesh_scale * view_x;
+    item_mesh_ty = item_cy * block_world_size + item_mesh_ly * item_mesh_scale;
+    item_mesh_tz = item_cz * block_world_size + item_mesh_rx * item_mesh_scale * cam_right_z + item_mesh_rz * item_mesh_scale * view_z;
+}
+
+void drawDroppedCustomMeshItem(uint b)
+{
+    item_mesh_draw_id = runtimeItemMeshId(b);
+    if (item_mesh_draw_id < 0) return;
+    if (item_mesh_draw_id >= TC_MAX_ITEM_MESHES) return;
+    if (itemMeshDefs[item_mesh_draw_id].used == 0) return;
+
+    item_mesh_scale = 23.0f;
+
+    item_mesh_draw_face = itemMeshDefs[item_mesh_draw_id].first_face;
+    item_mesh_draw_face_end = item_mesh_draw_face + itemMeshDefs[item_mesh_draw_id].face_count;
+    while (item_mesh_draw_face < item_mesh_draw_face_end)
+    {
+        item_mesh_draw_tex = itemMeshFaces[item_mesh_draw_face].texture_id;
+        item_mesh_draw_tex_ptr = textureRegistryPtr(item_mesh_draw_tex);
+
+        item_mesh_lx = (float)itemMeshFaces[item_mesh_draw_face].x0;
+        item_mesh_ly = (float)itemMeshFaces[item_mesh_draw_face].y0;
+        item_mesh_lz = (float)itemMeshFaces[item_mesh_draw_face].z0;
+        transformDroppedItemMeshVertex();
+        item_mesh_x0 = item_mesh_tx;
+        item_mesh_y0 = item_mesh_ty;
+        item_mesh_z0 = item_mesh_tz;
+
+        item_mesh_lx = (float)itemMeshFaces[item_mesh_draw_face].x1;
+        item_mesh_ly = (float)itemMeshFaces[item_mesh_draw_face].y1;
+        item_mesh_lz = (float)itemMeshFaces[item_mesh_draw_face].z1;
+        transformDroppedItemMeshVertex();
+        item_mesh_x1 = item_mesh_tx;
+        item_mesh_y1 = item_mesh_ty;
+        item_mesh_z1 = item_mesh_tz;
+
+        item_mesh_lx = (float)itemMeshFaces[item_mesh_draw_face].x2;
+        item_mesh_ly = (float)itemMeshFaces[item_mesh_draw_face].y2;
+        item_mesh_lz = (float)itemMeshFaces[item_mesh_draw_face].z2;
+        transformDroppedItemMeshVertex();
+        item_mesh_x2 = item_mesh_tx;
+        item_mesh_y2 = item_mesh_ty;
+        item_mesh_z2 = item_mesh_tz;
+
+        item_mesh_lx = (float)itemMeshFaces[item_mesh_draw_face].x3;
+        item_mesh_ly = (float)itemMeshFaces[item_mesh_draw_face].y3;
+        item_mesh_lz = (float)itemMeshFaces[item_mesh_draw_face].z3;
+        transformDroppedItemMeshVertex();
+        item_mesh_x3 = item_mesh_tx;
+        item_mesh_y3 = item_mesh_ty;
+        item_mesh_z3 = item_mesh_tz;
+
+        item_mesh_u0 = (float)itemMeshFaces[item_mesh_draw_face].u0;
+        item_mesh_v0 = (float)itemMeshFaces[item_mesh_draw_face].v0;
+        item_mesh_u1 = (float)itemMeshFaces[item_mesh_draw_face].u1;
+        item_mesh_v1 = (float)itemMeshFaces[item_mesh_draw_face].v1;
+
+        item_mesh_face_flags = itemMeshFaces[item_mesh_draw_face].flags;
+        item_mesh_vm_flags = 0;
+        if ((item_mesh_face_flags & 1) == 0)
+        {
+            if ((item_mesh_face_flags & 2) != 0) item_mesh_vm_flags = 256;
+            else if ((item_mesh_face_flags & 4) != 0) item_mesh_vm_flags = 512;
+        }
+
+        fillQuad3DTexZ(
+            item_mesh_x0, item_mesh_y0, item_mesh_z0, item_mesh_u0, item_mesh_v1,
+            item_mesh_x1, item_mesh_y1, item_mesh_z1, item_mesh_u1, item_mesh_v1,
+            item_mesh_x2, item_mesh_y2, item_mesh_z2, item_mesh_u1, item_mesh_v0,
+            item_mesh_x3, item_mesh_y3, item_mesh_z3, item_mesh_u0, item_mesh_v0,
+            item_mesh_draw_tex_ptr, 16, 16, item_mesh_vm_flags, &cam[0]
+        );
+
+        item_mesh_draw_face = item_mesh_draw_face + 1;
+    }
+}
+
+void drawDrops()
+{
+    if (drop_active_count <= 0) return;
+
+    drop_i = 0;
+    while (drop_i < 64)
+    {
+        if (drop_active[drop_i] != 0)
+        {
+            drop_lx = drop_x[drop_i] - (float)world_origin_x;
+            drop_lz = drop_z[drop_i] - (float)world_origin_z;
+            g_dx = drop_lx - player_x;
+            g_dz = drop_lz - player_z;
+            g_d2 = g_dx * g_dx + g_dz * g_dz;
+            if (g_d2 < render_distance_sq)
+            {
+                if (objectOnScreenBlocks(drop_lx, drop_y[drop_i] + 0.20f, drop_lz, 0.42f) != 0)
+                {
+                    /* Smooth floating item animation. Rotation is now continuous
+                       instead of the old 8-step phase table, so every drop visibly
+                       spins and turns more slowly. */
+                    drop_bob_y = (sinf((float)drop_age_ms[drop_i] * 0.0030f) + 1.0f) * 0.055f;
+                    drop_rot_c = cosf(drop_spin_angle[drop_i]);
+                    drop_rot_s = sinf(drop_spin_angle[drop_i]);
+
+                    drop_draw_y = drop_y[drop_i] + drop_bob_y;
+                    item_cx = drop_lx;
+                    item_cy = drop_draw_y;
+                    item_cz = drop_lz;
+
+                    if (runtimeItemRenderKind(drop_block[drop_i]) == TC_ITEM_RENDER_CUSTOM_MESH)
+                    {
+                        drawDroppedCustomMeshItem(drop_block[drop_i]);
+                    }
+                    else
+                    {
+                        selectItemTextures(drop_block[drop_i]);
+
+                        item_h = 0.18f;
+                        item_xa = item_cx + (0.0f - item_h) * drop_rot_c + (0.0f - item_h) * drop_rot_s;
+                        item_za = item_cz + (0.0f - item_h) * drop_rot_c - (0.0f - item_h) * drop_rot_s;
+                        item_xb = item_cx + item_h * drop_rot_c + (0.0f - item_h) * drop_rot_s;
+                        item_zb = item_cz + (0.0f - item_h) * drop_rot_c - item_h * drop_rot_s;
+                        item_xc = item_cx + item_h * drop_rot_c + item_h * drop_rot_s;
+                        item_zc = item_cz + item_h * drop_rot_c - item_h * drop_rot_s;
+                        item_xd = item_cx + (0.0f - item_h) * drop_rot_c + item_h * drop_rot_s;
+                        item_zd = item_cz + item_h * drop_rot_c + item_h * drop_rot_s;
+
+                        vm_y0 = (item_cy - item_h) * block_world_size;
+                        vm_y1 = (item_cy + item_h) * block_world_size;
+
+                        fillQuad3DTexZ(
+                            item_xa * block_world_size, vm_y0, item_za * block_world_size, 0.0f, texel_max,
+                            item_xb * block_world_size, vm_y0, item_zb * block_world_size, texel_max, texel_max,
+                            item_xb * block_world_size, vm_y1, item_zb * block_world_size, texel_max, 0.0f,
+                            item_xa * block_world_size, vm_y1, item_za * block_world_size, 0.0f, 0.0f,
+                            item_side_tex, 16, 16, 0, &cam[0]
+                        );
+
+                        fillQuad3DTexZ(
+                            item_xb * block_world_size, vm_y0, item_zb * block_world_size, 0.0f, texel_max,
+                            item_xc * block_world_size, vm_y0, item_zc * block_world_size, texel_max, texel_max,
+                            item_xc * block_world_size, vm_y1, item_zc * block_world_size, texel_max, 0.0f,
+                            item_xb * block_world_size, vm_y1, item_zb * block_world_size, 0.0f, 0.0f,
+                            item_side_tex, 16, 16, 0, &cam[0]
+                        );
+
+                        fillQuad3DTexZ(
+                            item_xc * block_world_size, vm_y0, item_zc * block_world_size, 0.0f, texel_max,
+                            item_xd * block_world_size, vm_y0, item_zd * block_world_size, texel_max, texel_max,
+                            item_xd * block_world_size, vm_y1, item_zd * block_world_size, texel_max, 0.0f,
+                            item_xc * block_world_size, vm_y1, item_zc * block_world_size, 0.0f, 0.0f,
+                            item_side_tex, 16, 16, 0, &cam[0]
+                        );
+
+                        fillQuad3DTexZ(
+                            item_xd * block_world_size, vm_y0, item_zd * block_world_size, 0.0f, texel_max,
+                            item_xa * block_world_size, vm_y0, item_za * block_world_size, texel_max, texel_max,
+                            item_xa * block_world_size, vm_y1, item_za * block_world_size, texel_max, 0.0f,
+                            item_xd * block_world_size, vm_y1, item_zd * block_world_size, 0.0f, 0.0f,
+                            item_side_tex, 16, 16, 0, &cam[0]
+                        );
+
+                        fillQuad3DTexZ(
+                            item_xa * block_world_size, vm_y1, item_za * block_world_size, 0.0f, 0.0f,
+                            item_xb * block_world_size, vm_y1, item_zb * block_world_size, texel_max, 0.0f,
+                            item_xc * block_world_size, vm_y1, item_zc * block_world_size, texel_max, texel_max,
+                            item_xd * block_world_size, vm_y1, item_zd * block_world_size, 0.0f, texel_max,
+                            item_top_tex, 16, 16, 0, &cam[0]
+                        );
+
+                        fillQuad3DTexZ(
+                            item_xd * block_world_size, vm_y0, item_zd * block_world_size, 0.0f, 0.0f,
+                            item_xc * block_world_size, vm_y0, item_zc * block_world_size, texel_max, 0.0f,
+                            item_xb * block_world_size, vm_y0, item_zb * block_world_size, texel_max, texel_max,
+                            item_xa * block_world_size, vm_y0, item_za * block_world_size, 0.0f, texel_max,
+                            item_bottom_tex, 16, 16, 0, &cam[0]
+                        );
+                    }
+                }
+            }
+        }
+        drop_i = drop_i + 1;
+    }
+}
+
+
+void drawCustomMeshItem(uint b)
+{
+    item_mesh_draw_id = runtimeItemMeshId(b);
+    if (item_mesh_draw_id < 0) return;
+    if (item_mesh_draw_id >= TC_MAX_ITEM_MESHES) return;
+    if (itemMeshDefs[item_mesh_draw_id].used == 0) return;
+
+    item_mesh_base_x = 64.0f + hand_anim_x * 0.46f;
+    item_mesh_base_y = -64.0f + hand_anim_y * 0.46f;
+    item_mesh_base_z = 260.0f + hand_anim_z * 0.28f;
+    item_mesh_scale = 3.8f;
+    item_mesh_depth_scale = 4.0f;
+    item_mesh_tilt_z = 0.0f;
+    item_mesh_rot = 0.0f;
+    if (mining_active != 0)
+    {
+        item_mesh_base_x = item_mesh_base_x - 22.0f * mine_anim_wave;
+        item_mesh_base_y = item_mesh_base_y + 18.0f * mine_anim_punch;
+        item_mesh_base_z = item_mesh_base_z - 34.0f * mine_anim_punch;
+    }
+    else
+    {
+        if (air_hit_anim_ms > (uint)0)
+        {
+            item_mesh_base_x = item_mesh_base_x - 28.0f * air_hit_fold;
+            item_mesh_base_y = item_mesh_base_y + 22.0f * air_hit_fold;
+            item_mesh_base_z = item_mesh_base_z - 44.0f * air_hit_fold;
+        }
+        else
+        {
+            if (place_anim_ms > (uint)0)
+            {
+                item_mesh_base_x = item_mesh_base_x + 20.0f * place_anim_fold;
+                item_mesh_base_y = item_mesh_base_y - 18.0f * place_anim_fold;
+                item_mesh_base_z = item_mesh_base_z - 28.0f * place_anim_fold;
+            }
+        }
+    }
+    item_mesh_rot_c = cosf(item_mesh_rot);
+    item_mesh_rot_s = sinf(item_mesh_rot);
+
+    item_mesh_draw_face = itemMeshDefs[item_mesh_draw_id].first_face;
+    item_mesh_draw_face_end = item_mesh_draw_face + itemMeshDefs[item_mesh_draw_id].face_count;
+    while (item_mesh_draw_face < item_mesh_draw_face_end)
+    {
+        item_mesh_draw_tex = itemMeshFaces[item_mesh_draw_face].texture_id;
+        item_mesh_draw_tex_ptr = textureRegistryPtr(item_mesh_draw_tex);
+
+        item_mesh_lx = (float)itemMeshFaces[item_mesh_draw_face].x0 * item_mesh_scale;
+        item_mesh_ly = (float)itemMeshFaces[item_mesh_draw_face].y0 * item_mesh_scale;
+        item_mesh_lz = (float)itemMeshFaces[item_mesh_draw_face].z0 * item_mesh_depth_scale;
+        transformHeldItemMeshVertex();
+        item_mesh_x0 = item_mesh_tx;
+        item_mesh_y0 = item_mesh_ty;
+        item_mesh_z0 = item_mesh_tz;
+
+        item_mesh_lx = (float)itemMeshFaces[item_mesh_draw_face].x1 * item_mesh_scale;
+        item_mesh_ly = (float)itemMeshFaces[item_mesh_draw_face].y1 * item_mesh_scale;
+        item_mesh_lz = (float)itemMeshFaces[item_mesh_draw_face].z1 * item_mesh_depth_scale;
+        transformHeldItemMeshVertex();
+        item_mesh_x1 = item_mesh_tx;
+        item_mesh_y1 = item_mesh_ty;
+        item_mesh_z1 = item_mesh_tz;
+
+        item_mesh_lx = (float)itemMeshFaces[item_mesh_draw_face].x2 * item_mesh_scale;
+        item_mesh_ly = (float)itemMeshFaces[item_mesh_draw_face].y2 * item_mesh_scale;
+        item_mesh_lz = (float)itemMeshFaces[item_mesh_draw_face].z2 * item_mesh_depth_scale;
+        transformHeldItemMeshVertex();
+        item_mesh_x2 = item_mesh_tx;
+        item_mesh_y2 = item_mesh_ty;
+        item_mesh_z2 = item_mesh_tz;
+
+        item_mesh_lx = (float)itemMeshFaces[item_mesh_draw_face].x3 * item_mesh_scale;
+        item_mesh_ly = (float)itemMeshFaces[item_mesh_draw_face].y3 * item_mesh_scale;
+        item_mesh_lz = (float)itemMeshFaces[item_mesh_draw_face].z3 * item_mesh_depth_scale;
+        transformHeldItemMeshVertex();
+        item_mesh_x3 = item_mesh_tx;
+        item_mesh_y3 = item_mesh_ty;
+        item_mesh_z3 = item_mesh_tz;
+
+        item_mesh_u0 = (float)itemMeshFaces[item_mesh_draw_face].u0;
+        item_mesh_v0 = (float)itemMeshFaces[item_mesh_draw_face].v0;
+        item_mesh_u1 = (float)itemMeshFaces[item_mesh_draw_face].u1;
+        item_mesh_v1 = (float)itemMeshFaces[item_mesh_draw_face].v1;
+
+        item_mesh_face_flags = itemMeshFaces[item_mesh_draw_face].flags;
+        item_mesh_vm_flags = 0;
+        if ((item_mesh_face_flags & 1) == 0)
+        {
+            if ((item_mesh_face_flags & 2) != 0) item_mesh_vm_flags = 256;
+            else if ((item_mesh_face_flags & 4) != 0) item_mesh_vm_flags = 512;
+        }
+
+        fillQuad3DTexZ(
+            item_mesh_x0, item_mesh_y0, item_mesh_z0, item_mesh_u0, item_mesh_v1,
+            item_mesh_x1, item_mesh_y1, item_mesh_z1, item_mesh_u1, item_mesh_v1,
+            item_mesh_x2, item_mesh_y2, item_mesh_z2, item_mesh_u1, item_mesh_v0,
+            item_mesh_x3, item_mesh_y3, item_mesh_z3, item_mesh_u0, item_mesh_v0,
+            item_mesh_draw_tex_ptr, 16, 16, item_mesh_vm_flags, &hand_cam[0]
+        );
+
+        item_mesh_draw_face = item_mesh_draw_face + 1;
+    }
+}
+
+void drawHand()
+{
+    hand_anim_x = hand_sway_x + hand_walk_x;
+    hand_anim_y = hand_sway_y + hand_walk_y + land_hand_y;
+    hand_anim_z = 0.0f;
+
+    if (hotbar_raise_anim_ms > (uint)0)
+    {
+        hotbar_raise_t = (float)hotbar_raise_anim_ms * 0.00333333f;
+        if (hotbar_raise_t < 0.0f) hotbar_raise_t = 0.0f;
+        if (hotbar_raise_t > 1.0f) hotbar_raise_t = 1.0f;
+        hand_anim_y = hand_anim_y - 76.0f * hotbar_raise_t;
+        hand_anim_z = hand_anim_z + 18.0f * hotbar_raise_t;
+    }
+
+    if (mining_active != 0)
+    {
+        /* Smooth mining animation instead of the old 4-step keyframe snap.
+           This uses a cheap triangular wave derived from mining time. */
+        mine_anim_phase_ms = mining_progress_ms % (uint)300;
+        mine_anim_t = (float)mine_anim_phase_ms * 0.00333333f;
+
+        if (mine_anim_t < 0.5f) mine_anim_fold = mine_anim_t * 2.0f;
+        else mine_anim_fold = (1.0f - mine_anim_t) * 2.0f;
+
+        if (mine_anim_fold < 0.0f) mine_anim_fold = 0.0f;
+        if (mine_anim_fold > 1.0f) mine_anim_fold = 1.0f;
+
+        /* Punch is strongest in the middle of the swing and eases at both ends. */
+        mine_anim_punch = mine_anim_fold * mine_anim_fold;
+        mine_anim_wave = mine_anim_fold;
+
+        hand_anim_x = hand_anim_x - 62.0f * mine_anim_wave;
+        hand_anim_y = hand_anim_y + 46.0f * mine_anim_punch;
+        hand_anim_z = hand_anim_z - 62.0f * mine_anim_punch;
+    }
+    else
+    {
+        if (air_hit_anim_ms > (uint)0)
+        {
+            air_hit_t = (float)((uint)300 - air_hit_anim_ms) * 0.00333333f;
+            if (air_hit_t < 0.5f) air_hit_fold = air_hit_t * 2.0f;
+            else air_hit_fold = (1.0f - air_hit_t) * 2.0f;
+
+            if (air_hit_fold < 0.0f) air_hit_fold = 0.0f;
+            if (air_hit_fold > 1.0f) air_hit_fold = 1.0f;
+
+            hand_anim_x = hand_anim_x - 74.0f * air_hit_fold;
+            hand_anim_y = hand_anim_y + 54.0f * air_hit_fold;
+            hand_anim_z = hand_anim_z - 92.0f * air_hit_fold;
+        }
+        else
+        {
+            if (place_anim_ms > (uint)0)
+            {
+                place_anim_t = (float)((uint)300 - place_anim_ms) * 0.00333333f;
+                if (place_anim_t < 0.5f) place_anim_fold = place_anim_t * 2.0f;
+                else place_anim_fold = (1.0f - place_anim_t) * 2.0f;
+
+                if (place_anim_fold < 0.0f) place_anim_fold = 0.0f;
+                if (place_anim_fold > 1.0f) place_anim_fold = 1.0f;
+
+                /* Placing does a downward/side pitching motion instead of a
+                   forward punch, closer to Minecraft's block-use animation. */
+                hand_anim_x = hand_anim_x + 52.0f * place_anim_fold;
+                hand_anim_y = hand_anim_y - 46.0f * place_anim_fold;
+                hand_anim_z = hand_anim_z - 48.0f * place_anim_fold;
+            }
+        }
+    }
+
+    /* When any item/block/tool is equipped, render only that object in the
+       viewmodel slot. The bare hand is only drawn for an empty hotbar slot. */
+    if (selected_block != (uint)0)
+    {
+        if (runtimeItemRenderKind(selected_block) == TC_ITEM_RENDER_CUSTOM_MESH)
+        {
+            drawCustomMeshItem(selected_block);
+            return;
+        }
+        if (isPlaceableItem(selected_block) != 0)
+        {
+            selectItemTextures(selected_block);
+            vm_x0 = 116.0f + hand_anim_x * 0.62f;
+            vm_x1 = 188.0f + hand_anim_x * 0.62f;
+            vm_y0 = -162.0f + hand_anim_y * 0.62f;
+            vm_y1 = -90.0f + hand_anim_y * 0.62f;
+            vm_z0 = 236.0f + hand_anim_z * 0.25f;
+            vm_z1 = 308.0f + hand_anim_z * 0.25f;
+            drawViewCuboidTextured();
+        }
+        else
+        {
+            return;
+        }
+        return;
+    }
+
+    /* Plain 4x4x8-pixel-scale hand: one skin-toned box, no sleeve/details.
+       It is slightly diagonal in the camera view by shifting the far face up/left. */
+    hand_col_a = (uint)250;
+    hand_col_b = (uint)250;
+    hand_col_c = (uint)250;
+
+    fillQuad3DZ(158.0f + hand_anim_x, -152.0f + hand_anim_y, 238.0f + hand_anim_z,
+                202.0f + hand_anim_x, -152.0f + hand_anim_y, 238.0f + hand_anim_z,
+                202.0f + hand_anim_x, -108.0f + hand_anim_y, 238.0f + hand_anim_z,
+                158.0f + hand_anim_x, -108.0f + hand_anim_y, 238.0f + hand_anim_z,
+                hand_col_a, &hand_cam[0]);
+
+    fillQuad3DZ(126.0f + hand_anim_x, -118.0f + hand_anim_y, 328.0f + hand_anim_z,
+                170.0f + hand_anim_x, -118.0f + hand_anim_y, 328.0f + hand_anim_z,
+                170.0f + hand_anim_x, -74.0f + hand_anim_y, 328.0f + hand_anim_z,
+                126.0f + hand_anim_x, -74.0f + hand_anim_y, 328.0f + hand_anim_z,
+                hand_col_b, &hand_cam[0]);
+
+    fillQuad3DZ(202.0f + hand_anim_x, -152.0f + hand_anim_y, 238.0f + hand_anim_z,
+                170.0f + hand_anim_x, -118.0f + hand_anim_y, 328.0f + hand_anim_z,
+                170.0f + hand_anim_x, -74.0f + hand_anim_y, 328.0f + hand_anim_z,
+                202.0f + hand_anim_x, -108.0f + hand_anim_y, 238.0f + hand_anim_z,
+                hand_col_b, &hand_cam[0]);
+
+    fillQuad3DZ(158.0f + hand_anim_x, -108.0f + hand_anim_y, 238.0f + hand_anim_z,
+                202.0f + hand_anim_x, -108.0f + hand_anim_y, 238.0f + hand_anim_z,
+                170.0f + hand_anim_x, -74.0f + hand_anim_y, 328.0f + hand_anim_z,
+                126.0f + hand_anim_x, -74.0f + hand_anim_y, 328.0f + hand_anim_z,
+                hand_col_c, &hand_cam[0]);
+
+    fillQuad3DZ(126.0f + hand_anim_x, -118.0f + hand_anim_y, 328.0f + hand_anim_z,
+                158.0f + hand_anim_x, -152.0f + hand_anim_y, 238.0f + hand_anim_z,
+                158.0f + hand_anim_x, -108.0f + hand_anim_y, 238.0f + hand_anim_z,
+                126.0f + hand_anim_x, -74.0f + hand_anim_y, 328.0f + hand_anim_z,
+                hand_col_b, &hand_cam[0]);
+
+    fillQuad3DZ(158.0f + hand_anim_x, -152.0f + hand_anim_y, 238.0f + hand_anim_z,
+                202.0f + hand_anim_x, -152.0f + hand_anim_y, 238.0f + hand_anim_z,
+                170.0f + hand_anim_x, -118.0f + hand_anim_y, 328.0f + hand_anim_z,
+                126.0f + hand_anim_x, -118.0f + hand_anim_y, 328.0f + hand_anim_z,
+                hand_col_b, &hand_cam[0]);
+
+    /* Equipped item: held lower, smaller, and farther away than before. During
+       mining it also moves less aggressively than the hand so it does not jump
+       into the camera/near plane and fill the screen. */
+    if (selected_block != (uint)0)
+    {
+        if (isPlaceableItem(selected_block) != 0)
+        {
+            selectItemTextures(selected_block);
+
+            vm_x0 = 20.0f + hand_anim_x * 0.62f;
+            vm_x1 = 70.0f + hand_anim_x * 0.62f;
+            vm_y0 = -124.0f + hand_anim_y * 0.62f;
+            vm_y1 = -74.0f + hand_anim_y * 0.62f;
+            vm_z0 = 206.0f + hand_anim_z * 0.25f;
+            vm_z1 = 256.0f + hand_anim_z * 0.25f;
+            drawViewCuboidTextured();
+        }
+        else
+        {
+            return;
+        }
+    }
+}
+
+void drawCrackRect()
+{
+    crack_bx0 = (float)mining_target_x * block_world_size;
+    crack_by0 = (float)mining_target_y * block_world_size;
+    crack_bz0 = (float)mining_target_z * block_world_size;
+    crack_bx1 = crack_bx0 + block_world_size;
+    crack_by1 = crack_by0 + block_world_size;
+    crack_bz1 = crack_bz0 + block_world_size;
+
+    if (crack_face == 1)
+    {
+        fillQuad3DTexZMask(
+            crack_bx0 - crack_eps, crack_by0, crack_bz0, 0.0f, 15.999f,
+            crack_bx0 - crack_eps, crack_by0, crack_bz1, 15.999f, 15.999f,
+            crack_bx0 - crack_eps, crack_by1, crack_bz1, 15.999f, 0.0f,
+            crack_bx0 - crack_eps, crack_by1, crack_bz0, 0.0f, 0.0f,
+            &destroyStageTextures[crack_stage * TC_DESTROY_STAGE_TEXTURE_WORDS], 16, 16, 0,
+            &cam[0], &destroyStageMasks[crack_stage * TC_DESTROY_STAGE_MASK_WORDS]
+        );
+    }
+    if (crack_face == 2)
+    {
+        fillQuad3DTexZMask(
+            crack_bx1 + crack_eps, crack_by0, crack_bz1, 0.0f, 15.999f,
+            crack_bx1 + crack_eps, crack_by0, crack_bz0, 15.999f, 15.999f,
+            crack_bx1 + crack_eps, crack_by1, crack_bz0, 15.999f, 0.0f,
+            crack_bx1 + crack_eps, crack_by1, crack_bz1, 0.0f, 0.0f,
+            &destroyStageTextures[crack_stage * TC_DESTROY_STAGE_TEXTURE_WORDS], 16, 16, 0,
+            &cam[0], &destroyStageMasks[crack_stage * TC_DESTROY_STAGE_MASK_WORDS]
+        );
+    }
+    if (crack_face == 3)
+    {
+        fillQuad3DTexZMask(
+            crack_bx0, crack_by0 - crack_eps, crack_bz0, 0.0f, 0.0f,
+            crack_bx1, crack_by0 - crack_eps, crack_bz0, 15.999f, 0.0f,
+            crack_bx1, crack_by0 - crack_eps, crack_bz1, 15.999f, 15.999f,
+            crack_bx0, crack_by0 - crack_eps, crack_bz1, 0.0f, 15.999f,
+            &destroyStageTextures[crack_stage * TC_DESTROY_STAGE_TEXTURE_WORDS], 16, 16, 0,
+            &cam[0], &destroyStageMasks[crack_stage * TC_DESTROY_STAGE_MASK_WORDS]
+        );
+    }
+    if (crack_face == 4)
+    {
+        fillQuad3DTexZMask(
+            crack_bx0, crack_by1 + crack_eps, crack_bz0, 0.0f, 0.0f,
+            crack_bx1, crack_by1 + crack_eps, crack_bz0, 15.999f, 0.0f,
+            crack_bx1, crack_by1 + crack_eps, crack_bz1, 15.999f, 15.999f,
+            crack_bx0, crack_by1 + crack_eps, crack_bz1, 0.0f, 15.999f,
+            &destroyStageTextures[crack_stage * TC_DESTROY_STAGE_TEXTURE_WORDS], 16, 16, 0,
+            &cam[0], &destroyStageMasks[crack_stage * TC_DESTROY_STAGE_MASK_WORDS]
+        );
+    }
+    if (crack_face == 5)
+    {
+        fillQuad3DTexZMask(
+            crack_bx1, crack_by0, crack_bz0 - crack_eps, 0.0f, 15.999f,
+            crack_bx0, crack_by0, crack_bz0 - crack_eps, 15.999f, 15.999f,
+            crack_bx0, crack_by1, crack_bz0 - crack_eps, 15.999f, 0.0f,
+            crack_bx1, crack_by1, crack_bz0 - crack_eps, 0.0f, 0.0f,
+            &destroyStageTextures[crack_stage * TC_DESTROY_STAGE_TEXTURE_WORDS], 16, 16, 0,
+            &cam[0], &destroyStageMasks[crack_stage * TC_DESTROY_STAGE_MASK_WORDS]
+        );
+    }
+    if (crack_face == 6)
+    {
+        fillQuad3DTexZMask(
+            crack_bx0, crack_by0, crack_bz1 + crack_eps, 0.0f, 15.999f,
+            crack_bx1, crack_by0, crack_bz1 + crack_eps, 15.999f, 15.999f,
+            crack_bx1, crack_by1, crack_bz1 + crack_eps, 15.999f, 0.0f,
+            crack_bx0, crack_by1, crack_bz1 + crack_eps, 0.0f, 0.0f,
+            &destroyStageTextures[crack_stage * TC_DESTROY_STAGE_TEXTURE_WORDS], 16, 16, 0,
+            &cam[0], &destroyStageMasks[crack_stage * TC_DESTROY_STAGE_MASK_WORDS]
+        );
+    }
+}
+
+
+
+void drawOutlineRect()
+{
+    crack_s = block_world_size / 16.0f;
+    crack_bx0 = (float)mining_target_x * block_world_size;
+    crack_by0 = (float)mining_target_y * block_world_size;
+    crack_bz0 = (float)mining_target_z * block_world_size;
+    crack_bx1 = crack_bx0 + block_world_size;
+    crack_by1 = crack_by0 + block_world_size;
+    crack_bz1 = crack_bz0 + block_world_size;
+    crack_fu0 = crack_u0 * crack_s;
+    crack_fu1 = crack_u1 * crack_s;
+    crack_fv0 = crack_v0 * crack_s;
+    crack_fv1 = crack_v1 * crack_s;
+
+    if (crack_face == 1)
+    {
+        fillQuad3DZ(crack_bx0 - crack_eps, crack_by0 + crack_fv0, crack_bz0 + crack_fu0,
+                    crack_bx0 - crack_eps, crack_by0 + crack_fv0, crack_bz0 + crack_fu1,
+                    crack_bx0 - crack_eps, crack_by0 + crack_fv1, crack_bz0 + crack_fu1,
+                    crack_bx0 - crack_eps, crack_by0 + crack_fv1, crack_bz0 + crack_fu0,
+                    outline_col, &cam[0]);
+    }
+    if (crack_face == 2)
+    {
+        fillQuad3DZ(crack_bx1 + crack_eps, crack_by0 + crack_fv0, crack_bz0 + crack_fu1,
+                    crack_bx1 + crack_eps, crack_by0 + crack_fv0, crack_bz0 + crack_fu0,
+                    crack_bx1 + crack_eps, crack_by0 + crack_fv1, crack_bz0 + crack_fu0,
+                    crack_bx1 + crack_eps, crack_by0 + crack_fv1, crack_bz0 + crack_fu1,
+                    outline_col, &cam[0]);
+    }
+    if (crack_face == 3)
+    {
+        fillQuad3DZ(crack_bx0 + crack_fu0, crack_by0 - crack_eps, crack_bz0 + crack_fv0,
+                    crack_bx0 + crack_fu1, crack_by0 - crack_eps, crack_bz0 + crack_fv0,
+                    crack_bx0 + crack_fu1, crack_by0 - crack_eps, crack_bz0 + crack_fv1,
+                    crack_bx0 + crack_fu0, crack_by0 - crack_eps, crack_bz0 + crack_fv1,
+                    outline_col, &cam[0]);
+    }
+    if (crack_face == 4)
+    {
+        fillQuad3DZ(crack_bx0 + crack_fu0, crack_by1 + crack_eps, crack_bz0 + crack_fv0,
+                    crack_bx0 + crack_fu1, crack_by1 + crack_eps, crack_bz0 + crack_fv0,
+                    crack_bx0 + crack_fu1, crack_by1 + crack_eps, crack_bz0 + crack_fv1,
+                    crack_bx0 + crack_fu0, crack_by1 + crack_eps, crack_bz0 + crack_fv1,
+                    outline_col, &cam[0]);
+    }
+    if (crack_face == 5)
+    {
+        fillQuad3DZ(crack_bx0 + crack_fu1, crack_by0 + crack_fv0, crack_bz0 - crack_eps,
+                    crack_bx0 + crack_fu0, crack_by0 + crack_fv0, crack_bz0 - crack_eps,
+                    crack_bx0 + crack_fu0, crack_by0 + crack_fv1, crack_bz0 - crack_eps,
+                    crack_bx0 + crack_fu1, crack_by0 + crack_fv1, crack_bz0 - crack_eps,
+                    outline_col, &cam[0]);
+    }
+    if (crack_face == 6)
+    {
+        fillQuad3DZ(crack_bx0 + crack_fu0, crack_by0 + crack_fv0, crack_bz1 + crack_eps,
+                    crack_bx0 + crack_fu1, crack_by0 + crack_fv0, crack_bz1 + crack_eps,
+                    crack_bx0 + crack_fu1, crack_by0 + crack_fv1, crack_bz1 + crack_eps,
+                    crack_bx0 + crack_fu0, crack_by0 + crack_fv1, crack_bz1 + crack_eps,
+                    outline_col, &cam[0]);
+    }
+}
+
+void outlineH(float v, float u0, float u1)
+{
+    crack_u0 = u0;
+    crack_u1 = u1;
+    crack_v0 = v;
+    crack_v1 = v + outline_thick;
+    drawOutlineRect();
+}
+
+void outlineV(float u, float v0, float v1)
+{
+    crack_u0 = u;
+    crack_u1 = u + outline_thick;
+    crack_v0 = v0;
+    crack_v1 = v1;
+    drawOutlineRect();
+}
+
+void drawOutlineFace(int face)
+{
+    crack_face = face;
+    outlineV(0.0f, 0.0f, 16.0f);
+    outlineV(15.78f, 0.0f, 16.0f);
+    outlineH(0.0f, 0.0f, 16.0f);
+    outlineH(15.78f, 0.0f, 16.0f);
+}
+
+void drawAimedBlockOutline()
+{
+    if (aimed_outline_enabled == 0) return;
+    if (inventory_open != 0) return;
+    if (menu_open != 0) return;
+    if (player_dead != 0) return;
+    if (traceRayTarget() == 0) return;
+
+    outline_save_valid = mining_target_valid;
+    outline_save_x = mining_target_x;
+    outline_save_y = mining_target_y;
+    outline_save_z = mining_target_z;
+    outline_save_block = mining_target_block;
+    outline_save_face = mining_target_face;
+
+    mining_target_x = ray_bx;
+    mining_target_y = ray_by;
+    mining_target_z = ray_bz;
+    outline_abs_x = world_origin_x + ray_bx;
+    outline_abs_z = world_origin_z + ray_bz;
+
+    /* Draw all exposed faces of the aimed block, not just the hit face. Hidden
+       faces are skipped by checking neighboring solid blocks. */
+    if (blockAtAbs(outline_abs_x - 1, ray_by, outline_abs_z) == (uint)0) drawOutlineFace(1);
+    if (blockAtAbs(outline_abs_x + 1, ray_by, outline_abs_z) == (uint)0) drawOutlineFace(2);
+    if (blockAtAbs(outline_abs_x, ray_by - 1, outline_abs_z) == (uint)0) drawOutlineFace(3);
+    if (blockAtAbs(outline_abs_x, ray_by + 1, outline_abs_z) == (uint)0) drawOutlineFace(4);
+    if (blockAtAbs(outline_abs_x, ray_by, outline_abs_z - 1) == (uint)0) drawOutlineFace(5);
+    if (blockAtAbs(outline_abs_x, ray_by, outline_abs_z + 1) == (uint)0) drawOutlineFace(6);
+
+    mining_target_valid = outline_save_valid;
+    mining_target_x = outline_save_x;
+    mining_target_y = outline_save_y;
+    mining_target_z = outline_save_z;
+    mining_target_block = outline_save_block;
+    mining_target_face = outline_save_face;
+}
+
+void drawBreakingOverlay()
+{
+    if (mining_active == 0) return;
+    if (mining_required_ms == (uint)0) return;
+    if (mining_target_face == 0) return;
+    if (asset_cache_loaded_destroy_stages == 0) return;
+
+    crack_stage = (int)((mining_progress_ms * (uint)10) / mining_required_ms);
+    if (crack_stage < 0) crack_stage = 0;
+    if (crack_stage > 9) crack_stage = 9;
+
+    crack_abs_x = world_origin_x + mining_target_x;
+    crack_abs_z = world_origin_z + mining_target_z;
+
+    if (blockAtAbs(crack_abs_x - 1, mining_target_y, crack_abs_z) == (uint)0) { crack_face = 1; drawCrackRect(); }
+    if (blockAtAbs(crack_abs_x + 1, mining_target_y, crack_abs_z) == (uint)0) { crack_face = 2; drawCrackRect(); }
+    if (blockAtAbs(crack_abs_x, mining_target_y - 1, crack_abs_z) == (uint)0) { crack_face = 3; drawCrackRect(); }
+    if (blockAtAbs(crack_abs_x, mining_target_y + 1, crack_abs_z) == (uint)0) { crack_face = 4; drawCrackRect(); }
+    if (blockAtAbs(crack_abs_x, mining_target_y, crack_abs_z - 1) == (uint)0) { crack_face = 5; drawCrackRect(); }
+    if (blockAtAbs(crack_abs_x, mining_target_y, crack_abs_z + 1) == (uint)0) { crack_face = 6; drawCrackRect(); }
+}
+
+
+void updateDayNightCycle()
+{
+    day_now_ms = millis();
+    if (day_cycle_speed_percent < 25) day_cycle_speed_percent = 25;
+    if (day_cycle_speed_percent > 800) day_cycle_speed_percent = 800;
+
+    /* Minecraft-style clock: one full cycle is 24000 game ticks.
+       At 100% speed one game tick advances every real 50 ms, so sunrise to
+       sunrise lasts 20 minutes. Day speed is only a testing multiplier. */
+    if (day_last_ms == (uint)0) day_last_ms = day_now_ms;
+    day_elapsed_ms = day_now_ms - day_last_ms;
+    day_last_ms = day_now_ms;
+    if (day_elapsed_ms > (uint)1000) day_elapsed_ms = (uint)1000;
+
+    day_tick_units = day_tick_units + day_elapsed_ms * (uint)day_cycle_speed_percent;
+    while (day_tick_units >= (uint)5000)
+    {
+        day_tick_units = day_tick_units - (uint)5000;
+        day_time_tick = day_time_tick + (uint)1;
+        if (day_time_tick >= (uint)24000) day_time_tick = day_time_tick - (uint)24000;
+    }
+
+    day_phase_float = (float)day_time_tick / 24000.0f;
+    day_angle = day_phase_float * 6.283185f;
+    day_sin = sinf(day_angle);
+    day_cos = cosf(day_angle);
+
+    /* Smoother RGB332 sky bands. No terrain shading is done here; only the
+       clear color, clouds, sun/moon/stars change. RGB332 still has enough
+       distinct blue/orange/dark-blue tones to make the transition less abrupt. */
+    if (day_sin > 0.92f)
+    {
+        sky_color_current = 127;  /* high noon, bright cyan-blue */
+        cloud_day_color = 255;
+        cloud_shadow_color = 219;
+        night_active = 0;
+    }
+    else if (day_sin > 0.78f)
+    {
+        sky_color_current = 123;
+        cloud_day_color = 255;
+        cloud_shadow_color = 219;
+        night_active = 0;
+    }
+    else if (day_sin > 0.58f)
+    {
+        sky_color_current = 119;
+        cloud_day_color = 255;
+        cloud_shadow_color = 219;
+        night_active = 0;
+    }
+    else if (day_sin > 0.38f)
+    {
+        sky_color_current = 111;
+        cloud_day_color = 255;
+        cloud_shadow_color = 219;
+        night_active = 0;
+    }
+    else if (day_sin > 0.20f)
+    {
+        sky_color_current = 107;
+        cloud_day_color = 255;
+        cloud_shadow_color = 219;
+        night_active = 0;
+    }
+    else if (day_sin > 0.08f)
+    {
+        sky_color_current = 245;  /* warm yellow-orange */
+        cloud_day_color = 252;
+        cloud_shadow_color = 219;
+        night_active = 0;
+    }
+    else if (day_sin > -0.04f)
+    {
+        sky_color_current = 241;  /* deeper orange horizon */
+        cloud_day_color = 252;
+        cloud_shadow_color = 182;
+        night_active = 0;
+    }
+    else if (day_sin > -0.14f)
+    {
+        sky_color_current = 105;  /* purple/dusk transition */
+        cloud_day_color = 146;
+        cloud_shadow_color = 109;
+        night_active = 1;
+    }
+    else if (day_sin > -0.34f)
+    {
+        sky_color_current = 73;   /* early night blue */
+        cloud_day_color = 109;
+        cloud_shadow_color = 73;
+        night_active = 1;
+    }
+    else if (day_sin > -0.62f)
+    {
+        sky_color_current = 37;   /* dark blue */
+        cloud_day_color = 73;
+        cloud_shadow_color = 37;
+        night_active = 1;
+    }
+    else
+    {
+        sky_color_current = 5;    /* deep night blue */
+        cloud_day_color = 73;
+        cloud_shadow_color = 37;
+        night_active = 1;
+    }
+}
+
+void drawSkyBillboard(float cx, float cy, float cz, float outer, float inner, uint outer_color, uint inner_color)
+{
+    /* One-axis billboard for Minecraft-style sun/moon.
+       The quad always faces the orbit center/player in the Y/Z orbit plane,
+       but its horizontal axis stays locked to world X. This avoids the old
+       full camera billboard that rotated with camera yaw/pitch. */
+    sun_outer = outer * block_world_size;
+    sun_inner = inner * block_world_size;
+
+    sky_rel_y = ((cy / block_world_size) - player_y) / sun_orbit_radius_blocks;
+    sky_rel_z = ((cz / block_world_size) - player_z) / sun_orbit_radius_blocks;
+
+    /* World-X axis stays constant. */
+    sun_rx = sun_outer;
+    sun_ry = 0.0f;
+    sun_rz = 0.0f;
+
+    /* Tangent axis in the Y/Z rotation plane. */
+    sun_ux = 0.0f;
+    sun_uy = sky_rel_z * sun_outer;
+    sun_uz = (0.0f - sky_rel_y) * sun_outer;
+
+    fillQuad3DZ(
+        cx - sun_rx - sun_ux, cy - sun_ry - sun_uy, cz - sun_rz - sun_uz,
+        cx + sun_rx - sun_ux, cy + sun_ry - sun_uy, cz + sun_rz - sun_uz,
+        cx + sun_rx + sun_ux, cy + sun_ry + sun_uy, cz + sun_rz + sun_uz,
+        cx - sun_rx + sun_ux, cy - sun_ry + sun_uy, cz - sun_rz + sun_uz,
+        outer_color, &cam[0]
+    );
+
+    /* Draw the core slightly closer to the player/orbit center than the outer
+       quad so the z-buffer does not fight between the two pieces. */
+    sky_core_push = sky_core_offset_blocks * block_world_size;
+    sky_core_cy = cy - sky_rel_y * sky_core_push;
+    sky_core_cz = cz - sky_rel_z * sky_core_push;
+
+    sun_rx = sun_inner;
+    sun_ry = 0.0f;
+    sun_rz = 0.0f;
+
+    sun_ux = 0.0f;
+    sun_uy = sky_rel_z * sun_inner;
+    sun_uz = (0.0f - sky_rel_y) * sun_inner;
+
+    fillQuad3DZ(
+        cx - sun_rx - sun_ux, sky_core_cy - sun_ry - sun_uy, sky_core_cz - sun_rz - sun_uz,
+        cx + sun_rx - sun_ux, sky_core_cy + sun_ry - sun_uy, sky_core_cz + sun_rz - sun_uz,
+        cx + sun_rx + sun_ux, sky_core_cy + sun_ry + sun_uy, sky_core_cz + sun_rz + sun_uz,
+        cx - sun_rx + sun_ux, sky_core_cy - sun_ry + sun_uy, sky_core_cz - sun_rz + sun_uz,
+        inner_color, &cam[0]
+    );
+}
+
+void drawStarBillboard(float cx, float cy, float cz, float size)
+{
+    /* Stars use the same one-axis orientation as the moon: fixed world-X
+       horizontal axis, tangent vertical axis in the moon orbit plane. */
+    star_rx = size * block_world_size;
+    star_ry = 0.0f;
+    star_rz = 0.0f;
+
+    star_basis_y = 0.0f - day_cos;
+    star_basis_z = day_sin;
+
+    star_ux = 0.0f;
+    star_uy = star_basis_y * size * block_world_size;
+    star_uz = star_basis_z * size * block_world_size;
+
+    fillQuad3DZ(
+        cx - star_rx - star_ux, cy - star_ry - star_uy, cz - star_rz - star_uz,
+        cx + star_rx - star_ux, cy + star_ry - star_uy, cz + star_rz - star_uz,
+        cx + star_rx + star_ux, cy + star_ry + star_uy, cz + star_rz + star_uz,
+        cx - star_rx + star_ux, cy - star_ry + star_uy, cz - star_rz + star_uz,
+        255, &cam[0]
+    );
+}
+
+void drawStars()
+{
+    if (stars_enabled == 0) return;
+    star_moon_up = 0.0f - day_sin;
+    if (star_moon_up <= 0.04f) return;
+
+    star_i = 0;
+    while (star_i < 24)
+    {
+        star_hash = star_i * 1103515245 + 12345;
+        star_hash = star_hash ^ (star_hash >> 11);
+
+        star_side = (float)((star_hash & 63) - 31) * 2.40f;
+        star_tangent = (float)(((star_hash >> 6) & 63) - 31) * 1.70f;
+        star_size = 0.34f + (float)((star_hash >> 12) & 3) * 0.07f;
+
+        /* Star field rotates with the moon direction: moon dir = (0,-sin,-cos),
+           tangent around the same orbit = (0,-cos,sin). */
+        obj_cx = player_x + star_side;
+        obj_cy = player_y + (0.0f - day_sin) * 430.0f + star_tangent * (0.0f - day_cos);
+        obj_cz = player_z + (0.0f - day_cos) * 430.0f + star_tangent * day_sin;
+        if (objectOnScreenBlocks(obj_cx, obj_cy, obj_cz, star_size * 2.0f) != 0)
+        {
+            star_cx = obj_cx * block_world_size;
+            star_cy = obj_cy * block_world_size;
+            star_cz = obj_cz * block_world_size;
+            drawStarBillboard(star_cx, star_cy, star_cz, star_size);
+        }
+
+        star_i = star_i + 1;
+    }
+}
+
+void drawCloudRect3D()
+{
+    cloud_t = cloud_y_world + cloud_layer_y;
+    obj_cx = (cloud_rect_x0 + cloud_rect_x1) * 0.5f;
+    obj_cy = cloud_t;
+    obj_cz = (cloud_rect_z0 + cloud_rect_z1) * 0.5f;
+    obj_radius = (cloud_rect_x1 - cloud_rect_x0) * 0.55f + (cloud_rect_z1 - cloud_rect_z0) * 0.55f + 2.0f;
+    if (objectOnScreenBlocks(obj_cx, obj_cy, obj_cz, obj_radius) == 0) return;
+    fillQuad3DZ(
+        cloud_rect_x0 * block_world_size, cloud_t * block_world_size, cloud_rect_z0 * block_world_size,
+        cloud_rect_x1 * block_world_size, cloud_t * block_world_size, cloud_rect_z0 * block_world_size,
+        cloud_rect_x1 * block_world_size, cloud_t * block_world_size, cloud_rect_z1 * block_world_size,
+        cloud_rect_x0 * block_world_size, cloud_t * block_world_size, cloud_rect_z1 * block_world_size,
+        cloud_rect_color, &cam[0]
+    );
+}
+
+void drawClouds()
+{
+    /* 3D Minecraft-style cloud layer. These are real horizontal quads in
+       absolute world space. The player only decides which square area is worth
+       drawing; cloud positions themselves are anchored to the world grid. */
+    if (clouds_enabled == 0) return;
+
+    cloud_y_world = 74.0f;
+    cloud_frustum_top_y = view_y + cam_up_y * render_fov_y_scale;
+    if ((player_y < cloud_y_world) && (cloud_frustum_top_y <= 0.0f)) return;
+    cloud_frustum_bottom_y = view_y - cam_up_y * render_fov_y_scale;
+    if ((player_y > cloud_y_world) && (cloud_frustum_bottom_y >= 0.0f)) return;
+
+    clouds_now = millis();
+    cloud_tile = 32.0f;
+    cloud_span = (float)cloud_area_blocks;
+
+    /* Slower seamless motion: 512 steps * 0.0625 = one 32-block tile.
+       Each step lasts 256 ms, so a full cycle takes about 131 seconds. */
+    cloud_motion = ((float)((clouds_now >> 8) & (uint)511)) * 0.0625f;
+
+    cloud_abs_player_x = (float)world_origin_x + player_x;
+    cloud_abs_player_z = (float)world_origin_z + player_z;
+
+    cloud_origin_tile_x = floorFloatToInt((cloud_abs_player_x - cloud_span - cloud_motion) * 0.03125f);
+    cloud_origin_tile_z = floorFloatToInt((cloud_abs_player_z - cloud_span) * 0.03125f);
+    cloud_grid_count = (cloud_area_blocks / 16) + 3;
+    if (cloud_grid_count < 5) cloud_grid_count = 5;
+    if (cloud_grid_count > 9) cloud_grid_count = 9;
+
+    cloud_grid_z = 0;
+    while (cloud_grid_z < cloud_grid_count)
+    {
+        cloud_grid_x = 0;
+        while (cloud_grid_x < cloud_grid_count)
+        {
+            cloud_tile_index_x = cloud_origin_tile_x + cloud_grid_x;
+            cloud_tile_index_z = cloud_origin_tile_z + cloud_grid_z;
+
+            /* Deterministic per-cloud hash. No storage/chunks needed, but the
+               same world tile always has the same cloud shape and size. */
+            cloud_hash = cloud_tile_index_x * 374761393 + cloud_tile_index_z * 668265263 + 1442695041;
+            cloud_hash = cloud_hash ^ (cloud_hash >> 13);
+            cloud_hash = cloud_hash * 1274126177;
+            cloud_hash = cloud_hash ^ (cloud_hash >> 16);
+
+            cloud_skip = cloud_hash & 7;
+            if (cloud_skip != 0)
+            {
+                cloud_abs_tile_x = ((float)cloud_tile_index_x) * cloud_tile + cloud_motion;
+                cloud_abs_tile_z = ((float)cloud_tile_index_z) * cloud_tile;
+
+                cloud_tile_x = cloud_abs_tile_x - (float)world_origin_x;
+                cloud_tile_z = cloud_abs_tile_z - (float)world_origin_z;
+
+                cloud_variant = (cloud_hash >> 3) & 7;
+                cloud_off_x = (float)((cloud_hash >> 7) & 7);
+                cloud_off_z = (float)((cloud_hash >> 11) & 7);
+                cloud_size_x = 14.0f + (float)((cloud_hash >> 15) & 15);
+                cloud_size_z = 5.0f + (float)((cloud_hash >> 20) & 7);
+                cloud_mid_x = cloud_tile_x + 4.0f + cloud_off_x;
+                cloud_mid_z = cloud_tile_z + 8.0f + cloud_off_z;
+
+                cloud_layer_y = 0.00f;
+                cloud_rect_color = cloud_day_color;
+                cloud_rect_x0 = cloud_mid_x;
+                cloud_rect_x1 = cloud_mid_x + cloud_size_x;
+                cloud_rect_z0 = cloud_mid_z;
+                cloud_rect_z1 = cloud_mid_z + cloud_size_z;
+                drawCloudRect3D();
+
+                if ((cloud_variant & 1) == 0)
+                {
+                    cloud_layer_y = 0.035f;
+                    cloud_rect_x0 = cloud_mid_x + 5.0f;
+                    cloud_rect_x1 = cloud_mid_x + 5.0f + cloud_size_x * 0.55f;
+                    cloud_rect_z0 = cloud_mid_z - 4.0f;
+                    cloud_rect_z1 = cloud_mid_z + 1.0f;
+                    drawCloudRect3D();
+                }
+
+                if ((cloud_variant & 2) == 0)
+                {
+                    cloud_layer_y = 0.070f;
+                    cloud_rect_x0 = cloud_mid_x + cloud_size_x * 0.42f;
+                    cloud_rect_x1 = cloud_mid_x + cloud_size_x + 7.0f;
+                    cloud_rect_z0 = cloud_mid_z + cloud_size_z - 1.0f;
+                    cloud_rect_z1 = cloud_mid_z + cloud_size_z + 5.0f;
+                    drawCloudRect3D();
+                }
+
+                cloud_rect_color = cloud_shadow_color;
+                if ((cloud_variant & 4) == 0)
+                {
+                    /* Keep one shadow accent on alternating variants. */
+                    cloud_layer_y = 0.105f;
+                    cloud_rect_x0 = cloud_mid_x + 2.0f;
+                    cloud_rect_x1 = cloud_mid_x + cloud_size_x * 0.75f;
+                    cloud_rect_z0 = cloud_mid_z + cloud_size_z;
+                    cloud_rect_z1 = cloud_mid_z + cloud_size_z + 2.0f;
+                    drawCloudRect3D();
+                }
+            }
+
+            cloud_grid_x = cloud_grid_x + 1;
+        }
+        cloud_grid_z = cloud_grid_z + 1;
+    }
+}
+
+void drawSaveHudIndicators()
+{
+    clouds_now = millis();
+    if (clouds_now < autosave_icon_until_ms)
+    {
+        fillRect2DClipped(280, 8, 315, 20, (uint)0);
+        drawLabelText(286, 11, 17, (uint)252);
+    }
+    if (clouds_now < config_icon_until_ms)
+    {
+        fillRect2DClipped(244, 22, 315, 34, (uint)0);
+        drawLabelText(250, 25, 16, (uint)252);
+    }
+}
+
+void drawSun()
+{
+    /* Sun/moon cycle in Minecraft style: sun and moon are opposite each other
+       on a vertical orbit around the player. Bodies below the world/player are
+       not drawn at all, even though they would be behind terrain anyway. */
+
+    if (day_sin > 0.02f)
+    {
+        obj_cx = player_x;
+        obj_cy = player_y + day_sin * sun_height_blocks;
+        obj_cz = player_z + day_cos * sun_distance_blocks;
+        if (objectOnScreenBlocks(obj_cx, obj_cy, obj_cz, sun_radius_blocks * 1.75f) != 0)
+        {
+            sun_cx = obj_cx * block_world_size;
+            sun_cy = obj_cy * block_world_size;
+            sun_cz = obj_cz * block_world_size;
+            drawSkyBillboard(sun_cx, sun_cy, sun_cz, sun_radius_blocks, sun_radius_blocks * 0.56f, (uint)216, (uint)252);
+        }
+    }
+
+    if ((0.0f - day_sin) > 0.02f)
+    {
+        drawStars();
+
+        obj_cx = player_x;
+        obj_cy = player_y + (0.0f - day_sin) * sun_height_blocks;
+        obj_cz = player_z + (0.0f - day_cos) * sun_distance_blocks;
+        if (objectOnScreenBlocks(obj_cx, obj_cy, obj_cz, sun_radius_blocks * 1.70f) != 0)
+        {
+            moon_cx = obj_cx * block_world_size;
+            moon_cy = obj_cy * block_world_size;
+            moon_cz = obj_cz * block_world_size;
+            drawSkyBillboard(moon_cx, moon_cy, moon_cz, sun_radius_blocks * 0.92f, sun_radius_blocks * 0.50f, (uint)146, (uint)255);
+        }
+    }
+}
+

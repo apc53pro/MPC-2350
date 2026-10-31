@@ -1,0 +1,1657 @@
+uint requiredBreakTime(uint b)
+{
+    if (blockRegistryKnown(b) != 0)
+    {
+        if (blockRegistryPreferredTool(b) != TC_TOOL_NONE)
+        {
+            if (runtimeItemToolKind(selected_block) == blockRegistryPreferredTool(b)) return blockRegistryPreferredBreakMs(b);
+        }
+        return blockRegistryDefaultBreakMs(b);
+    }
+
+    return (uint)900;
+}
+
+int canDropMinedBlock(uint b)
+{
+    if (b == (uint)0) return 0;
+    if (blockRegistryKnown(b) != 0)
+    {
+        if (blockRegistryDropRequiredTool(b) != TC_TOOL_NONE)
+        {
+            if (runtimeItemToolKind(selected_block) != blockRegistryDropRequiredTool(b)) return 0;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+int isPlaceableItem(uint b)
+{
+    return itemRegistryIsPlaceable(b);
+}
+
+uint blockUIColor(uint b)
+{
+    return itemRegistryUIColor(b);
+}
+
+void selectItemTextures(uint b)
+{
+    selectItemTexturesFromRuntime(b);
+}
+
+void selectIconTexture(uint b)
+{
+    selectIconTextureFromRuntime(b);
+}
+
+
+void fillRect2DClipped(int x0, int y0, int x1, int y1, uint color)
+{
+    if (x1 < 0) return;
+    if (y1 < 0) return;
+    if (x0 > 319) return;
+    if (y0 > 239) return;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > 319) x1 = 319;
+    if (y1 > 239) y1 = 239;
+    if (x0 > x1) return;
+    if (y0 > y1) return;
+    fillRect2D(x0, y0, x1, y1, color);
+}
+
+void drawIconTexture16(int x, int y, uint b)
+{
+    if (b == (uint)0) return;
+
+    selectIconTexture(b);
+    if ((textureRegistryAlphaKind(icon_tex_id) == TC_TEXTURE_ALPHA_MASK) || ((icon_tex_id >= TC_TEX_ITEM_STICK) && (icon_tex_id <= TC_TEX_ITEM_WOODEN_AXE)))
+    {
+        fillRect2DTexMasking(x, y, 16, 16, icon_tex, &textureMasks[icon_tex_id * TC_TEXTURE_MASK_WORDS]);
+        return;
+    }
+    fillRect2DTex(x, y, 16, 16, icon_tex);
+}
+
+
+void updateSelectedBlock()
+{
+    if (selected_slot < 0) selected_slot = 0;
+    if (selected_slot > 8) selected_slot = 8;
+
+    if (inv_count[selected_slot] > 0) selected_block = inv_id[selected_slot];
+    else selected_block = (uint)0;
+}
+
+int addItemToInventory(uint b, int count)
+{
+    if (b == (uint)0) return 0;
+    if (count <= 0) return 0;
+
+    inv_add_remaining = count;
+
+    /* Merge into existing stacks, capped at 64 like Minecraft.
+       Return value is the amount actually inserted. */
+    inv_add_i = 0;
+    while ((inv_add_i < 36) && (inv_add_remaining > 0))
+    {
+        if (inv_count[inv_add_i] > 0)
+        {
+            if (inv_id[inv_add_i] == b)
+            {
+                if (inv_count[inv_add_i] < runtimeItemMaxStack(b))
+                {
+                    inv_add_space = runtimeItemMaxStack(b) - inv_count[inv_add_i];
+                    inv_add_move = inv_add_remaining;
+                    if (inv_add_move > inv_add_space) inv_add_move = inv_add_space;
+                    inv_count[inv_add_i] = inv_count[inv_add_i] + inv_add_move;
+                    inv_add_remaining = inv_add_remaining - inv_add_move;
+                }
+            }
+        }
+        inv_add_i = inv_add_i + 1;
+    }
+
+    /* Then use empty slots, also capped at 64. */
+    inv_add_i = 0;
+    while ((inv_add_i < 36) && (inv_add_remaining > 0))
+    {
+        if (inv_count[inv_add_i] <= 0)
+        {
+            inv_id[inv_add_i] = b;
+            inv_add_move = inv_add_remaining;
+            if (inv_add_move > runtimeItemMaxStack(b)) inv_add_move = runtimeItemMaxStack(b);
+            inv_count[inv_add_i] = inv_add_move;
+            inv_add_remaining = inv_add_remaining - inv_add_move;
+        }
+        inv_add_i = inv_add_i + 1;
+    }
+
+    if (inv_add_remaining != count) world_dirty = 1;
+    return count - inv_add_remaining;
+}
+
+void consumeSelectedBlock()
+{
+    if (selected_slot < 0) return;
+    if (selected_slot > 8) return;
+    if (inv_count[selected_slot] <= 0) return;
+
+    inv_count[selected_slot] = inv_count[selected_slot] - 1;
+    if (inv_count[selected_slot] <= 0)
+    {
+        inv_count[selected_slot] = 0;
+        inv_id[selected_slot] = (uint)0;
+    }
+    updateSelectedBlock();
+    world_dirty = 1;
+}
+
+void processHotbarNumberKeys()
+{
+    old_selected_slot_for_anim = selected_slot;
+
+    key(0x16, key_data, key_pressed);
+    if (key_pressed != 0) { if (old_slot1_key == 0) selected_slot = 0; old_slot1_key = 1; }
+    else old_slot1_key = 0;
+
+    key(0x1E, key_data, key_pressed);
+    if (key_pressed != 0) { if (old_slot2_key == 0) selected_slot = 1; old_slot2_key = 1; }
+    else old_slot2_key = 0;
+
+    key(0x26, key_data, key_pressed);
+    if (key_pressed != 0) { if (old_slot3_key == 0) selected_slot = 2; old_slot3_key = 1; }
+    else old_slot3_key = 0;
+
+    key(0x25, key_data, key_pressed);
+    if (key_pressed != 0) { if (old_slot4_key == 0) selected_slot = 3; old_slot4_key = 1; }
+    else old_slot4_key = 0;
+
+    key(0x2E, key_data, key_pressed);
+    if (key_pressed != 0) { if (old_slot5_key == 0) selected_slot = 4; old_slot5_key = 1; }
+    else old_slot5_key = 0;
+
+    key(0x36, key_data, key_pressed);
+    if (key_pressed != 0) { if (old_slot6_key == 0) selected_slot = 5; old_slot6_key = 1; }
+    else old_slot6_key = 0;
+
+    key(0x3D, key_data, key_pressed);
+    if (key_pressed != 0) { if (old_slot7_key == 0) selected_slot = 6; old_slot7_key = 1; }
+    else old_slot7_key = 0;
+
+    key(0x3E, key_data, key_pressed);
+    if (key_pressed != 0) { if (old_slot8_key == 0) selected_slot = 7; old_slot8_key = 1; }
+    else old_slot8_key = 0;
+
+    key(0x46, key_data, key_pressed);
+    if (key_pressed != 0) { if (old_slot9_key == 0) selected_slot = 8; old_slot9_key = 1; }
+    else old_slot9_key = 0;
+
+    if (selected_slot != old_selected_slot_for_anim) hotbar_raise_anim_ms = (uint)300;
+    updateSelectedBlock();
+}
+
+void processInventoryToggleKey()
+{
+    key(0x24, key_data, key_pressed);  /* E */
+    if (key_pressed != 0)
+    {
+        if (old_inventory_key == 0)
+        {
+            if (inventory_open == 0)
+            {
+                inventory_open = 1;
+                crafting_table_mode = 0;
+                ui_cursor_x = (float)(26 + selected_slot * 22);
+                ui_cursor_y = 194.0f;
+                last_ms = millis();
+            }
+            else
+            {
+                inventory_open = 0;
+            }
+        }
+        old_inventory_key = 1;
+    }
+    else
+    {
+        old_inventory_key = 0;
+    }
+}
+
+
+void updateCraftOutput()
+{
+    craft_output_id = (uint)0;
+    craft_output_count = 0;
+    craft_recipe_type = (uint)0;
+    craft_nonempty_count = 0;
+    craft_plank_count = 0;
+    craft_wood_count = 0;
+    craft_stick_count = 0;
+    craft_tool_count = 0;
+    craft_use_count = 0;
+    craft_use0 = -1;
+    craft_use1 = -1;
+    craft_use2 = -1;
+    craft_use3 = -1;
+    craft_use4 = -1;
+
+    if (crafting_table_mode != 0) craft_active_slots = 9;
+    else craft_active_slots = 4;
+
+    craft_slot_i = 0;
+    while (craft_slot_i < craft_active_slots)
+    {
+        if (craft_count[craft_slot_i] > 0)
+        {
+            craft_nonempty_count = craft_nonempty_count + 1;
+            if (craft_id[craft_slot_i] == BLOCK_WOOD) craft_wood_count = craft_wood_count + 1;
+            if (craft_id[craft_slot_i] == BLOCK_OAK_PLANKS) craft_plank_count = craft_plank_count + 1;
+            if (craft_id[craft_slot_i] == ITEM_STICK) craft_stick_count = craft_stick_count + 1;
+            if (itemRegistryIsTool(craft_id[craft_slot_i]) != 0) craft_tool_count = craft_tool_count + 1;
+        }
+        craft_slot_i = craft_slot_i + 1;
+    }
+
+    /* One oak log anywhere in the crafting grid -> four oak planks. */
+    if ((craft_nonempty_count == 1) && (craft_wood_count == 1))
+    {
+        craft_slot_i = 0;
+        while (craft_slot_i < craft_active_slots)
+        {
+            if ((craft_count[craft_slot_i] > 0) && (craft_id[craft_slot_i] == BLOCK_WOOD))
+            {
+                craft_output_id = BLOCK_OAK_PLANKS;
+                craft_output_count = 4;
+                craft_recipe_type = (uint)1;
+                craft_use_count = 1;
+                craft_use0 = craft_slot_i;
+                return;
+            }
+            craft_slot_i = craft_slot_i + 1;
+        }
+    }
+
+    /* Two vertical oak planks anywhere they fit -> four sticks. */
+    if ((craft_nonempty_count == 2) && (craft_plank_count == 2))
+    {
+        craft_check_col = 0;
+        while (craft_check_col < craft_size)
+        {
+            craft_check_row = 0;
+            while (craft_check_row < (craft_size - 1))
+            {
+                craft_s0 = craft_check_row * craft_size + craft_check_col;
+                craft_s1 = (craft_check_row + 1) * craft_size + craft_check_col;
+                if ((craft_count[craft_s0] > 0) && (craft_count[craft_s1] > 0))
+                {
+                    if ((craft_id[craft_s0] == BLOCK_OAK_PLANKS) && (craft_id[craft_s1] == BLOCK_OAK_PLANKS))
+                    {
+                        craft_output_id = ITEM_STICK;
+                        craft_output_count = 4;
+                        craft_recipe_type = (uint)3;
+                        craft_use_count = 2;
+                        craft_use0 = craft_s0;
+                        craft_use1 = craft_s1;
+                        return;
+                    }
+                }
+                craft_check_row = craft_check_row + 1;
+            }
+            craft_check_col = craft_check_col + 1;
+        }
+    }
+
+    /* 2x2 oak planks anywhere they fit -> crafting table. */
+    if ((craft_nonempty_count == 4) && (craft_plank_count == 4))
+    {
+        craft_check_row = 0;
+        while (craft_check_row < (craft_size - 1))
+        {
+            craft_check_col = 0;
+            while (craft_check_col < (craft_size - 1))
+            {
+                craft_s0 = craft_check_row * craft_size + craft_check_col;
+                craft_s1 = craft_check_row * craft_size + craft_check_col + 1;
+                craft_s2 = (craft_check_row + 1) * craft_size + craft_check_col;
+                craft_s3 = (craft_check_row + 1) * craft_size + craft_check_col + 1;
+                if ((craft_count[craft_s0] > 0) && (craft_count[craft_s1] > 0) && (craft_count[craft_s2] > 0) && (craft_count[craft_s3] > 0))
+                {
+                    if ((craft_id[craft_s0] == BLOCK_OAK_PLANKS) && (craft_id[craft_s1] == BLOCK_OAK_PLANKS) && (craft_id[craft_s2] == BLOCK_OAK_PLANKS) && (craft_id[craft_s3] == BLOCK_OAK_PLANKS))
+                    {
+                        craft_output_id = BLOCK_CRAFTING_TABLE;
+                        craft_output_count = 1;
+                        craft_recipe_type = (uint)2;
+                        craft_use_count = 4;
+                        craft_use0 = craft_s0;
+                        craft_use1 = craft_s1;
+                        craft_use2 = craft_s2;
+                        craft_use3 = craft_s3;
+                        return;
+                    }
+                }
+                craft_check_col = craft_check_col + 1;
+            }
+            craft_check_row = craft_check_row + 1;
+        }
+    }
+
+    if (crafting_table_mode == 0) return;
+
+    /* Wooden pickaxe: full top row plus two center sticks. In a 3x3 grid this fills the shape. */
+    if (craft_nonempty_count == 5)
+    {
+        if ((craft_count[0] > 0) && (craft_count[1] > 0) && (craft_count[2] > 0) && (craft_count[4] > 0) && (craft_count[7] > 0))
+        {
+            if ((craft_id[0] == BLOCK_OAK_PLANKS) && (craft_id[1] == BLOCK_OAK_PLANKS) && (craft_id[2] == BLOCK_OAK_PLANKS) && (craft_id[4] == ITEM_STICK) && (craft_id[7] == ITEM_STICK))
+            {
+                craft_output_id = ITEM_WOODEN_PICKAXE;
+                craft_output_count = 1;
+                craft_recipe_type = (uint)4;
+                craft_use_count = 5;
+                craft_use0 = 0;
+                craft_use1 = 1;
+                craft_use2 = 2;
+                craft_use3 = 4;
+                craft_use4 = 7;
+                return;
+            }
+        }
+    }
+
+    /* Wooden sword and shovel: one-column recipes can be made in any column. */
+    if (craft_nonempty_count == 3)
+    {
+        craft_check_col = 0;
+        while (craft_check_col < 3)
+        {
+            craft_s0 = craft_check_col;
+            craft_s1 = 3 + craft_check_col;
+            craft_s2 = 6 + craft_check_col;
+
+            if ((craft_count[craft_s0] > 0) && (craft_count[craft_s1] > 0) && (craft_count[craft_s2] > 0))
+            {
+                if ((craft_id[craft_s0] == BLOCK_OAK_PLANKS) && (craft_id[craft_s1] == BLOCK_OAK_PLANKS) && (craft_id[craft_s2] == ITEM_STICK))
+                {
+                    craft_output_id = ITEM_WOODEN_SWORD;
+                    craft_output_count = 1;
+                    craft_recipe_type = (uint)5;
+                    craft_use_count = 3;
+                    craft_use0 = craft_s0;
+                    craft_use1 = craft_s1;
+                    craft_use2 = craft_s2;
+                    return;
+                }
+                if ((craft_id[craft_s0] == BLOCK_OAK_PLANKS) && (craft_id[craft_s1] == ITEM_STICK) && (craft_id[craft_s2] == ITEM_STICK))
+                {
+                    craft_output_id = ITEM_WOODEN_SHOVEL;
+                    craft_output_count = 1;
+                    craft_recipe_type = (uint)6;
+                    craft_use_count = 3;
+                    craft_use0 = craft_s0;
+                    craft_use1 = craft_s1;
+                    craft_use2 = craft_s2;
+                    return;
+                }
+            }
+            craft_check_col = craft_check_col + 1;
+        }
+    }
+
+    /* Wooden axe: left or right mirrored axe head, with the stick column matching Minecraft style. */
+    if (craft_nonempty_count == 5)
+    {
+        /* Left axe. */
+        if ((craft_count[0] > 0) && (craft_count[1] > 0) && (craft_count[3] > 0) && (craft_count[4] > 0) && (craft_count[7] > 0))
+        {
+            if ((craft_id[0] == BLOCK_OAK_PLANKS) && (craft_id[1] == BLOCK_OAK_PLANKS) && (craft_id[3] == BLOCK_OAK_PLANKS) && (craft_id[4] == ITEM_STICK) && (craft_id[7] == ITEM_STICK))
+            {
+                craft_output_id = ITEM_WOODEN_AXE;
+                craft_output_count = 1;
+                craft_recipe_type = (uint)7;
+                craft_use_count = 5;
+                craft_use0 = 0;
+                craft_use1 = 1;
+                craft_use2 = 3;
+                craft_use3 = 4;
+                craft_use4 = 7;
+                return;
+            }
+        }
+        /* Right mirrored axe. */
+        if ((craft_count[1] > 0) && (craft_count[2] > 0) && (craft_count[5] > 0) && (craft_count[4] > 0) && (craft_count[7] > 0))
+        {
+            if ((craft_id[1] == BLOCK_OAK_PLANKS) && (craft_id[2] == BLOCK_OAK_PLANKS) && (craft_id[5] == BLOCK_OAK_PLANKS) && (craft_id[4] == ITEM_STICK) && (craft_id[7] == ITEM_STICK))
+            {
+                craft_output_id = ITEM_WOODEN_AXE;
+                craft_output_count = 1;
+                craft_recipe_type = (uint)7;
+                craft_use_count = 5;
+                craft_use0 = 1;
+                craft_use1 = 2;
+                craft_use2 = 5;
+                craft_use3 = 4;
+                craft_use4 = 7;
+                return;
+            }
+        }
+    }
+}
+
+void consumeCraftIngredients()
+{
+    updateCraftOutput();
+    if (craft_output_id == (uint)0) return;
+    if (craft_use_count <= 0) return;
+
+    if (craft_use_count >= 1)
+    {
+        craft_count[craft_use0] = craft_count[craft_use0] - 1;
+    }
+    if (craft_use_count >= 2)
+    {
+        craft_count[craft_use1] = craft_count[craft_use1] - 1;
+    }
+    if (craft_use_count >= 3)
+    {
+        craft_count[craft_use2] = craft_count[craft_use2] - 1;
+    }
+    if (craft_use_count >= 4)
+    {
+        craft_count[craft_use3] = craft_count[craft_use3] - 1;
+    }
+    if (craft_use_count >= 5)
+    {
+        craft_count[craft_use4] = craft_count[craft_use4] - 1;
+    }
+
+    craft_consume_i = 0;
+    while (craft_consume_i < 9)
+    {
+        if (craft_count[craft_consume_i] <= 0)
+        {
+            craft_count[craft_consume_i] = 0;
+            craft_id[craft_consume_i] = (uint)0;
+        }
+        craft_consume_i = craft_consume_i + 1;
+    }
+    updateCraftOutput();
+}
+
+void findInventorySlotUnderCursor()
+{
+    inv_actual_slot = -1;
+    ui_cursor_ix = (int)ui_cursor_x;
+    ui_cursor_iy = (int)ui_cursor_y;
+
+    if (crafting_table_mode != 0)
+    {
+        craft_size = 3;
+        craft_grid_x = 228;
+        craft_grid_y = 28;
+        craft_out_x = 288;
+        craft_out_y = 104;
+    }
+    else
+    {
+        craft_size = 2;
+        craft_grid_x = 238;
+        craft_grid_y = 34;
+        craft_out_x = 288;
+        craft_out_y = 76;
+    }
+
+    ui_inv_x0 = 16;
+    ui_inv_y0 = 112;
+    ui_hotbar_y = 184;
+    ui_slot_step = 22;
+    ui_slot_size = 20;
+
+    if ((ui_cursor_ix >= craft_out_x) && (ui_cursor_ix <= (craft_out_x + 20)) && (ui_cursor_iy >= craft_out_y) && (ui_cursor_iy <= (craft_out_y + 20)))
+    {
+        inv_actual_slot = 200;
+        return;
+    }
+
+    if ((ui_cursor_ix >= craft_grid_x) && (ui_cursor_ix < (craft_grid_x + craft_size * 22)))
+    {
+        if ((ui_cursor_iy >= craft_grid_y) && (ui_cursor_iy < (craft_grid_y + craft_size * 22)))
+        {
+            craft_slot_col = (ui_cursor_ix - craft_grid_x) / 22;
+            craft_slot_row = (ui_cursor_iy - craft_grid_y) / 22;
+            if (((ui_cursor_ix - craft_grid_x) % 22) <= 20)
+            {
+                if (((ui_cursor_iy - craft_grid_y) % 22) <= 20)
+                {
+                    inv_actual_slot = 100 + craft_slot_row * craft_size + craft_slot_col;
+                    return;
+                }
+            }
+        }
+    }
+
+    if ((ui_cursor_ix >= ui_inv_x0) && (ui_cursor_ix <= (ui_inv_x0 + 198)))
+    {
+        inv_draw_col = (ui_cursor_ix - ui_inv_x0) / ui_slot_step;
+        if (((ui_cursor_ix - ui_inv_x0) % ui_slot_step) <= ui_slot_size)
+        {
+            if ((ui_cursor_iy >= ui_inv_y0) && (ui_cursor_iy < (ui_inv_y0 + 66)))
+            {
+                inv_draw_row = (ui_cursor_iy - ui_inv_y0) / ui_slot_step;
+                if (((ui_cursor_iy - ui_inv_y0) % ui_slot_step) <= ui_slot_size)
+                {
+                    inv_actual_slot = 9 + inv_draw_row * 9 + inv_draw_col;
+                }
+            }
+            else if ((ui_cursor_iy >= ui_hotbar_y) && (ui_cursor_iy <= (ui_hotbar_y + ui_slot_size)))
+            {
+                inv_actual_slot = inv_draw_col;
+            }
+        }
+    }
+}
+
+void inventoryLeftClickCursor()
+{
+    findInventorySlotUnderCursor();
+    if (inv_actual_slot < 0) return;
+
+    if (inv_actual_slot == 200)
+    {
+        updateCraftOutput();
+        if (craft_output_count <= 0) return;
+        if ((held_count <= 0) || (held_id == craft_output_id))
+        {
+            if (held_count <= 0) held_id = craft_output_id;
+            if ((held_count + craft_output_count) <= runtimeItemMaxStack(craft_output_id))
+            {
+                held_count = held_count + craft_output_count;
+                consumeCraftIngredients();
+            }
+        }
+        updateSelectedBlock();
+        return;
+    }
+
+    if (inv_actual_slot >= 100)
+    {
+        craft_slot_i = inv_actual_slot - 100;
+        if (craft_slot_i < 0) return;
+        if (craft_slot_i >= 9) return;
+
+        if (held_count <= 0)
+        {
+            if (craft_count[craft_slot_i] > 0)
+            {
+                held_id = craft_id[craft_slot_i];
+                held_count = craft_count[craft_slot_i];
+                craft_id[craft_slot_i] = (uint)0;
+                craft_count[craft_slot_i] = 0;
+            }
+            updateCraftOutput();
+            updateSelectedBlock();
+            return;
+        }
+
+        if (craft_count[craft_slot_i] <= 0)
+        {
+            craft_id[craft_slot_i] = held_id;
+            craft_count[craft_slot_i] = held_count;
+            held_id = (uint)0;
+            held_count = 0;
+            updateCraftOutput();
+            updateSelectedBlock();
+            return;
+        }
+
+        if (craft_id[craft_slot_i] == held_id)
+        {
+            inv_add_space = runtimeItemMaxStack(held_id) - craft_count[craft_slot_i];
+            if (inv_add_space > 0)
+            {
+                inv_add_move = held_count;
+                if (inv_add_move > inv_add_space) inv_add_move = inv_add_space;
+                craft_count[craft_slot_i] = craft_count[craft_slot_i] + inv_add_move;
+                held_count = held_count - inv_add_move;
+                if (held_count <= 0)
+                {
+                    held_id = (uint)0;
+                    held_count = 0;
+                }
+            }
+            updateCraftOutput();
+            updateSelectedBlock();
+            return;
+        }
+
+        inv_tmp_id = craft_id[craft_slot_i];
+        inv_tmp_count = craft_count[craft_slot_i];
+        craft_id[craft_slot_i] = held_id;
+        craft_count[craft_slot_i] = held_count;
+        held_id = inv_tmp_id;
+        held_count = inv_tmp_count;
+        updateCraftOutput();
+        updateSelectedBlock();
+        return;
+    }
+
+    if (held_count <= 0)
+    {
+        if (inv_count[inv_actual_slot] > 0)
+        {
+            held_id = inv_id[inv_actual_slot];
+            held_count = inv_count[inv_actual_slot];
+            inv_id[inv_actual_slot] = (uint)0;
+            inv_count[inv_actual_slot] = 0;
+        }
+        updateSelectedBlock();
+        return;
+    }
+
+    if (inv_count[inv_actual_slot] <= 0)
+    {
+        inv_id[inv_actual_slot] = held_id;
+        inv_count[inv_actual_slot] = held_count;
+        held_id = (uint)0;
+        held_count = 0;
+        updateSelectedBlock();
+        return;
+    }
+
+    if (inv_id[inv_actual_slot] == held_id)
+    {
+        inv_add_space = runtimeItemMaxStack(held_id) - inv_count[inv_actual_slot];
+        if (inv_add_space > 0)
+        {
+            inv_add_move = held_count;
+            if (inv_add_move > inv_add_space) inv_add_move = inv_add_space;
+            inv_count[inv_actual_slot] = inv_count[inv_actual_slot] + inv_add_move;
+            held_count = held_count - inv_add_move;
+            if (held_count <= 0)
+            {
+                held_id = (uint)0;
+                held_count = 0;
+            }
+        }
+        updateSelectedBlock();
+        return;
+    }
+
+    inv_tmp_id = inv_id[inv_actual_slot];
+    inv_tmp_count = inv_count[inv_actual_slot];
+    inv_id[inv_actual_slot] = held_id;
+    inv_count[inv_actual_slot] = held_count;
+    held_id = inv_tmp_id;
+    held_count = inv_tmp_count;
+    updateSelectedBlock();
+}
+
+void inventoryRightClickCursor()
+{
+    findInventorySlotUnderCursor();
+    if (inv_actual_slot < 0) return;
+
+    if (inv_actual_slot == 200)
+    {
+        inventoryLeftClickCursor();
+        return;
+    }
+
+    if (inv_actual_slot >= 100)
+    {
+        craft_slot_i = inv_actual_slot - 100;
+        if (craft_slot_i < 0) return;
+        if (craft_slot_i >= 9) return;
+
+        if (held_count <= 0)
+        {
+            if (craft_count[craft_slot_i] > 0)
+            {
+                held_id = craft_id[craft_slot_i];
+                held_count = (craft_count[craft_slot_i] + 1) / 2;
+                craft_count[craft_slot_i] = craft_count[craft_slot_i] - held_count;
+                if (craft_count[craft_slot_i] <= 0)
+                {
+                    craft_count[craft_slot_i] = 0;
+                    craft_id[craft_slot_i] = (uint)0;
+                }
+            }
+            updateCraftOutput();
+            updateSelectedBlock();
+            return;
+        }
+
+        if (craft_count[craft_slot_i] <= 0)
+        {
+            craft_id[craft_slot_i] = held_id;
+            craft_count[craft_slot_i] = 1;
+            held_count = held_count - 1;
+            if (held_count <= 0)
+            {
+                held_count = 0;
+                held_id = (uint)0;
+            }
+            updateCraftOutput();
+            updateSelectedBlock();
+            return;
+        }
+
+        if (craft_id[craft_slot_i] == held_id)
+        {
+            if (craft_count[craft_slot_i] >= runtimeItemMaxStack(craft_id[craft_slot_i])) return;
+            craft_count[craft_slot_i] = craft_count[craft_slot_i] + 1;
+            held_count = held_count - 1;
+            if (held_count <= 0)
+            {
+                held_count = 0;
+                held_id = (uint)0;
+            }
+            updateCraftOutput();
+            updateSelectedBlock();
+        }
+        return;
+    }
+
+    if (held_count <= 0)
+    {
+        if (inv_count[inv_actual_slot] > 0)
+        {
+            held_id = inv_id[inv_actual_slot];
+            held_count = (inv_count[inv_actual_slot] + 1) / 2;
+            inv_count[inv_actual_slot] = inv_count[inv_actual_slot] - held_count;
+            if (inv_count[inv_actual_slot] <= 0)
+            {
+                inv_count[inv_actual_slot] = 0;
+                inv_id[inv_actual_slot] = (uint)0;
+            }
+        }
+        updateSelectedBlock();
+        return;
+    }
+
+    if (inv_count[inv_actual_slot] <= 0)
+    {
+        inv_id[inv_actual_slot] = held_id;
+        inv_count[inv_actual_slot] = 1;
+        held_count = held_count - 1;
+        if (held_count <= 0)
+        {
+            held_count = 0;
+            held_id = (uint)0;
+        }
+        updateSelectedBlock();
+        return;
+    }
+
+    if (inv_id[inv_actual_slot] == held_id)
+    {
+        if (inv_count[inv_actual_slot] >= runtimeItemMaxStack(inv_id[inv_actual_slot])) return;
+        inv_count[inv_actual_slot] = inv_count[inv_actual_slot] + 1;
+        held_count = held_count - 1;
+        if (held_count <= 0)
+        {
+            held_count = 0;
+            held_id = (uint)0;
+        }
+        updateSelectedBlock();
+    }
+}
+
+void processInventoryControls()
+{
+    /* Cursor mode: I/J/K/L moves the pointer. A is left click, D is right click.
+       Player movement/camera controls are skipped while inventory_open != 0. */
+    ui_cursor_speed = up_dtf * 0.22f * cursor_sensitivity;
+
+    key(0x43, key_data, key_pressed);  /* I */
+    if (key_pressed != 0) ui_cursor_y = ui_cursor_y - ui_cursor_speed;
+
+    key(0x42, key_data, key_pressed);  /* K */
+    if (key_pressed != 0) ui_cursor_y = ui_cursor_y + ui_cursor_speed;
+
+    key(0x3B, key_data, key_pressed);  /* J */
+    if (key_pressed != 0) ui_cursor_x = ui_cursor_x - ui_cursor_speed;
+
+    key(0x4B, key_data, key_pressed);  /* L */
+    if (key_pressed != 0) ui_cursor_x = ui_cursor_x + ui_cursor_speed;
+
+    if (ui_cursor_x < 0.0f) ui_cursor_x = 0.0f;
+    if (ui_cursor_x > 319.0f) ui_cursor_x = 319.0f;
+    if (ui_cursor_y < 0.0f) ui_cursor_y = 0.0f;
+    if (ui_cursor_y > 239.0f) ui_cursor_y = 239.0f;
+
+    key(0x1C, key_data, key_pressed);  /* A: left click */
+    if (key_pressed != 0)
+    {
+        if (old_cursor_left_click == 0)
+        {
+            inventoryLeftClickCursor();
+            world_dirty = 1;
+        }
+        old_cursor_left_click = 1;
+    }
+    else old_cursor_left_click = 0;
+
+    key(0x23, key_data, key_pressed);  /* D: right click */
+    if (key_pressed != 0)
+    {
+        if (old_cursor_right_click == 0)
+        {
+            inventoryRightClickCursor();
+            world_dirty = 1;
+        }
+        old_cursor_right_click = 1;
+    }
+    else old_cursor_right_click = 0;
+}
+
+int highestSolidAtAbsLimited(int wx, int wz, float max_top)
+{
+    g_y = 63;
+    while (g_y >= 0)
+    {
+        if (((float)g_y + 1.0f) <= max_top)
+        {
+            if (blockAtAbs(wx, g_y, wz) != (uint)0) return g_y;
+        }
+        g_y = g_y - 1;
+    }
+    return -1;
+}
+
+int dropItemBlockedAt(float px, float py, float pz)
+{
+    int x0;
+    int x1;
+    int z0;
+    int z1;
+    int y0;
+    int y1;
+
+    /* Approximate the dropped item as a small box. The old drop physics only
+       checked the floor, so horizontal velocity could push drops into side
+       blocks after a mined block popped out near a wall. */
+    x0 = floorFloatToInt(px - 0.18f);
+    x1 = floorFloatToInt(px + 0.18f);
+    z0 = floorFloatToInt(pz - 0.18f);
+    z1 = floorFloatToInt(pz + 0.18f);
+    y0 = floorFloatToInt(py - 0.25f);
+    y1 = floorFloatToInt(py + 0.20f);
+
+    if (blockAtAbs(x0, y0, z0) != (uint)0) return 1;
+    if (blockAtAbs(x1, y0, z0) != (uint)0) return 1;
+    if (blockAtAbs(x0, y0, z1) != (uint)0) return 1;
+    if (blockAtAbs(x1, y0, z1) != (uint)0) return 1;
+
+    if (blockAtAbs(x0, y1, z0) != (uint)0) return 1;
+    if (blockAtAbs(x1, y1, z0) != (uint)0) return 1;
+    if (blockAtAbs(x0, y1, z1) != (uint)0) return 1;
+    if (blockAtAbs(x1, y1, z1) != (uint)0) return 1;
+
+    return 0;
+}
+
+void spawnDropAbs(int wx, int y, int wz, uint b)
+{
+    if (b == (uint)0) return;
+    if (drop_active_count >= 64) return;
+
+    drop_i = 0;
+    while (drop_i < 64)
+    {
+        if (drop_active[drop_i] == 0)
+        {
+            drop_active[drop_i] = 1;
+            drop_block[drop_i] = b;
+            drop_count[drop_i] = 1;
+            drop_x[drop_i] = (float)wx + 0.5f;
+            drop_y[drop_i] = (float)y + 1.20f;
+            drop_z[drop_i] = (float)wz + 0.5f;
+            if (blockAtAbs(wx, y + 1, wz) != (uint)0)
+            {
+                if (blockAtAbs(wx + 1, y, wz) == (uint)0) drop_x[drop_i] = (float)wx + 1.18f;
+                else if (blockAtAbs(wx - 1, y, wz) == (uint)0) drop_x[drop_i] = (float)wx - 0.18f;
+                else if (blockAtAbs(wx, y, wz + 1) == (uint)0) drop_z[drop_i] = (float)wz + 1.18f;
+                else if (blockAtAbs(wx, y, wz - 1) == (uint)0) drop_z[drop_i] = (float)wz - 0.18f;
+                else drop_y[drop_i] = (float)y + 2.15f;
+            }
+
+            /* Minecraft-like pop-out: random horizontal kick plus upward pop.
+               These stay small so drops do not shoot unrealistically far. */
+            drop_rnd = rand32();
+            drop_rand_x = (int)(drop_rnd & (uint)15) - 7;
+            drop_rand_z = (int)((drop_rnd >> 4) & (uint)15) - 7;
+            if ((drop_rand_x == 0) && (drop_rand_z == 0)) drop_rand_x = 4;
+            drop_vx[drop_i] = (float)drop_rand_x * 0.018f;
+            drop_vz[drop_i] = (float)drop_rand_z * 0.018f;
+            drop_vy[drop_i] = 0.105f;
+            drop_resting[drop_i] = 0;
+            drop_ground_base[drop_i] = (float)y + 1.45f;
+            drop_age_ms[drop_i] = (uint)0;
+            drop_pickup_delay_ms[drop_i] = (uint)0;
+            drop_spin_speed[drop_i] = 1;
+            drop_spin_angle[drop_i] = (float)((drop_rnd >> 8) & (uint)1023) * 0.0061359f;
+            drop_spin_rate[drop_i] = 0.00025f + (float)(((drop_rnd >> 18) & (uint)7) + (uint)1) * 0.000040f;
+            drop_active_count = drop_active_count + 1;
+            return;
+        }
+        drop_i = drop_i + 1;
+    }
+}
+
+
+void dropSelectedHotbarOne()
+{
+    if (selected_slot < 0) return;
+    if (selected_slot > 8) return;
+    if (inv_count[selected_slot] <= 0) return;
+
+    drop_throw_item = inv_id[selected_slot];
+    if (drop_throw_item == (uint)0) return;
+    if (runtimeItemKnown(drop_throw_item) == 0) return;
+    if (drop_active_count >= 64) return;
+
+    drop_i = 0;
+    while (drop_i < 64)
+    {
+        if (drop_active[drop_i] == 0)
+        {
+            drop_active[drop_i] = 1;
+            drop_block[drop_i] = drop_throw_item;
+            drop_count[drop_i] = 1;
+            render_abs_player_x = (float)world_origin_x + player_x;
+            render_abs_player_z = (float)world_origin_z + player_z;
+            drop_x[drop_i] = render_abs_player_x + view_x * 0.85f;
+            drop_y[drop_i] = player_y - 0.20f + view_y * 0.65f;
+            drop_z[drop_i] = render_abs_player_z + view_z * 0.85f;
+            drop_wx = floorFloatToInt(drop_x[drop_i]);
+            drop_ground_y = floorFloatToInt(drop_y[drop_i]);
+            drop_wz = floorFloatToInt(drop_z[drop_i]);
+            if (blockAtAbs(drop_wx, drop_ground_y, drop_wz) != (uint)0)
+            {
+                drop_x[drop_i] = render_abs_player_x;
+                drop_y[drop_i] = player_y;
+                drop_z[drop_i] = render_abs_player_z;
+            }
+            drop_vx[drop_i] = view_x * 0.34f;
+            drop_vz[drop_i] = view_z * 0.34f;
+            drop_vy[drop_i] = view_y * 0.34f + 0.06f;
+            drop_resting[drop_i] = 0;
+            drop_ground_base[drop_i] = drop_y[drop_i];
+            drop_age_ms[drop_i] = (uint)0;
+            drop_pickup_delay_ms[drop_i] = (uint)2000;
+            drop_rnd = rand32();
+            drop_spin_speed[drop_i] = 1;
+            drop_spin_angle[drop_i] = (float)((drop_rnd >> 8) & (uint)1023) * 0.0061359f;
+            drop_spin_rate[drop_i] = 0.0016f;
+            drop_active_count = drop_active_count + 1;
+
+            inv_count[selected_slot] = inv_count[selected_slot] - 1;
+            if (inv_count[selected_slot] <= 0)
+            {
+                inv_count[selected_slot] = 0;
+                inv_id[selected_slot] = (uint)0;
+            }
+            updateSelectedBlock();
+            hotbar_raise_anim_ms = (uint)300;
+            world_dirty = 1;
+            return;
+        }
+        drop_i = drop_i + 1;
+    }
+}
+
+void updateDropsAndPickup()
+{
+    if (drop_active_count <= 0) return;
+
+    render_abs_player_x = (float)world_origin_x + player_x;
+    render_abs_player_z = (float)world_origin_z + player_z;
+
+    /* Merge nearby dropped stacks of the same item type so clusters of broken
+       blocks do not waste draw calls. Radius is 1 block, max stack is 64. */
+    if ((up_now - drop_merge_last_ms) >= (uint)200)
+    {
+        drop_merge_last_ms = up_now;
+        drop_i = 0;
+        while (drop_i < 64)
+        {
+            if ((drop_active[drop_i] != 0) && (drop_count[drop_i] < runtimeItemMaxStack(drop_block[drop_i])))
+            {
+                drop_j = drop_i + 1;
+                while (drop_j < 64)
+                {
+                    if (drop_active[drop_j] != 0)
+                    {
+                        if (drop_block[drop_j] == drop_block[drop_i])
+                        {
+                            drop_dx = drop_x[drop_j] - drop_x[drop_i];
+                            drop_dy = drop_y[drop_j] - drop_y[drop_i];
+                            drop_dz = drop_z[drop_j] - drop_z[drop_i];
+                            drop_dist2 = drop_dx * drop_dx + drop_dy * drop_dy + drop_dz * drop_dz;
+                            if (drop_dist2 < 1.0f)
+                            {
+                                drop_merge_space = runtimeItemMaxStack(drop_block[drop_i]) - drop_count[drop_i];
+                                if (drop_merge_space > 0)
+                                {
+                                    drop_merge_move = drop_count[drop_j];
+                                    if (drop_merge_move > drop_merge_space) drop_merge_move = drop_merge_space;
+                                    drop_count[drop_i] = drop_count[drop_i] + drop_merge_move;
+                                    if (drop_pickup_delay_ms[drop_j] > drop_pickup_delay_ms[drop_i]) drop_pickup_delay_ms[drop_i] = drop_pickup_delay_ms[drop_j];
+                                    drop_count[drop_j] = drop_count[drop_j] - drop_merge_move;
+                                    if (drop_count[drop_j] <= 0)
+                                    {
+                                        drop_active[drop_j] = 0;
+                                        drop_count[drop_j] = 0;
+                                        drop_pickup_delay_ms[drop_j] = (uint)0;
+                                        drop_active_count = drop_active_count - 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    drop_j = drop_j + 1;
+                }
+            }
+            drop_i = drop_i + 1;
+        }
+    }
+    drop_frame_alpha = up_dtf * 0.02f;
+    if (drop_frame_alpha > 4.0f) drop_frame_alpha = 4.0f;
+
+    drop_i = 0;
+    while (drop_i < 64)
+    {
+        if (drop_active[drop_i] != 0)
+        {
+            drop_age_ms[drop_i] = drop_age_ms[drop_i] + up_dt;
+            drop_spin_angle[drop_i] = drop_spin_angle[drop_i] + drop_spin_rate[drop_i] * up_dtf;
+            if (drop_spin_angle[drop_i] > 6.28318f) drop_spin_angle[drop_i] = drop_spin_angle[drop_i] - 6.28318f;
+
+            /* Tick-scaled item motion. Velocities are in blocks/tick.
+               X/Z are solved separately so drops slide along walls instead of
+               entering adjacent solid blocks. */
+            drop_lx = drop_x[drop_i] + drop_vx[drop_i] * drop_frame_alpha;
+            if (dropItemBlockedAt(drop_lx, drop_y[drop_i], drop_z[drop_i]) == 0)
+            {
+                drop_x[drop_i] = drop_lx;
+            }
+            else
+            {
+                drop_vx[drop_i] = 0.0f;
+            }
+
+            drop_lz = drop_z[drop_i] + drop_vz[drop_i] * drop_frame_alpha;
+            if (dropItemBlockedAt(drop_x[drop_i], drop_y[drop_i], drop_lz) == 0)
+            {
+                drop_z[drop_i] = drop_lz;
+            }
+            else
+            {
+                drop_vz[drop_i] = 0.0f;
+            }
+
+            drop_vx[drop_i] = drop_vx[drop_i] * (1.0f - 0.090f * drop_frame_alpha);
+            drop_vz[drop_i] = drop_vz[drop_i] * (1.0f - 0.090f * drop_frame_alpha);
+
+            drop_wx = floorFloatToInt(drop_x[drop_i]);
+            drop_wz = floorFloatToInt(drop_z[drop_i]);
+
+            if (drop_resting[drop_i] == 0)
+            {
+                drop_vy[drop_i] = drop_vy[drop_i] - 0.040f * drop_frame_alpha;
+                if (drop_vy[drop_i] < -1.20f) drop_vy[drop_i] = -1.20f;
+                drop_y[drop_i] = drop_y[drop_i] + drop_vy[drop_i] * drop_frame_alpha;
+
+                drop_ground_y = highestSolidAtAbsLimited(drop_wx, drop_wz, drop_y[drop_i]);
+                if (drop_ground_y >= 0)
+                {
+                    drop_ground_f = (float)drop_ground_y + 1.45f;
+                    if (drop_y[drop_i] < drop_ground_f)
+                    {
+                        drop_y[drop_i] = drop_ground_f;
+                        drop_ground_base[drop_i] = drop_ground_f;
+                        drop_vy[drop_i] = 0.0f;
+                        drop_resting[drop_i] = 1;
+                    }
+                }
+            }
+            else
+            {
+                drop_ground_y = highestSolidAtAbsLimited(drop_wx, drop_wz, drop_y[drop_i] + 0.10f);
+                if (drop_ground_y >= 0)
+                {
+                    drop_ground_base[drop_i] = (float)drop_ground_y + 1.45f;
+                    drop_y[drop_i] = drop_ground_base[drop_i];
+                }
+                else
+                {
+                    drop_resting[drop_i] = 0;
+                    drop_vy[drop_i] = 0.0f;
+                }
+            }
+
+            if (drop_pickup_delay_ms[drop_i] > (uint)0)
+            {
+                if (drop_pickup_delay_ms[drop_i] > up_dt) drop_pickup_delay_ms[drop_i] = drop_pickup_delay_ms[drop_i] - up_dt;
+                else drop_pickup_delay_ms[drop_i] = (uint)0;
+            }
+
+            drop_dx = drop_x[drop_i] - render_abs_player_x;
+            drop_dz = drop_z[drop_i] - render_abs_player_z;
+            drop_dist2 = drop_dx * drop_dx + drop_dz * drop_dz;
+            drop_dy = drop_y[drop_i] - (player_foot_y + 0.45f);
+            if (drop_pickup_delay_ms[drop_i] == (uint)0)
+            {
+                /* Robust low-FPS pickup. The old check used a tiny 3D sphere
+                   around player_foot_y+0.85. A resting item sits about
+                   0.45 blocks above the floor, so at low FPS attraction could
+                   kick it away before it ever entered the tiny collect sphere,
+                   making it look like it vanished. Collect from the player's
+                   lower body first, then only use attraction for the outer
+                   range. */
+                if ((drop_dist2 < 0.64f) && (drop_dy > -0.80f) && (drop_dy < 1.25f))
+                {
+                    drop_added_count = addItemToInventory(drop_block[drop_i], drop_count[drop_i]);
+                    if (drop_added_count > 0)
+                    {
+                        drop_count[drop_i] = drop_count[drop_i] - drop_added_count;
+                        updateSelectedBlock();
+                        if (drop_count[drop_i] <= 0)
+                        {
+                            drop_active[drop_i] = 0;
+                            drop_count[drop_i] = 0;
+                            drop_pickup_delay_ms[drop_i] = (uint)0;
+                            drop_active_count = drop_active_count - 1;
+                        }
+                    }
+                }
+                else
+                {
+                    drop_dy = drop_y[drop_i] - (player_foot_y + 0.70f);
+                    drop_dist2 = drop_dist2 + drop_dy * drop_dy;
+                    if (drop_dist2 < 2.25f)
+                    {
+                        /* Minecraft-like pickup attraction, with caps so one
+                           long frame cannot fling the item through/behind the
+                           player before the next collect check. */
+                        drop_vx[drop_i] = drop_vx[drop_i] - drop_dx * 0.055f;
+                        drop_vy[drop_i] = drop_vy[drop_i] - drop_dy * 0.055f;
+                        drop_vz[drop_i] = drop_vz[drop_i] - drop_dz * 0.055f;
+                        if (drop_vx[drop_i] > 0.30f) drop_vx[drop_i] = 0.30f;
+                        if (drop_vx[drop_i] < -0.30f) drop_vx[drop_i] = -0.30f;
+                        if (drop_vy[drop_i] > 0.30f) drop_vy[drop_i] = 0.30f;
+                        if (drop_vy[drop_i] < -0.30f) drop_vy[drop_i] = -0.30f;
+                        if (drop_vz[drop_i] > 0.30f) drop_vz[drop_i] = 0.30f;
+                        if (drop_vz[drop_i] < -0.30f) drop_vz[drop_i] = -0.30f;
+                        drop_resting[drop_i] = 0;
+                    }
+                }
+            }
+        }
+        drop_i = drop_i + 1;
+    }
+}
+
+int computeRayHitFace()
+{
+    /* Use the actual hit position as a tie-breaker so top/bottom faces remain
+       selectable near block edges. The DDA step direction alone is too harsh:
+       at edges it tends to choose side faces even when the visible hit point is
+       very close to the top surface. */
+    ray_frac_x = ray_hit_x - (float)ray_bx;
+    ray_frac_y = ray_hit_y - (float)ray_by;
+    ray_frac_z = ray_hit_z - (float)ray_bz;
+
+    if ((view_y < 0.0f) && (ray_frac_y > 0.78f)) return 4; /* top */
+    if ((view_y > 0.0f) && (ray_frac_y < 0.22f)) return 3; /* bottom */
+
+    if ((view_x < 0.0f) && (ray_frac_x > 0.88f)) return 2;
+    if ((view_x > 0.0f) && (ray_frac_x < 0.12f)) return 1;
+    if ((view_z < 0.0f) && (ray_frac_z > 0.88f)) return 6;
+    if ((view_z > 0.0f) && (ray_frac_z < 0.12f)) return 5;
+
+    if (ray_last_x < ray_bx) return 1; /* west */
+    if (ray_last_x > ray_bx) return 2; /* east */
+    if (ray_last_y < ray_by) return 3; /* bottom */
+    if (ray_last_y > ray_by) return 4; /* top */
+    if (ray_last_z < ray_bz) return 5; /* north */
+    if (ray_last_z > ray_bz) return 6; /* south */
+    return 0;
+}
+
+void resetMining()
+{
+    mining_active = 0;
+    mining_target_valid = 0;
+    mining_target_face = 0;
+    mining_progress_ms = (uint)0;
+    mining_required_ms = (uint)1;
+}
+
+
+void updateMining()
+{
+    if (traceRayTarget() == 0)
+    {
+        resetMining();
+        return;
+    }
+
+    /* Do not remove the bottom layer. */
+    if (ray_by <= 0)
+    {
+        resetMining();
+        return;
+    }
+
+    if (mining_target_valid == 0)
+    {
+        mining_target_valid = 1;
+        mining_target_x = ray_bx;
+        mining_target_y = ray_by;
+        mining_target_z = ray_bz;
+        mining_target_block = ray_b;
+        mining_target_face = computeRayHitFace();
+        mining_progress_ms = (uint)0;
+        mining_required_ms = requiredBreakTime(ray_b);
+    }
+    else
+    {
+        if ((mining_target_x != ray_bx) || (mining_target_y != ray_by) || (mining_target_z != ray_bz) || (mining_target_block != ray_b))
+        {
+            mining_target_x = ray_bx;
+            mining_target_y = ray_by;
+            mining_target_z = ray_bz;
+            mining_target_block = ray_b;
+            mining_target_face = computeRayHitFace();
+            mining_progress_ms = (uint)0;
+            mining_required_ms = requiredBreakTime(ray_b);
+        }
+    }
+
+    mining_active = 1;
+    mining_progress_ms = mining_progress_ms + up_dt;
+
+    if (mining_progress_ms >= mining_required_ms)
+    {
+        if (canDropMinedBlock(mining_target_block) != 0)
+        {
+            g_b = blockRegistryDroppedItem(mining_target_block);
+            if ((g_b != (uint)0) && (blockRegistryDroppedCount(mining_target_block) > 0))
+            {
+                spawnDropAbs(world_origin_x + mining_target_x, mining_target_y, world_origin_z + mining_target_z, g_b);
+            }
+        }
+        setBlock(mining_target_x, mining_target_y, mining_target_z, (uint)0);
+        if (playerHasGround() == 0) player_on_ground = 0;
+        resetMining();
+    }
+}
+
+
+void updatePlayer()
+{
+    up_now = millis();
+    if (last_ms == (uint)0) last_ms = up_now;
+    up_dt = up_now - last_ms;
+    last_ms = up_now;
+    if (up_dt > (uint)200) up_dt = (uint)200;
+
+    up_dtf = (float)up_dt;
+    if (player_attack_cooldown_ms > 0.0f)
+    {
+        player_attack_cooldown_ms = player_attack_cooldown_ms - up_dtf;
+        if (player_attack_cooldown_ms < 0.0f) player_attack_cooldown_ms = 0.0f;
+    }
+    if (player_hurt_ms > 0.0f)
+    {
+        player_hurt_ms = player_hurt_ms - up_dtf;
+        if (player_hurt_ms < 0.0f) player_hurt_ms = 0.0f;
+    }
+    if (player_invuln_ms > 0.0f)
+    {
+        player_invuln_ms = player_invuln_ms - up_dtf;
+        if (player_invuln_ms <= 0.0f)
+        {
+            player_invuln_ms = 0.0f;
+            player_last_damage_taken = 0.0f;
+        }
+    }
+    game_tick_accum_ms = game_tick_accum_ms + up_dt;
+    frame_move_speed = 0.0f;
+    frame_turn_speed = up_dtf * 0.0030f * camera_sensitivity;
+    up_running = 0;
+    key(0x12, key_data, key_pressed);
+    if (key_pressed != 0) up_running = 1;
+    key(0x59, key_data, key_pressed);
+    if (key_pressed != 0) up_running = 1;
+    up_run_mult = 1.0f;
+
+    processInventoryToggleKey();
+    processHotbarNumberKeys();
+
+    if (inventory_open != 0)
+    {
+        processInventoryControls();
+        resetMining();
+        tick_w_down = 0;
+        tick_s_down = 0;
+        tick_a_down = 0;
+        tick_d_down = 0;
+        game_tick_count = 0;
+        while ((game_tick_accum_ms >= (uint)50) && (game_tick_count < (uint)4))
+        {
+            updateMovementPhysicsTick();
+            game_tick_accum_ms = game_tick_accum_ms - (uint)50;
+            game_tick_count = game_tick_count + (uint)1;
+        }
+        recenterActiveWorldIfNeeded();
+        updateDropsAndPickup();
+        old_break_key = 0;
+        old_place_key = 0;
+        return;
+    }
+
+    /* I/J/K/L control the camera only. Recalculate sin/cos only when
+       something actually changed; trig is expensive on this VM. */
+    up_view_dirty = 0;
+
+    key(0x3B, key_data, key_pressed);
+    if (key_pressed != 0)
+    {
+        yaw_angle = yaw_angle - frame_turn_speed;
+        hand_sway_target_x = hand_sway_target_x + 18.0f;
+        up_view_dirty = 1;
+    }
+    key(0x4B, key_data, key_pressed);
+    if (key_pressed != 0)
+    {
+        yaw_angle = yaw_angle + frame_turn_speed;
+        hand_sway_target_x = hand_sway_target_x - 18.0f;
+        up_view_dirty = 1;
+    }
+    key(0x43, key_data, key_pressed);
+    if (key_pressed != 0)
+    {
+        pitch_angle = pitch_angle + frame_turn_speed;
+        hand_sway_target_y = hand_sway_target_y - 14.0f;
+        up_view_dirty = 1;
+    }
+    key(0x42, key_data, key_pressed);
+    if (key_pressed != 0)
+    {
+        pitch_angle = pitch_angle - frame_turn_speed;
+        hand_sway_target_y = hand_sway_target_y + 14.0f;
+        up_view_dirty = 1;
+    }
+
+    if (pitch_angle > 1.5707f)
+    {
+        pitch_angle = 1.5707f;
+        up_view_dirty = 1;
+    }
+    if (pitch_angle < -1.5707f)
+    {
+        pitch_angle = -1.5707f;
+        up_view_dirty = 1;
+    }
+
+    if (up_view_dirty != 0) updateViewVectors();
+
+    up_moving = 0;
+    tick_w_down = 0;
+    tick_s_down = 0;
+    tick_a_down = 0;
+    tick_d_down = 0;
+
+    /* W/A/S/D are sampled every rendered frame, but movement is applied by the
+       20 TPS physics loop below. */
+    key(0x1D, key_data, key_pressed);
+    if (key_pressed != 0)
+    {
+        tick_w_down = 1;
+        up_moving = 1;
+    }
+    key(0x1B, key_data, key_pressed);
+    if (key_pressed != 0)
+    {
+        tick_s_down = 1;
+        up_moving = 1;
+    }
+    key(0x1C, key_data, key_pressed);
+    if (key_pressed != 0)
+    {
+        tick_a_down = 1;
+        up_moving = 1;
+    }
+    key(0x23, key_data, key_pressed);
+    if (key_pressed != 0)
+    {
+        tick_d_down = 1;
+        up_moving = 1;
+    }
+
+    /* Sprint only when moving straight forward. Backward movement and strafing
+       cancel sprint, matching Minecraft-style controls. */
+    if (tick_w_down == 0) up_running = 0;
+    if (tick_s_down != 0) up_running = 0;
+    if (tick_a_down != 0) up_running = 0;
+    if (tick_d_down != 0) up_running = 0;
+    up_run_mult = 1.0f;
+    if (up_running != 0) up_run_mult = 1.55f;
+
+    /* Smooth walking camera bob. It is intentionally small and camera-space:
+       side sway + vertical lift form a subtle U-shaped motion. No sin() is
+       used here; this triangular wave is cheap on the VM. */
+    if ((up_moving != 0) && (player_on_ground != 0))
+    {
+        /* Longer, stronger walking cycle. One full loop is now slower than
+           v26, and the same cheap triangular wave feeds both camera bob and
+           the first-person hand U-sway. */
+        cam_bob_phase = cam_bob_phase + up_dtf * 0.0042f * (1.0f + (up_run_mult - 1.0f) * 0.35f);
+        if (cam_bob_phase >= 4.0f) cam_bob_phase = cam_bob_phase - 4.0f;
+
+        if (cam_bob_phase < 1.0f) cam_bob_wave = cam_bob_phase;
+        else
+        {
+            if (cam_bob_phase < 3.0f) cam_bob_wave = 2.0f - cam_bob_phase;
+            else cam_bob_wave = cam_bob_phase - 4.0f;
+        }
+
+        cam_bob_wave_abs = cam_bob_wave;
+        if (cam_bob_wave_abs < 0.0f) cam_bob_wave_abs = 0.0f - cam_bob_wave_abs;
+
+        cam_bob_x = cam_bob_wave * 0.070f * up_run_mult;
+        cam_bob_y = cam_bob_wave_abs * 0.105f * up_run_mult;
+
+        hand_walk_x = cam_bob_wave * 36.0f * up_run_mult;
+        hand_walk_y = cam_bob_wave_abs * 25.0f * up_run_mult;
+    }
+    else
+    {
+        cam_bob_x = cam_bob_x * 0.80f;
+        cam_bob_y = cam_bob_y * 0.80f;
+        hand_walk_x = hand_walk_x * 0.78f;
+        hand_walk_y = hand_walk_y * 0.78f;
+    }
+
+    if (hand_sway_target_x > 32.0f) hand_sway_target_x = 32.0f;
+    if (hand_sway_target_x < -32.0f) hand_sway_target_x = -32.0f;
+    if (hand_sway_target_y > 24.0f) hand_sway_target_y = 24.0f;
+    if (hand_sway_target_y < -24.0f) hand_sway_target_y = -24.0f;
+    hand_sway_x = hand_sway_x + (hand_sway_target_x - hand_sway_x) * 0.22f;
+    hand_sway_y = hand_sway_y + (hand_sway_target_y - hand_sway_y) * 0.22f;
+    hand_sway_target_x = hand_sway_target_x * 0.56f;
+    hand_sway_target_y = hand_sway_target_y * 0.56f;
+
+    /* Queue a jump for the next 20 TPS physics tick. */
+    key(0x29, key_data, key_pressed);
+    if (key_pressed != 0)
+    {
+        if (old_jump_key == 0)
+        {
+            if ((up_now - last_jump_ms) > (uint)350)
+            {
+                if ((player_on_ground != 0) || (playerHasGround() != 0))
+                {
+                    tick_jump_request = 1;
+                    last_jump_ms = up_now;
+                }
+            }
+        }
+        old_jump_key = 1;
+    }
+    else
+    {
+        old_jump_key = 0;
+    }
+
+    game_tick_count = 0;
+    tick_jump_this_update = 0;
+    while ((game_tick_accum_ms >= (uint)50) && (game_tick_count < (uint)4))
+    {
+        /* Fixed-step velocity physics only. Acceleration, drag, gravity and
+           jump impulses are still tick-based, but visible position movement
+           is applied once per rendered frame below so walking does not step
+           at 20 TPS. */
+        updateMovementPhysicsTick();
+        game_tick_accum_ms = game_tick_accum_ms - (uint)50;
+        game_tick_count = game_tick_count + (uint)1;
+
+        /* If a jump starts during a long catch-up frame, do not burn several
+           gravity ticks before the player gets one rendered upward movement. */
+        if (tick_jump_this_update != 0) game_tick_count = (uint)4;
+    }
+
+    applyPlayerMotionFrame(up_dtf);
+
+    /* Velocity is updated at 20 TPS; position is smoothed every rendered frame. */
+    if (player_foot_y < -16.0f) killPlayer();
+    if (player_dead != 0) return;
+    recenterActiveWorldIfNeeded();
+    streamEntitiesForCurrentPosition();
+    updateDropsAndPickup();
+
+    if (hotbar_raise_anim_ms > (uint)0)
+    {
+        if (hotbar_raise_anim_ms > up_dt) hotbar_raise_anim_ms = hotbar_raise_anim_ms - up_dt;
+        else hotbar_raise_anim_ms = (uint)0;
+    }
+
+    key(0x15, key_data, key_pressed);  /* Q: drop one equipped item */
+    if (key_pressed != 0)
+    {
+        if (old_drop_key == 0)
+        {
+            updateSelectedBlock();
+            if ((inv_count[selected_slot] > 0) && (selected_block != (uint)0))
+            {
+                dropSelectedHotbarOne();
+            }
+        }
+        old_drop_key = 1;
+    }
+    else old_drop_key = 0;
+
+    if (land_anim_ms > (uint)0)
+    {
+        if (land_anim_ms > up_dt) land_anim_ms = land_anim_ms - up_dt;
+        else land_anim_ms = (uint)0;
+
+        land_anim_t = (float)((uint)220 - land_anim_ms) * 0.00454545f;
+        if (land_anim_t < 0.5f) land_anim_fold = land_anim_t * 2.0f;
+        else land_anim_fold = (1.0f - land_anim_t) * 2.0f;
+        if (land_anim_fold < 0.0f) land_anim_fold = 0.0f;
+        if (land_anim_fold > 1.0f) land_anim_fold = 1.0f;
+
+        land_cam_y = 0.0f - 0.105f * land_anim_fold;
+        land_hand_y = 0.0f - 34.0f * land_anim_fold;
+    }
+    else
+    {
+        land_cam_y = land_cam_y * 0.75f;
+        land_hand_y = land_hand_y * 0.72f;
+    }
+
+    key(0x1A, key_data, key_pressed);
+    if (key_pressed != 0) up_break_now = 1;
+    else up_break_now = 0;
+    if (up_break_now != 0)
+    {
+        combat_hit = 0;
+        if (old_break_key == 0) combat_hit = playerTryMeleeAttack();
+        if (combat_hit == 0) updateMining();
+        else resetMining();
+
+        if ((mining_active == 0) && (old_break_key == 0))
+        {
+            air_hit_anim_ms = (uint)300;
+        }
+    }
+    else
+    {
+        resetMining();
+    }
+    old_break_key = up_break_now;
+
+    if (air_hit_anim_ms > (uint)0)
+    {
+        if (air_hit_anim_ms > up_dt) air_hit_anim_ms = air_hit_anim_ms - up_dt;
+        else air_hit_anim_ms = (uint)0;
+    }
+
+    if (place_anim_ms > (uint)0)
+    {
+        if (place_anim_ms > up_dt) place_anim_ms = place_anim_ms - up_dt;
+        else place_anim_ms = (uint)0;
+    }
+
+    key(0x22, key_data, key_pressed);
+    if (key_pressed != 0) up_place_now = 1;
+    else up_place_now = 0;
+    if ((up_place_now != 0) && (old_place_key == 0))
+    {
+        if (traceRayTarget() != 0)
+        {
+            if (blockRegistryOpensCrafting(ray_b) != 0)
+            {
+                inventory_open = 1;
+                crafting_table_mode = 1;
+                ui_cursor_x = 244.0f;
+                ui_cursor_y = 64.0f;
+                last_ms = millis();
+                resetMining();
+            }
+            else
+            {
+                updateSelectedBlock();
+                if ((inv_count[selected_slot] > 0) && (isPlaceableItem(selected_block) != 0))
+                {
+                    if (inWorld(ray_last_x, ray_last_y, ray_last_z) != 0)
+                    {
+                        if (blockInsidePlayerSpace(ray_last_x, ray_last_y, ray_last_z) == 0)
+                        {
+                            g_b = runtimeItemPlaceBlock(selected_block);
+                            if (g_b != (uint)0)
+                            {
+                                setBlock(ray_last_x, ray_last_y, ray_last_z, g_b);
+                                consumeSelectedBlock();
+                                place_anim_ms = (uint)300;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    old_place_key = up_place_now;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Camera setup                                                              */
+/* ------------------------------------------------------------------------- */
+

@@ -1,0 +1,61 @@
+#include "narm.tch"
+
+#include "src/mc10_types.tc"
+#include "src/mc10_u64.tc"
+#include "src/mc10_java_double.tc"
+#include "src/mc10_fp64.tc"
+#include "src/mc10_nbt.tc"
+#include "src/mc10_java_random.tc"
+#include "src/mc10_noise_perlin.tc"
+#ifdef MC10_WORLD_SYSTEMS
+#define MC10_GENERATION_CARVERS 1
+/* GenLayer cooperatively yields only between complete cells, never while a
+ * shared binary64 expression is live. Do not consume gameplay's input queue. */
+int mc_biome_yield(void){narm_yield();return 1;}
+#include "src/mc10_biome.tc"
+#include "src/mc10_generation_noise.tc"
+#include "src/mc10_generation.tc"
+#include "src/mc10_generation_ravine.tc"
+#include "src/mc10_generation_cave.tc"
+#endif
+#include "src/mc10_blocks.tc"
+#include "src/mc10_blocks_extra.tc"
+#include "src/mc10_chunk.tc"
+#include "src/mc10_assets.tc"
+#include "src/mc10_block_render_extra.tc"
+#include "src/mc10_block_colors.tc"
+#include "src/mc10_biome_tint.tc"
+#include "src/mc10_math.tc"
+#include "src/mc10_menu.tc"
+#include "src/mc10_select_world.tc"
+#include "src/mc10_options.tc"
+#ifdef MC10_PLAYER_FOUNDATION
+#include "src/mc10_items.tc"
+#include "src/mc10_inventory.tc"
+#endif
+#include "src/mc10_startup_trace.tc"
+#include "src/mc10_region.tc"
+#include "src/mc10_world.tc"
+#ifdef MC10_WORLD_SYSTEMS
+#include "src/mc10_cos_celestial.tc"
+#include "src/mc10_world_clock.tc"
+#endif
+#include "src/mc10_collision.tc"
+#include "src/mc10_player.tc"
+#include "src/mc10_profile.tc"
+#include "src/mc10_ui.tc"
+#include "src/mc10_render.tc"
+#ifdef MC10_WORLD_SYSTEMS
+#include "src/mc10_sky.tc"
+#endif
+#ifdef MC10_PLAYER_FOUNDATION
+#include "src/mc10_player_ui.tc"
+#include "src/mc10_atan.tc"
+#include "src/mc10_viewmodel.tc"
+#include "src/mc10_third_person.tc"
+#include "src/mc10_stream.tc"
+#endif
+#include "src/mc10_game.tc"
+#include "src/mc10_benchmark.tc"
+#include "src/mc10_main.tc"
+

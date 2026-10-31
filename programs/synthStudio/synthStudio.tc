@@ -1,0 +1,1542 @@
+/*
+ * NARM Studio v0.14.2 - cached cursor overlay
+ *
+ * Built with the user-provided NARMCC API 1.9 optimizer compiler at -O3.
+ *
+ * v0.14.2 changes:
+ *   - keeps a packed 4-bit shadow of the static timeline pixels
+ *   - restores the old cursor and timestamp directly from that pixel shadow
+ *   - performs no note, clip, waveform, file, or voice scans during playback
+ *   - computes the playback end frame once instead of rescanning the project
+ *
+ * v0.14.1 changes:
+ *   - restores the full-height timeline cursor and time badge during playback
+ *   - reconstructs only the narrow area beneath the previous cursor overlay
+ *     so the cached/static UI optimization remains active
+ *
+ * v0.14.0 changes:
+ *   - batches each small-text string into one VGA4 glyph submission
+ *   - caches visible waveform peaks as four 523-column screen rows
+ *   - redraws only the playback clock and position markers at 33.3 Hz
+ *   - page-scrolls during playback so static timeline layers remain reusable
+ *
+ * v0.13.3 changes:
+ *   - restores full UI redraws at a 30 ms cadence during playback
+ *   - removes the artificial 1/2 ms playback sleeps added while diagnosing
+ *     the unrelated firmware SD-lock starvation bug
+ *   - keeps cooperative yields so firmware services remain responsive without
+ *     imposing a fixed delay inside the drawing path
+ *
+ * v0.13.2 changes:
+ *   - fixes Studio-generated WAV RIFF/data length serialization above 16 MiB
+ *   - verifies all 32 bits of preview.wav RIFF/data sizes from SD before playback
+ *   - retains starvation diagnostics without attributing the bug to UI redraw
+ *   - retains v0.13's 2048-note capacity and NARMCC -O3 build
+ *
+ * Key changes:
+ *   - synth tracks no longer contain built-in demo notes in a new project
+ *   - N/Enter on a synth track opens a piano-roll note editor
+ *   - Enter inserts notes; Delete removes them; Up/Down selects pitch
+ *   - project timeline is runtime-sized, starts at 60 s and auto-expands
+ *   - rendered audio length follows actual content, so empty timeline does not cost render time
+ *   - SPACE toggles play/pause and resumes from the exact cursor frame
+ *   - playing from the end wraps to frame 0 instead of returning an error
+ *   - LEFT/RIGHT cursor movement accelerates exponentially after 2 seconds held
+ *   - waveform is a high-contrast 1-pixel outline, not filled peak blocks
+ *   - waveform cache resolution remains adjustable per selected audio track
+ *   - audio WAVs are selected with an SD-root browser instead of a hard-coded path
+ *   - audio tracks keep their own source WAV path/RIFF metadata
+ *   - tracks are dynamic: only real tracks are shown, plus one ADD TRACK row
+ *   - each track has a visible X remove control; Delete/Backspace activates it
+ *   - Add Track chooses SYNTH or AUDIO; AUDIO immediately opens the WAV browser
+ *   - E exports the current premix to the active project folder
+ *   - DSP blocks remain 32768 frames, but firmware file transfers are bounded to 32 KiB and tolerate partial transfers
+ *   - frame-zero playback uses the cached preview directly; no duplicate playback WAV copy
+ *   - API 1.8 frame-seek playback starts directly inside preview/source WAVs; no cursor-to-EOF copy
+ *   - untouched single-WAV projects bypass rendering entirely and play the source directly
+ *   - render progress redraws are throttled and the artificial per-block sleep is gone
+ *   - rendered WAV size/header are verified before playback
+ *   - synth release begins at the exact stored note length, including note-off during attack/decay
+ */
+
+int narm_clear(unsigned color_index);
+int narm_fill_rect(int x0, int y0, int x1, int y1, unsigned color_index);
+int narm_line(int x0, int y0, int x1, int y1, unsigned color_index);
+int narm_vga4_glyph(int x, int y, int width, int height, const unsigned *glyph, unsigned palette_index);
+int narm_present(void);
+int narm_next_key_event(unsigned *key, unsigned *action, unsigned *modifiers, unsigned *character);
+int narm_key_down(unsigned key);
+int narm_dir_entry(const char *path, unsigned index, char *name_out, unsigned name_capacity, unsigned *name_length_out, unsigned *type_out, unsigned storage);
+unsigned narm_millis(void);
+unsigned narm_micros(void);
+int narm_sleep_ms(unsigned milliseconds);
+int narm_yield(void);
+int narm_storage_mount(unsigned storage);
+int narm_file_exists(const char *path, unsigned storage);
+int narm_file_create(const char *path, unsigned storage);
+int narm_file_delete(const char *path, unsigned storage);
+int narm_file_rename(const char *from, const char *to, unsigned storage);
+int narm_file_size(const char *path, unsigned storage, unsigned *size_out);
+int narm_file_read(const char *path, void *buffer, unsigned file_offset, unsigned byte_count, unsigned storage);
+int narm_file_write(const char *path, const void *buffer, unsigned file_offset, unsigned byte_count, unsigned storage);
+int narm_audio_ready(void);
+int narm_audio_play_wav(unsigned voice, const char *path);
+int narm_audio_play_wav_from(unsigned voice, const char *path, unsigned start_frame);
+int narm_audio_stop_all(void);
+int narm_audio_active(unsigned voice);
+unsigned narm_audio_starvations(void);
+
+#define STORAGE_SD 1u
+#define KEY_A 4u
+#define KEY_B 5u
+#define KEY_D 7u
+#define KEY_E 8u
+#define KEY_I 12u
+#define KEY_ENTER 40u
+#define KEY_ESCAPE 41u
+#define KEY_BACKSPACE 42u
+#define KEY_TAB 43u
+#define KEY_SPACE 44u
+#define KEY_L 15u
+#define KEY_N 17u
+#define KEY_P 19u
+#define KEY_R 21u
+#define KEY_S 22u
+#define KEY_W 26u
+#define KEY_X 27u
+#define KEY_Z 29u
+#define KEY_LBRACKET 47u
+#define KEY_RBRACKET 48u
+#define KEY_F2 59u
+#define KEY_DELETE 76u
+#define KEY_RIGHT 79u
+#define KEY_LEFT 80u
+#define KEY_DOWN 81u
+#define KEY_UP 82u
+#define KEY_PRESS 1u
+#define KEY_RELEASE 2u
+#define KEY_REPEAT 3u
+
+#define SAMPLE_RATE 44100u
+#define INITIAL_PROJECT_SECONDS 60u
+#define PROJECT_GROW_SECONDS 60u
+#define MAX_PROJECT_SECONDS 3600u
+#define INITIAL_PROJECT_FRAMES (SAMPLE_RATE * INITIAL_PROJECT_SECONDS)
+#define PROJECT_GROW_FRAMES (SAMPLE_RATE * PROJECT_GROW_SECONDS)
+#define MAX_PROJECT_FRAMES (SAMPLE_RATE * MAX_PROJECT_SECONDS)
+#define FRAME_BYTES 4u
+
+#define RENDER_FRAMES 32768u
+#define FILE_IO_SLICE 32768u
+#define FILE_IO_MIN_SLICE 64u
+#define FILE_IO_ZERO_RETRIES 4u
+#define WAVEFORM_HEADER_BYTES 512u
+#define MAX_RENDER_CHUNKS ((MAX_PROJECT_FRAMES + RENDER_FRAMES - 1u) / RENDER_FRAMES)
+#define MAX_TRACKS 32
+#define MAX_NOTES 2048
+#define MAX_AUDIO_CLIPS 64
+#define PROJECT_IO_BYTES 65536
+#define WFC_WRITE_BUCKETS 256u
+#define WFC_VIEW_BUCKETS 32768u
+#define WAVEFORM_LEVELS 4
+#define PARAM_COUNT 8
+#define CACHE_META_VERSION 4u
+#define RENDER_DEP_VERSION 12u
+#define PLAYBACK_REDRAW_MS 30u
+#define DRAW_SERVICE_STRIDE 32u
+#define TEXT_BATCH_MAX_CHARS 105u
+#define TEXT_BATCH_MAX_WIDTH (TEXT_BATCH_MAX_CHARS * 6u - 1u)
+#define TEXT_BATCH_WORDS ((TEXT_BATCH_MAX_WIDTH * 7u + 31u) / 32u)
+#define WAVEFORM_SCREEN_COLUMNS 523u
+
+#define TRACK_SYNTH 0
+#define TRACK_AUDIO 1
+#define WAVE_SAW 0
+#define WAVE_SQUARE 1
+#define WAVE_TRIANGLE 2
+#define WAVE_NOISE 3
+#define FOCUS_TIMELINE 0
+#define FOCUS_SYNTH 1
+#define FOCUS_ADD 2
+#define FOCUS_BROWSER 3
+#define FOCUS_NOTES 4
+#define FOCUS_NOTE_LENGTH 5
+#define FOCUS_MS_INPUT 6
+#define FOCUS_LENGTH_POINTS 7
+#define FOCUS_PROJECT_NAME 8
+#define FOCUS_PROJECT_BROWSER 9
+#define BROWSER_MAX 24
+#define PROJECT_BROWSER_MAX 48
+#define PROJECT_NAME_MAX 40
+#define BROWSER_NAME 64
+#define MAX_PATH 160
+#define VISIBLE_TRACKS 4
+
+const char studio_root[] = "/NARMStudio";
+const char temp_project_dir[] = "/NARMStudio/_Temp";
+const char legacy_project_path[] = "/narmstudio_project.nprj";
+const char legacy_input_path[] = "/narmstudio_input.wav";
+char project_name[PROJECT_NAME_MAX];
+char project_dir[MAX_PATH];
+char project_path[MAX_PATH];
+char project_tmp_path[MAX_PATH];
+char project_backup_path[MAX_PATH];
+char preview_path[MAX_PATH];
+char playback_path[MAX_PATH];
+char cache_meta_path[MAX_PATH];
+char export_path[MAX_PATH];
+int project_named = 0;
+
+struct SynthPatch {
+    int wave1;
+    int wave2;
+    int level1;
+    int level2;
+    int detune2;
+    int attack;
+    int decay;
+    int sustain;
+    int release;
+};
+
+struct Track {
+    int type;
+    int enabled;
+    int volume;
+    int pan;
+    struct SynthPatch synth;
+};
+
+struct Note {
+    int track;
+    unsigned start;
+    unsigned length;
+    int pitch;
+    int velocity;
+};
+
+struct AudioClip {
+    int enabled;
+    int track;
+    unsigned start;
+    unsigned source_start;
+    unsigned length;
+    int gain;
+};
+
+struct WavInfo {
+    int valid;
+    unsigned channels;
+    unsigned sample_rate;
+    unsigned bits;
+    unsigned data_offset;
+    unsigned data_bytes;
+    unsigned frames;
+    unsigned file_size;
+    unsigned signature;
+};
+
+int mix_l[RENDER_FRAMES];
+int mix_r[RENDER_FRAMES];
+short pcm_out[RENDER_FRAMES * 2u];
+short audio_in[RENDER_FRAMES * 2u];
+short wfc_out[WFC_WRITE_BUCKETS * 2u];
+short wfc_view[WFC_VIEW_BUCKETS * 2u];
+short waveform_screen_min[VISIBLE_TRACKS * WAVEFORM_SCREEN_COLUMNS];
+short waveform_screen_max[VISIBLE_TRACKS * WAVEFORM_SCREEN_COLUMNS];
+char wav_header[44];
+char io_small[128];
+char waveform_header_block[WAVEFORM_HEADER_BYTES];
+char project_io[PROJECT_IO_BYTES];
+unsigned glyph_bits[5];
+unsigned text_batch_bits[TEXT_BATCH_WORDS];
+char dirty_chunks[MAX_RENDER_CHUNKS];
+unsigned cached_chunk_hashes[MAX_RENDER_CHUNKS];
+
+struct Track tracks[MAX_TRACKS];
+struct Note notes[MAX_NOTES];
+struct AudioClip clips[MAX_AUDIO_CLIPS];
+struct WavInfo track_wavs[MAX_TRACKS];
+char track_paths[MAX_TRACKS][MAX_PATH];
+int track_count = 0;
+int note_count = 0;
+int clip_count = 0;
+int selected_track = 0;
+int first_visible_track = 0;
+int selected_param = 0;
+int focus_mode = FOCUS_TIMELINE;
+unsigned playhead_frame = 0u;
+unsigned playback_start_frame = 0u;
+unsigned playback_start_micros = 0u;
+unsigned playback_end_frame = 1u;
+unsigned last_transport_draw_ms = 0u;
+int playback_cursor_x = -1;
+int playback_cursor_box_x = -1;
+unsigned view_start_frame = 0u;
+unsigned project_frames = INITIAL_PROJECT_FRAMES;
+unsigned view_span_frames = SAMPLE_RATE * 8u;
+unsigned waveform_bucket_frames = 128u;
+int waveform_level = 1;
+int project_dirty = 1;
+int render_percent = 0;
+int playing = 0;
+int rendering = 0;
+int render_io_error = 0;
+int status_code = 0;
+unsigned last_starvations = 0u;
+unsigned playback_starvation_events = 0u;
+unsigned cache_hash = 0u;
+unsigned wfc_view_count = 0u;
+unsigned wfc_total_buckets = 0u;
+int waveform_ready = 0;
+int waveform_loaded_track = -1;
+unsigned wfc_first_bucket = 0u;
+unsigned waveform_screen_signature = 0u;
+int waveform_screen_valid = 0;
+int waveform_screen_complete = 0;
+char browser_names[BROWSER_MAX][BROWSER_NAME];
+int browser_count = 0;
+int browser_selected = 0;
+int browser_first = 0;
+int browser_target_track = -1;
+char project_browser_names[PROJECT_BROWSER_MAX][PROJECT_NAME_MAX];
+int project_browser_count = 0;
+int project_browser_selected = 0;
+int project_browser_first = 0;
+char project_name_input[PROJECT_NAME_MAX];
+int project_name_input_len = 0;
+int add_choice = 0;
+unsigned cursor_hold_start_ms = 0u;
+unsigned cursor_hold_key = 0u;
+int note_edit_pitch = 60;
+unsigned note_edit_length = SAMPLE_RATE / 2u;
+int note_edit_velocity = 100;
+unsigned tempo_bpm = 120u;
+int length_menu_choice = 0;
+int musical_length_index = 2;
+unsigned length_point_a = 0u;
+char length_ms_input[8];
+int length_ms_digits = 0;
+char status_text[64];
+
+unsigned note_steps[12] = {
+    25480119u, 26995246u, 28600467u, 30301139u,
+    32102938u, 34011878u, 36034330u, 38177043u,
+    40447168u, 42852281u, 45400411u, 48100060u
+};
+
+unsigned waveform_levels[WAVEFORM_LEVELS] = { 32u, 128u, 512u, 2048u };
+
+unsigned read_u16_le(const char *p) {
+    return (unsigned)(unsigned char)p[0] | ((unsigned)(unsigned char)p[1] << 8);
+}
+unsigned read_u32_le(const char *p) {
+    return (unsigned)(unsigned char)p[0] |
+           ((unsigned)(unsigned char)p[1] << 8) |
+           ((unsigned)(unsigned char)p[2] << 16) |
+           ((unsigned)(unsigned char)p[3] << 24);
+}
+void set_u16_le(char *p, unsigned v) {
+    p[0]=(char)(v&255u); p[1]=(char)((v>>8)&255u);
+}
+void set_u32_le(char *p, unsigned v) {
+    p[0]=(char)(v&255u); p[1]=(char)((v>>8)&255u); p[2]=(char)((v>>16)&255u); p[3]=(char)((v>>24)&255u);
+}
+int bytes_eq4(const char *p, char a, char b, char c, char d) {
+    return p[0]==a && p[1]==b && p[2]==c && p[3]==d;
+}
+
+void build_wav_header_frames(unsigned frames) {
+    unsigned data_bytes=frames*FRAME_BYTES;
+    unsigned v;
+    int i;
+    for (i=0;i<44;++i) wav_header[i]=0;
+    wav_header[0]='R';wav_header[1]='I';wav_header[2]='F';wav_header[3]='F';
+
+    /* Serialize the two size fields explicitly one byte at a time.  Older
+     * Studio builds used the generic v>>24 helper here; projects whose PCM
+     * crossed 0x01000000 bytes exposed a lost MSB and therefore advertised
+     * only the low 24 bits of their WAV length.  Successive /256 operations
+     * avoid that path entirely and make the carry into byte 3 explicit. */
+    v=data_bytes+36u;
+    wav_header[4]=(char)(v%256u);v/=256u;
+    wav_header[5]=(char)(v%256u);v/=256u;
+    wav_header[6]=(char)(v%256u);v/=256u;
+    wav_header[7]=(char)(v%256u);
+
+    wav_header[8]='W';wav_header[9]='A';wav_header[10]='V';wav_header[11]='E';
+    wav_header[12]='f';wav_header[13]='m';wav_header[14]='t';wav_header[15]=' ';
+    set_u32_le(&wav_header[16],16u); set_u16_le(&wav_header[20],1u); set_u16_le(&wav_header[22],2u);
+    set_u32_le(&wav_header[24],SAMPLE_RATE); set_u32_le(&wav_header[28],SAMPLE_RATE*4u);
+    set_u16_le(&wav_header[32],4u); set_u16_le(&wav_header[34],16u);
+    wav_header[36]='d';wav_header[37]='a';wav_header[38]='t';wav_header[39]='a';
+
+    v=data_bytes;
+    wav_header[40]=(char)(v%256u);v/=256u;
+    wav_header[41]=(char)(v%256u);v/=256u;
+    wav_header[42]=(char)(v%256u);v/=256u;
+    wav_header[43]=(char)(v%256u);
+}
+
+unsigned decode_u32_le_mul(const char *p) {
+    return (unsigned)(unsigned char)p[0] +
+           (unsigned)(unsigned char)p[1]*256u +
+           (unsigned)(unsigned char)p[2]*65536u +
+           (unsigned)(unsigned char)p[3]*16777216u;
+}
+
+int verify_preview_wav_header(unsigned frames) {
+    unsigned size=0u,expected_data=frames*FRAME_BYTES,expected_riff=expected_data+36u;
+    if(narm_file_size(preview_path,STORAGE_SD,&size)<0||size<44u)return 0;
+    if(!file_read_exact(preview_path,io_small,0u,44u,STORAGE_SD))return 0;
+    if(!bytes_eq4(io_small,'R','I','F','F')||!bytes_eq4(&io_small[8],'W','A','V','E')||
+       !bytes_eq4(&io_small[36],'d','a','t','a'))return 0;
+    if(decode_u32_le_mul(&io_small[4])!=expected_riff)return 0;
+    if(decode_u32_le_mul(&io_small[40])!=expected_data)return 0;
+    return 1;
+}
+
+void build_wav_header(void) { build_wav_header_frames(project_frames); }
+unsigned fnv_byte(unsigned h, unsigned b) { h ^= (b & 255u); h *= 16777619u; return h; }
+unsigned fnv_u32(unsigned h, unsigned v) {
+    h=fnv_byte(h,v); h=fnv_byte(h,v>>8); h=fnv_byte(h,v>>16); h=fnv_byte(h,v>>24); return h;
+}
+
+void str_clear(char *d,unsigned cap){unsigned i;for(i=0;i<cap;++i)d[i]=0;}
+void str_copy_cap(char *d,const char *src,unsigned cap){unsigned i=0u;if(!cap)return;while(src[i]&&i+1u<cap){d[i]=src[i];++i;}d[i]=0;}
+unsigned str_len(const char *s){unsigned n=0u;while(s[n])++n;return n;}
+int char_lower(int c){if(c>='A'&&c<='Z')return c+32;return c;}
+int has_wav_ext(const char *s){unsigned n=str_len(s);if(n<4u)return 0;return s[n-4u]=='.'&&char_lower(s[n-3u])=='w'&&char_lower(s[n-2u])=='a'&&char_lower(s[n-1u])=='v';}
+void make_root_path(const char *name,char *out){unsigned i=0u,j=0u;out[i++]='/';while(name[j]&&i+1u<MAX_PATH)out[i++]=name[j++];out[i]=0;}
+void path_join(char *out,const char *a,const char *b){unsigned i=0u,j=0u;while(a[i]&&i+1u<MAX_PATH){out[i]=a[i];++i;}if(i>0u&&out[i-1u]!='/'&&i+1u<MAX_PATH)out[i++]='/';while(b[j]&&i+1u<MAX_PATH)out[i++]=b[j++];out[i]=0;}
+void set_paths_for_dir(const char *dir){str_copy_cap(project_dir,dir,MAX_PATH);path_join(project_path,dir,"project.nprj");path_join(project_tmp_path,dir,"project.tmp");path_join(project_backup_path,dir,"project.bak");path_join(preview_path,dir,"preview.wav");path_join(playback_path,dir,"playback.wav");path_join(cache_meta_path,dir,"cache.meta");path_join(export_path,dir,"export.wav");}
+void set_unsaved_identity(void){project_named=0;str_clear(project_name,PROJECT_NAME_MAX);set_paths_for_dir(temp_project_dir);}
+void set_named_identity(const char *name){char d[MAX_PATH];unsigned i=0u,j=0u;str_copy_cap(project_name,name,PROJECT_NAME_MAX);while(studio_root[i]&&i+1u<MAX_PATH){d[i]=studio_root[i];++i;}if(i+1u<MAX_PATH)d[i++]='/';while(name[j]&&i+1u<MAX_PATH)d[i++]=name[j++];d[i]=0;project_named=1;set_paths_for_dir(d);}
+void make_waveform_path_for_dir(const char *dir,int track,char *out){char leaf[16];leaf[0]='w';leaf[1]='a';leaf[2]='v';leaf[3]='e';leaf[4]='_';leaf[5]=(char)('0'+((track/10)%10));leaf[6]=(char)('0'+(track%10));leaf[7]='.';leaf[8]='w';leaf[9]='f';leaf[10]='c';leaf[11]=0;path_join(out,dir,leaf);}
+void make_waveform_path(int track,char *out){make_waveform_path_for_dir(project_dir,track,out);}
+void set_status(const char *s){str_copy_cap(status_text,s,64u);status_code=0;}
+void set_error(int code,const char *s){str_copy_cap(status_text,s,64u);status_code=code;render_percent=0;rendering=0;}
+void playback_service_checkpoint(void){if(playing)narm_yield();}
+
+
+/* Large file transfers are adaptive. Some firmware/storage combinations reject
+ * large individual reads/writes even though the ABI itself does not specify a
+ * maximum. Start large for speed, then back off on an actual failed call and
+ * remember the proven size for the rest of the session. Short positive
+ * transfers are valid progress and are always continued. */
+unsigned file_read_cap=FILE_IO_SLICE;
+unsigned file_write_cap=FILE_IO_SLICE;
+int last_file_read_result=0;
+int last_file_write_result=0;
+
+int file_read_exact(const char *path, void *buffer, unsigned file_offset, unsigned byte_count, unsigned storage) {
+    char *dst=(char*)buffer; unsigned done=0u,zero_retries=0u;
+    while(done<byte_count){
+        unsigned remain=byte_count-done;
+        unsigned take=remain<file_read_cap?remain:file_read_cap;
+        int r=narm_file_read(path,dst+done,file_offset+done,take,storage);
+        last_file_read_result=r;
+        if(r>0){
+            if((unsigned)r>take)return 0; /* impossible/invalid service result */
+            done+=(unsigned)r;zero_retries=0u;
+            if((unsigned)r<take && (unsigned)r>=FILE_IO_MIN_SLICE && (unsigned)r<file_read_cap)
+                file_read_cap=(unsigned)r;
+            narm_yield();
+            continue;
+        }
+        if(r==0 && zero_retries<FILE_IO_ZERO_RETRIES){
+            ++zero_retries;narm_yield();continue;
+        }
+        zero_retries=0u;
+        if(take>FILE_IO_MIN_SLICE){
+            unsigned next=take>>1;
+            if(next<FILE_IO_MIN_SLICE)next=FILE_IO_MIN_SLICE;
+            if(next<file_read_cap)file_read_cap=next;
+            continue;
+        }
+        return 0;
+    }
+    return 1;
+}
+int file_write_exact(const char *path, const void *buffer, unsigned file_offset, unsigned byte_count, unsigned storage) {
+    const char *src=(const char*)buffer; unsigned done=0u,zero_retries=0u;
+    while(done<byte_count){
+        unsigned remain=byte_count-done;
+        unsigned take=remain<file_write_cap?remain:file_write_cap;
+        int r=narm_file_write(path,src+done,file_offset+done,take,storage);
+        last_file_write_result=r;
+        if(r>0){
+            if((unsigned)r>take)return 0; /* impossible/invalid service result */
+            done+=(unsigned)r;zero_retries=0u;
+            if((unsigned)r<take && (unsigned)r>=FILE_IO_MIN_SLICE && (unsigned)r<file_write_cap)
+                file_write_cap=(unsigned)r;
+            narm_yield();
+            continue;
+        }
+        if(r==0 && zero_retries<FILE_IO_ZERO_RETRIES){
+            ++zero_retries;narm_yield();continue;
+        }
+        zero_retries=0u;
+        if(take>FILE_IO_MIN_SLICE){
+            unsigned next=take>>1;
+            if(next<FILE_IO_MIN_SLICE)next=FILE_IO_MIN_SLICE;
+            if(next<file_write_cap)file_write_cap=next;
+            continue;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+/* Metadata readers often need only 8-24 bytes, but some SD implementations are
+ * happier with a larger transaction. Ask for up to 'preferred' bytes and
+ * accept any successful read that contains at least 'need'. Back off all the
+ * way to exactly 'need' instead of assuming one magic transfer size. */
+int file_read_at_least(const char *path, void *buffer, unsigned file_offset,unsigned need,unsigned preferred,unsigned storage){
+    unsigned take=preferred,zero_retries=0u;if(take<need)take=need;if(take>file_read_cap)take=file_read_cap;if(take<need)take=need;
+    for(;;){
+        int r=narm_file_read(path,buffer,file_offset,take,storage);last_file_read_result=r;
+        if(r>=(int)need){if((unsigned)r<take&&(unsigned)r>=FILE_IO_MIN_SLICE&&(unsigned)r<file_read_cap)file_read_cap=(unsigned)r;return r;}
+        if(r>0)return 0; /* EOF before required metadata */
+        if(r==0&&zero_retries<FILE_IO_ZERO_RETRIES){++zero_retries;narm_yield();continue;}
+        zero_retries=0u;if(take>need){unsigned next=take>>1;if(next<need)next=need;take=next;continue;}return 0;
+    }
+}
+void draw_ui(void);
+int copy_file(const char *src,const char *dst);
+void build_missing_waveform_caches(void);
+int try_reuse_persistent_cache(void);
+void ensure_track_visible(void);
+
+void ensure_editor_dirs(void){narm_dir_make(studio_root,STORAGE_SD);narm_dir_make(temp_project_dir,STORAGE_SD);}
+void clear_temp_workspace(void){int i;char p[MAX_PATH];path_join(p,temp_project_dir,"project.nprj");narm_file_delete(p,STORAGE_SD);path_join(p,temp_project_dir,"project.tmp");narm_file_delete(p,STORAGE_SD);path_join(p,temp_project_dir,"project.bak");narm_file_delete(p,STORAGE_SD);path_join(p,temp_project_dir,"preview.wav");narm_file_delete(p,STORAGE_SD);path_join(p,temp_project_dir,"playback.wav");narm_file_delete(p,STORAGE_SD);path_join(p,temp_project_dir,"cache.meta");narm_file_delete(p,STORAGE_SD);path_join(p,temp_project_dir,"export.wav");narm_file_delete(p,STORAGE_SD);for(i=0;i<MAX_TRACKS;++i){make_waveform_path_for_dir(temp_project_dir,i,p);narm_file_delete(p,STORAGE_SD);}}
+
+int scan_wav_path(const char *path,struct WavInfo *info) {
+    unsigned fsize=0u, off=12u, fmt_ok=0u, data_ok=0u, chunk_size, next, got;
+    unsigned format=0u, channels=0u, rate=0u, bits=0u,valid_bits=0u,subformat=0u; int loops=0;
+    info->valid=0; info->signature=2166136261u;
+    if (!path[0] || !narm_file_exists(path, STORAGE_SD)) return 0;
+    if (narm_file_size(path, STORAGE_SD, &fsize) < 0 || fsize < 44u) return -1;
+    if (!file_read_at_least(path, io_small, 0u, 12u, 64u, STORAGE_SD)) return -2;
+    if (!bytes_eq4(io_small,'R','I','F','F') || !bytes_eq4(&io_small[8],'W','A','V','E')) return -3;
+    while (off + 8u <= fsize && loops < 128) {
+        if (!file_read_at_least(path, io_small, off, 8u, 64u, STORAGE_SD)) return -4;
+        chunk_size=read_u32_le(&io_small[4]);
+        if (bytes_eq4(io_small,'f','m','t',' ')) {
+            got=chunk_size; if (got>64u) got=64u; if (got < 16u) return -5;
+            if (!file_read_at_least(path, io_small, off+8u, got, 64u, STORAGE_SD)) return -6;
+            format=read_u16_le(&io_small[0]); channels=read_u16_le(&io_small[2]); rate=read_u32_le(&io_small[4]); bits=read_u16_le(&io_small[14]);
+            /* WAVE_FORMAT_EXTENSIBLE is common in modern editors. Accept it
+             * when its SubFormat is ordinary integer PCM. */
+            if(format==0xfffeu){
+                if(got<40u)return -10;
+                valid_bits=read_u16_le(&io_small[18]);
+                subformat=read_u32_le(&io_small[24]);
+                if(subformat!=1u)return -11;
+                if(valid_bits!=0u && valid_bits!=bits)return -12;
+                format=1u;
+            }
+            fmt_ok=1u;
+        } else if (bytes_eq4(io_small,'d','a','t','a')) {
+            info->data_offset=off+8u; info->data_bytes=chunk_size;
+            if (info->data_offset > fsize || info->data_bytes > fsize - info->data_offset) return -9; data_ok=1u;
+        }
+        if (fmt_ok && data_ok) break;
+        next=off+8u+chunk_size+(chunk_size&1u); if (next<=off || next>fsize) break; off=next; ++loops;
+    }
+    if (!fmt_ok || !data_ok) return -7;
+    if (format!=1u || bits!=16u || (channels!=1u && channels!=2u)) return -8;
+    if(rate!=SAMPLE_RATE)return -13; /* renderer resampling is not implemented yet */
+    info->channels=channels; info->sample_rate=rate; info->bits=bits; info->file_size=fsize; info->frames=info->data_bytes/(channels*2u);
+    info->signature=fnv_u32(info->signature,fsize); info->signature=fnv_u32(info->signature,info->data_bytes); info->signature=fnv_u32(info->signature,info->frames);info->signature=fnv_u32(info->signature,rate);
+    got=64u;if(got>info->data_bytes)got=info->data_bytes;
+    if(got&&file_read_exact(path,io_small,info->data_offset,got,STORAGE_SD)){unsigned i;for(i=0;i<got;++i)info->signature=fnv_byte(info->signature,(unsigned)(unsigned char)io_small[i]);}
+    if(got&&info->data_bytes>got&&file_read_exact(path,io_small,info->data_offset+info->data_bytes-got,got,STORAGE_SD)){unsigned i;for(i=0;i<got;++i)info->signature=fnv_byte(info->signature,(unsigned)(unsigned char)io_small[i]);}
+    info->valid=1; return 1;
+}
+
+unsigned phase_step_for_note(int note) {
+    int octave; unsigned step;
+    if(note<12)note=12; if(note>119)note=119; octave=note/12; step=note_steps[note%12];
+    while(octave>5){step<<=1;--octave;} while(octave<5){step>>=1;++octave;} return step;
+}
+int oscillator(int wave,unsigned phase,unsigned seed) {
+    unsigned p=phase>>16,x; int s;
+    if(wave==WAVE_SAW)return (int)p-32768;
+    if(wave==WAVE_SQUARE)return (phase&0x80000000u)?-32768:32767;
+    if(wave==WAVE_TRIANGLE){if(p<32768u)return (int)(p<<1)-32768;return 98303-(int)(p<<1);} 
+    x=seed*1664525u+1013904223u; x^=x>>13; x*=2246822519u; s=(int)(x>>16)-32768; return s;
+}
+int envelope_gate_q15(const struct SynthPatch *p,unsigned local) {
+    unsigned d; int amp;
+    if(p->attack>0 && local<(unsigned)p->attack)
+        return (int)((local*32767u)/(unsigned)p->attack);
+    if(p->decay>0 && local<(unsigned)(p->attack+p->decay)){
+        d=local-(unsigned)p->attack;
+        amp=32767-(int)((d*(unsigned)(32767-p->sustain))/(unsigned)p->decay);
+        return amp;
+    }
+    return p->sustain;
+}
+int envelope_q15(const struct Note *n,const struct SynthPatch *p,unsigned frame) {
+    unsigned local,rel; int release_start;
+    if(frame<n->start)return 0;
+    local=frame-n->start;
+    if(local<n->length)return envelope_gate_q15(p,local);
+    if(p->release<=0)return 0;
+    rel=local-n->length;
+    if(rel>=(unsigned)p->release)return 0;
+    /* Release starts from the envelope level reached at the exact note-off
+     * sample. This makes note length audible even when note-off happens during
+     * attack or decay. */
+    release_start=envelope_gate_q15(p,n->length);
+    return release_start-(int)((rel*(unsigned)release_start)/(unsigned)p->release);
+}
+int clamp16(int v){if(v>32767)return 32767;if(v<-32768)return -32768;return v;}
+int pan_left_gain(int pan){if(pan<=16384)return 32767;return (32767-pan)*2;}
+int pan_right_gain(int pan){if(pan>=16384)return 32767;return pan*2;}
+void clear_mix(unsigned count){unsigned i;for(i=0;i<count;++i){mix_l[i]=0;mix_r[i]=0;if((i&8191u)==8191u)narm_yield();}}
+
+void render_synth_track_chunk(int track_index,unsigned first_frame,unsigned count) {
+    int ni; struct Track *t=&tracks[track_index];int lg,rg;unsigned chunk_end=first_frame+count;
+    if(!t->enabled)return;
+    lg=pan_left_gain(t->pan);rg=pan_right_gain(t->pan);
+    for(ni=0;ni<note_count;++ni){
+        struct Note *n=&notes[ni]; unsigned note_end,step1,step2,ov0,ov1,frame,yield_counter=0u;
+        if(n->track!=track_index)continue;
+        note_end=n->start+n->length;
+        if(note_end<n->start)note_end=MAX_PROJECT_FRAMES;
+        if((unsigned)t->synth.release>MAX_PROJECT_FRAMES-note_end)note_end=MAX_PROJECT_FRAMES;else note_end+=(unsigned)t->synth.release;
+        if(note_end<=first_frame || n->start>=chunk_end)continue;
+        ov0=n->start>first_frame?n->start:first_frame;ov1=note_end<chunk_end?note_end:chunk_end;
+        if(ov1<=ov0)continue;
+        step1=phase_step_for_note(n->pitch); step2=step1;
+        if(t->synth.detune2!=0){int a=t->synth.detune2<0?-t->synth.detune2:t->synth.detune2;unsigned delta=(step1>>12)*(unsigned)a;if(t->synth.detune2<0)step2-=delta;else step2+=delta;}
+        /* Iterate only the samples this note can actually affect. Older builds
+         * scanned the complete 32768-frame chunk once per note, even for a
+         * 50 ms kick. Dense projects could monopolize the M33 for too long. */
+        for(frame=ov0;frame<ov1;++frame){
+            unsigned i=frame-first_frame,local=frame-n->start,phase1,phase2; int env,s1,s2,sample;
+            env=envelope_q15(n,&t->synth,frame); if(env>0){
+                phase1=step1*local;phase2=step2*local;
+                s1=oscillator(t->synth.wave1,phase1,frame+(unsigned)(ni*97));s2=oscillator(t->synth.wave2,phase2,frame+(unsigned)(ni*193));
+                sample=(s1*t->synth.level1)>>15; sample+=(s2*t->synth.level2)>>15; sample=(sample*env)>>15; sample=(sample*n->velocity)/127; sample=(sample*t->volume)>>15;
+                mix_l[i]+=(sample*lg)>>15;mix_r[i]+=(sample*rg)>>15;
+            }
+            ++yield_counter;if((yield_counter&2047u)==0u)narm_yield();
+        }
+        narm_yield();
+    }
+}
+
+void render_audio_track_chunk(int track_index,unsigned first_frame,unsigned count) {
+    int ci; struct Track *t=&tracks[track_index]; struct WavInfo *wi=&track_wavs[track_index]; const char *path=track_paths[track_index];
+    if(!t->enabled || !wi->valid || !path[0])return;
+    for(ci=0;ci<clip_count;++ci){
+        struct AudioClip *c=&clips[ci]; unsigned ov0,ov1,frames,clip_off,src_frame,bytes,buf_i,out_i; int got,lg,rg;
+        if(!c->enabled || c->track!=track_index)continue;
+        ov0=first_frame>c->start?first_frame:c->start; ov1=(first_frame+count)<(c->start+c->length)?(first_frame+count):(c->start+c->length);
+        if(ov1<=ov0)continue; frames=ov1-ov0; clip_off=ov0-c->start; src_frame=c->source_start+clip_off;
+        if(src_frame>=wi->frames)continue; if(frames>wi->frames-src_frame)frames=wi->frames-src_frame;
+        bytes=frames*wi->channels*2u;
+        got=file_read_exact(path,audio_in,wi->data_offset+src_frame*wi->channels*2u,bytes,STORAGE_SD);
+        if(!got){render_io_error=-31;return;}
+        lg=pan_left_gain(t->pan);rg=pan_right_gain(t->pan);out_i=ov0-first_frame;
+        for(buf_i=0;buf_i<frames;++buf_i){int l,r,gain;if(wi->channels==1u){l=(int)audio_in[buf_i];r=l;}else{l=(int)audio_in[buf_i*2u];r=(int)audio_in[buf_i*2u+1u];}gain=(c->gain*t->volume)>>15;l=(l*gain)>>15;r=(r*gain)>>15;l=(l*lg)>>15;r=(r*rg)>>15;mix_l[out_i+buf_i]+=l;mix_r[out_i+buf_i]+=r;if((buf_i&4095u)==4095u)narm_yield();}narm_yield();
+    }
+}
+
+void finalize_chunk(unsigned count){unsigned i;for(i=0;i<count;++i){int l=clamp16(mix_l[i]>>1),r=clamp16(mix_r[i]>>1);pcm_out[i*2u]=(short)l;pcm_out[i*2u+1u]=(short)r;if((i&8191u)==8191u)narm_yield();}}
+
+unsigned project_audio_end(void){
+    unsigned end=1u; int i;
+    for(i=0;i<note_count;++i){unsigned e=notes[i].start+notes[i].length;if(notes[i].track>=0&&notes[i].track<track_count)e+=(unsigned)tracks[notes[i].track].synth.release;if(e>end)end=e;}
+    for(i=0;i<clip_count;++i)if(clips[i].enabled){unsigned e=clips[i].start+clips[i].length;if(e>end)end=e;}
+    if(end>MAX_PROJECT_FRAMES)end=MAX_PROJECT_FRAMES;return end;
+}
+unsigned render_chunk_count(void){unsigned f=project_audio_end();return (f+RENDER_FRAMES-1u)/RENDER_FRAMES;}
+void ensure_project_capacity(unsigned required){
+    unsigned n=project_frames;if(required<=n)return;if(required>MAX_PROJECT_FRAMES)required=MAX_PROJECT_FRAMES;
+    while(n<required&&n<MAX_PROJECT_FRAMES){unsigned next=n+PROJECT_GROW_FRAMES;if(next<n||next>MAX_PROJECT_FRAMES)next=MAX_PROJECT_FRAMES;n=next;}project_frames=n;
+}
+void mark_range_dirty(unsigned start,unsigned end) {
+    unsigned a,b,i;if(end<=start)return;if(start>=MAX_PROJECT_FRAMES)return;if(end>MAX_PROJECT_FRAMES)end=MAX_PROJECT_FRAMES;
+    a=start/RENDER_FRAMES;b=(end-1u)/RENDER_FRAMES;if(b>=MAX_RENDER_CHUNKS)b=MAX_RENDER_CHUNKS-1u;
+    for(i=a;i<=b;++i){dirty_chunks[i]=1;cached_chunk_hashes[i]=0u;} project_dirty=1; render_percent=0;
+}
+void mark_all_dirty(void){unsigned i,n=render_chunk_count();for(i=0;i<n;++i){dirty_chunks[i]=1;cached_chunk_hashes[i]=0u;}project_dirty=1;render_percent=0;}
+void clear_cached_chunk_hashes(void){unsigned i;for(i=0u;i<MAX_RENDER_CHUNKS;++i)cached_chunk_hashes[i]=0u;}
+int dirty_count(void){unsigned i,n=render_chunk_count();int c=0;for(i=0;i<n;++i)if(dirty_chunks[i])++c;return c;}
+int ranges_overlap(unsigned a0,unsigned a1,unsigned b0,unsigned b1){return a1>b0&&a0<b1;}
+
+unsigned project_hash_value(void) {
+    unsigned h=2166136261u;int i;
+    h=fnv_u32(h,5u);h=fnv_u32(h,(unsigned)track_count);h=fnv_u32(h,(unsigned)note_count);h=fnv_u32(h,(unsigned)clip_count);
+    for(i=0;i<track_count;++i){struct Track *t=&tracks[i];h=fnv_u32(h,t->type);h=fnv_u32(h,t->enabled);h=fnv_u32(h,t->volume);h=fnv_u32(h,t->pan);h=fnv_u32(h,t->synth.wave1);h=fnv_u32(h,t->synth.wave2);h=fnv_u32(h,t->synth.level1);h=fnv_u32(h,t->synth.level2);h=fnv_u32(h,t->synth.detune2);h=fnv_u32(h,t->synth.attack);h=fnv_u32(h,t->synth.decay);h=fnv_u32(h,t->synth.sustain);h=fnv_u32(h,t->synth.release);}
+    for(i=0;i<note_count;++i){h=fnv_u32(h,notes[i].track);h=fnv_u32(h,notes[i].start);h=fnv_u32(h,notes[i].length);h=fnv_u32(h,notes[i].pitch);h=fnv_u32(h,notes[i].velocity);}
+    for(i=0;i<clip_count;++i){h=fnv_u32(h,clips[i].enabled);h=fnv_u32(h,clips[i].track);h=fnv_u32(h,clips[i].start);h=fnv_u32(h,clips[i].source_start);h=fnv_u32(h,clips[i].length);h=fnv_u32(h,clips[i].gain);}
+    for(i=0;i<track_count;++i){unsigned j=0u;h=fnv_u32(h,track_wavs[i].valid?track_wavs[i].signature:0u);while(track_paths[i][j]){h=fnv_byte(h,(unsigned)(unsigned char)track_paths[i][j]);++j;}}return h;
+}
+
+/* Hash only the project state capable of changing this render chunk.  This is
+ * the heart of the persistent incremental renderer: edits elsewhere do not
+ * invalidate PCM that cannot possibly be affected. */
+unsigned chunk_dependency_hash(unsigned chunk) {
+    unsigned first=chunk*RENDER_FRAMES,last=first+RENDER_FRAMES,h=2166136261u;int t,i;
+    if(last>project_audio_end())last=project_audio_end();
+    h=fnv_u32(h,RENDER_DEP_VERSION);h=fnv_u32(h,SAMPLE_RATE);h=fnv_u32(h,RENDER_FRAMES);h=fnv_u32(h,chunk);h=fnv_u32(h,first);h=fnv_u32(h,last);
+    for(t=0;t<track_count;++t){struct Track *tr=&tracks[t];int track_hashed=0;if(!tr->enabled)continue;
+        if(tr->type==TRACK_SYNTH){
+            for(i=0;i<note_count;++i){struct Note *n=&notes[i];unsigned n1;if(n->track!=t)continue;n1=n->start+n->length+(unsigned)tr->synth.release;if(!ranges_overlap(first,last,n->start,n1))continue;
+                if(!track_hashed){h=fnv_u32(h,(unsigned)t);h=fnv_u32(h,(unsigned)tr->type);h=fnv_u32(h,(unsigned)tr->enabled);h=fnv_u32(h,(unsigned)tr->volume);h=fnv_u32(h,(unsigned)tr->pan);h=fnv_u32(h,(unsigned)tr->synth.wave1);h=fnv_u32(h,(unsigned)tr->synth.wave2);h=fnv_u32(h,(unsigned)tr->synth.level1);h=fnv_u32(h,(unsigned)tr->synth.level2);h=fnv_u32(h,(unsigned)tr->synth.detune2);h=fnv_u32(h,(unsigned)tr->synth.attack);h=fnv_u32(h,(unsigned)tr->synth.decay);h=fnv_u32(h,(unsigned)tr->synth.sustain);h=fnv_u32(h,(unsigned)tr->synth.release);track_hashed=1;}
+                /* Include the note array index because NOISE currently uses it
+                 * as part of its deterministic seed. */
+                h=fnv_u32(h,(unsigned)i);h=fnv_u32(h,(unsigned)n->track);h=fnv_u32(h,n->start);h=fnv_u32(h,n->length);h=fnv_u32(h,(unsigned)n->pitch);h=fnv_u32(h,(unsigned)n->velocity);
+            }
+        } else if(tr->type==TRACK_AUDIO){
+            for(i=0;i<clip_count;++i){struct AudioClip *c=&clips[i];unsigned c1,j;if(!c->enabled||c->track!=t)continue;c1=c->start+c->length;if(!ranges_overlap(first,last,c->start,c1))continue;
+                if(!track_hashed){h=fnv_u32(h,(unsigned)t);h=fnv_u32(h,(unsigned)tr->type);h=fnv_u32(h,(unsigned)tr->enabled);h=fnv_u32(h,(unsigned)tr->volume);h=fnv_u32(h,(unsigned)tr->pan);h=fnv_u32(h,track_wavs[t].valid?track_wavs[t].signature:0u);j=0u;while(track_paths[t][j]){h=fnv_byte(h,(unsigned)(unsigned char)track_paths[t][j]);++j;}track_hashed=1;}
+                h=fnv_u32(h,(unsigned)i);h=fnv_u32(h,(unsigned)c->enabled);h=fnv_u32(h,(unsigned)c->track);h=fnv_u32(h,c->start);h=fnv_u32(h,c->source_start);h=fnv_u32(h,c->length);h=fnv_u32(h,(unsigned)c->gain);
+            }
+        }
+    }
+    if(h==0u)h=1u;return h;
+}
+
+/* Reconcile the in-memory dirty map against dependency hashes and the bytes
+ * actually present in preview.wav.  This is intentionally cheap enough to run
+ * before every playback/export, making cache correctness independent of any
+ * one edit command remembering to invalidate the right range. */
+void refresh_dirty_from_hashes(void){unsigned i,n=render_chunk_count(),psz=0u,rf=project_audio_end();int have_preview=0,dirty=0;if(narm_file_exists(preview_path,STORAGE_SD)&&narm_file_size(preview_path,STORAGE_SD,&psz)>=0&&psz>=44u)have_preview=1;for(i=0u;i<n;++i){unsigned h=chunk_dependency_hash(i),end=(i+1u)*RENDER_FRAMES,need;if(end>rf)end=rf;need=44u+end*FRAME_BYTES;if(!have_preview||psz<need||cached_chunk_hashes[i]!=h){dirty_chunks[i]=1;dirty=1;}else dirty_chunks[i]=0;}for(i=n;i<MAX_RENDER_CHUNKS;++i)dirty_chunks[i]=0;project_dirty=dirty;render_percent=dirty?0:100;}
+
+int write_cache_meta(void) {
+    unsigned pos=0u,n=render_chunk_count(),i,rf=project_audio_end();if(20u+n*4u>PROJECT_IO_BYTES)return 0;
+    project_io[pos++]='N';project_io[pos++]='S';project_io[pos++]='C';project_io[pos++]='4';set_u32_le(&project_io[pos],CACHE_META_VERSION);pos+=4u;set_u32_le(&project_io[pos],RENDER_FRAMES);pos+=4u;set_u32_le(&project_io[pos],n);pos+=4u;set_u32_le(&project_io[pos],rf);pos+=4u;for(i=0u;i<n;++i){set_u32_le(&project_io[pos],cached_chunk_hashes[i]);pos+=4u;}
+    if(!narm_file_create(cache_meta_path,STORAGE_SD))return 0;return file_write_exact(cache_meta_path,project_io,0u,pos,STORAGE_SD);
+}
+int try_reuse_persistent_cache(void) {
+    unsigned sz=0u,psz=0u,pos=0u,ver,block,n,rf,i,current_n=render_chunk_count();clear_cached_chunk_hashes();
+    if(!narm_file_exists(cache_meta_path,STORAGE_SD)||!narm_file_exists(preview_path,STORAGE_SD)){mark_all_dirty();return 0;}
+    if(narm_file_size(cache_meta_path,STORAGE_SD,&sz)<0||sz<20u||sz>PROJECT_IO_BYTES){mark_all_dirty();return 0;}
+    if(!file_read_exact(cache_meta_path,project_io,0u,sz,STORAGE_SD)){mark_all_dirty();return 0;}
+    if(bytes_eq4(project_io,'N','S','C','4')){
+        pos=4u;ver=read_u32_le(&project_io[pos]);pos+=4u;block=read_u32_le(&project_io[pos]);pos+=4u;n=read_u32_le(&project_io[pos]);pos+=4u;rf=read_u32_le(&project_io[pos]);pos+=4u;
+        if(ver!=CACHE_META_VERSION||block!=RENDER_FRAMES||n>MAX_RENDER_CHUNKS||20u+n*4u>sz){mark_all_dirty();return 0;}
+        for(i=0u;i<n;++i){cached_chunk_hashes[i]=read_u32_le(&project_io[pos]);pos+=4u;}
+    } else if(bytes_eq4(project_io,'N','S','C','3')){
+        /* Upgrade an exact v0.10 all-project cache without forcing a render. */
+        unsigned oldh=read_u32_le(&project_io[4]),oldrf=read_u32_le(&project_io[8]),olddb=read_u32_le(&project_io[12]);if(oldrf!=project_audio_end()||olddb!=oldrf*FRAME_BYTES||oldh!=project_hash_value()){mark_all_dirty();return 0;}
+        if(narm_file_size(preview_path,STORAGE_SD,&psz)<0||psz<44u+oldrf*FRAME_BYTES){mark_all_dirty();return 0;}for(i=0u;i<current_n;++i)cached_chunk_hashes[i]=chunk_dependency_hash(i);
+    } else {mark_all_dirty();return 0;}
+    refresh_dirty_from_hashes();build_wav_header_frames(project_audio_end());if(!file_write_exact(preview_path,wav_header,0u,44u,STORAGE_SD)){mark_all_dirty();return 0;}if(!project_dirty)write_cache_meta();return 1;
+}
+int ensure_preview_file(void) {
+    unsigned size=0u,rf=project_audio_end();int recreated=0;
+    /* Never truncate a valid preview merely because the logical song length
+     * changed. RIFF's data length in the header defines playback; trailing old
+     * PCM is harmless and preserving it keeps unchanged chunks reusable. */
+    if(!narm_file_exists(preview_path,STORAGE_SD)||narm_file_size(preview_path,STORAGE_SD,&size)<0||size<44u){if(!narm_file_create(preview_path,STORAGE_SD))return 0;recreated=1;clear_cached_chunk_hashes();}
+    build_wav_header_frames(rf);if(!file_write_exact(preview_path,wav_header,0u,44u,STORAGE_SD))return 0;return recreated?2:1;
+}
+
+int render_dirty_regions(void) {
+    unsigned chunk,first,count,done=0u,total=0u,rf=project_audio_end(),chunks=render_chunk_count(),fk,fa,fm,fc;
+    unsigned render_started_ms=narm_millis(),last_draw_ms=render_started_ms;
+    int t,w,last_draw_percent=-100,space_armed=0;
+    rendering=1;render_io_error=0;render_percent=0;status_code=0;str_copy_cap(status_text,"RENDERING CHANGED CHUNKS - SPACE CANCELS",64u);draw_ui();
+    if(!narm_storage_mount(STORAGE_SD)){set_error(-10,"RENDER: SD NOT READY");return -10;}
+    if(!ensure_preview_file()){set_error(-11,"RENDER: PREVIEW FILE FAILED");return -11;}
+    refresh_dirty_from_hashes();total=(unsigned)dirty_count();
+    if(total==0u){if(!write_cache_meta()){set_error(-14,"RENDER: CACHE META FAILED");return -14;}project_dirty=0;rendering=0;render_percent=100;set_status("CACHE ALREADY CURRENT");return 0;}
+    /* Once any PCM is modified, the previous on-disk hash table must not be
+     * trusted after a power loss/cancel. A successful render writes a fresh one. */
+    narm_file_delete(cache_meta_path,STORAGE_SD);
+    for(chunk=0u;chunk<chunks;++chunk){
+        unsigned now;
+        if(!dirty_chunks[chunk])continue;
+        if(!space_armed){if(narm_key_down(KEY_SPACE)<=0)space_armed=1;}else if(narm_key_down(KEY_SPACE)>0){while(narm_next_key_event(&fk,&fa,&fm,&fc)>0){}rendering=0;render_percent=0;project_dirty=1;set_status("RENDER CANCELLED - COMPLETED CHUNKS KEPT THIS SESSION");return -15;}
+        first=chunk*RENDER_FRAMES;count=RENDER_FRAMES;if(count>rf-first)count=rf-first;
+        clear_mix(count);render_io_error=0;
+        for(t=0;t<track_count;++t){if(tracks[t].type==TRACK_SYNTH)render_synth_track_chunk(t,first,count);else if(tracks[t].type==TRACK_AUDIO)render_audio_track_chunk(t,first,count);if(render_io_error<0){set_error(render_io_error,"RENDER: SOURCE READ FAILED");return render_io_error;}}
+        finalize_chunk(count);
+        w=file_write_exact(preview_path,pcm_out,44u+first*FRAME_BYTES,count*FRAME_BYTES,STORAGE_SD);if(!w){set_error(-13,"RENDER: SD WRITE FAILED");return -13;}
+        cached_chunk_hashes[chunk]=chunk_dependency_hash(chunk);dirty_chunks[chunk]=0;++done;render_percent=(int)((done*100u)/total);
+        now=narm_millis();if(render_percent>=last_draw_percent+5 || (unsigned)(now-last_draw_ms)>=250u || done==total){last_draw_percent=render_percent;last_draw_ms=now;draw_ui();}narm_yield();
+    }
+    build_wav_header_frames(rf);if(!file_write_exact(preview_path,wav_header,0u,44u,STORAGE_SD)){set_error(-16,"RENDER: FINAL HEADER FAILED");return -16;}
+    {unsigned final_size=0u,expected=44u+rf*FRAME_BYTES;if(narm_file_size(preview_path,STORAGE_SD,&final_size)<0||final_size<expected){set_error(-17,"RENDER: OUTPUT SIZE MISMATCH");return -17;}}
+    if(!verify_preview_wav_header(rf)){set_error(-19,"RENDER: WAV HEADER VERIFY FAILED");return -19;}
+    refresh_dirty_from_hashes();if(project_dirty){set_error(-18,"RENDER: HASH RECHECK FAILED");return -18;}if(!write_cache_meta()){set_error(-14,"RENDER: CACHE META FAILED");return -14;}
+    cache_hash=0u;project_dirty=0;render_percent=100;rendering=0;{unsigned elapsed=narm_millis()-render_started_ms;if(total==1u)set_status("1 CHUNK UPDATED");else if(elapsed<1000u)set_status("CHANGED CHUNKS UPDATED <1S");else set_status("CHANGED CHUNKS UPDATED");}return 0;
+}
+
+void add_note(int track,unsigned start,unsigned length,int pitch,int velocity){unsigned end;if(note_count>=MAX_NOTES)return;if(length<1u)length=1u;end=start+length;if(end>MAX_PROJECT_FRAMES)end=MAX_PROJECT_FRAMES;if(start>=MAX_PROJECT_FRAMES)return;notes[note_count].track=track;notes[note_count].start=start;notes[note_count].length=end-start;notes[note_count].pitch=pitch;notes[note_count].velocity=velocity;++note_count;ensure_project_capacity(end+SAMPLE_RATE);mark_range_dirty(start,end+(unsigned)tracks[track].synth.release);}
+void add_clip(int track,unsigned start,unsigned source_start,unsigned length,int gain){unsigned end;if(clip_count>=MAX_AUDIO_CLIPS)return;if(start>=MAX_PROJECT_FRAMES)return;if(length>MAX_PROJECT_FRAMES-start)length=MAX_PROJECT_FRAMES-start;end=start+length;clips[clip_count].enabled=1;clips[clip_count].track=track;clips[clip_count].start=start;clips[clip_count].source_start=source_start;clips[clip_count].length=length;clips[clip_count].gain=gain;++clip_count;ensure_project_capacity(end+SAMPLE_RATE);mark_range_dirty(start,end);}
+
+void default_patch(struct Track *t){t->type=TRACK_SYNTH;t->enabled=1;t->volume=24576;t->pan=16384;t->synth.wave1=WAVE_SAW;t->synth.wave2=WAVE_SQUARE;t->synth.level1=19000;t->synth.level2=9000;t->synth.detune2=4;t->synth.attack=800;t->synth.decay=5000;t->synth.sustain=22000;t->synth.release=9000;}
+void clear_track_slot(int i){default_patch(&tracks[i]);tracks[i].enabled=0;track_wavs[i].valid=0;str_clear(track_paths[i],MAX_PATH);}
+void init_default_project(void) {
+    int i;track_count=0;note_count=0;clip_count=0;selected_track=0;first_visible_track=0;selected_param=0;focus_mode=FOCUS_TIMELINE;playhead_frame=0u;view_start_frame=0u;project_frames=INITIAL_PROJECT_FRAMES;view_span_frames=SAMPLE_RATE*8u;note_edit_pitch=60;note_edit_length=SAMPLE_RATE/2u;note_edit_velocity=100;status_text[0]=0;
+    for(i=0;i<MAX_TRACKS;++i)clear_track_slot(i);
+    {unsigned j;for(j=0;j<MAX_RENDER_CHUNKS;++j){dirty_chunks[j]=0;cached_chunk_hashes[j]=0u;}}project_dirty=0;render_percent=100;set_status("EMPTY PROJECT - ADD A TRACK");
+}
+
+int add_synth_track(void){int i;if(track_count>=MAX_TRACKS)return -1;i=track_count++;default_patch(&tracks[i]);track_wavs[i].valid=0;str_clear(track_paths[i],MAX_PATH);selected_track=i;return i;}
+int add_audio_track_path(const char *path){int i,r;unsigned len;if(track_count>=MAX_TRACKS)return -1;i=track_count;clear_track_slot(i);tracks[i].type=TRACK_AUDIO;tracks[i].enabled=1;tracks[i].volume=32767;tracks[i].pan=16384;str_copy_cap(track_paths[i],path,MAX_PATH);r=scan_wav_path(track_paths[i],&track_wavs[i]);if(r<=0){clear_track_slot(i);return r?r:-14;}++track_count;len=track_wavs[i].frames;if(len>MAX_PROJECT_FRAMES)len=MAX_PROJECT_FRAMES;add_clip(i,0u,0u,len,32767);selected_track=i;waveform_loaded_track=-1;return i;}
+void copy_note_slot(int d,int s){notes[d].track=notes[s].track;notes[d].start=notes[s].start;notes[d].length=notes[s].length;notes[d].pitch=notes[s].pitch;notes[d].velocity=notes[s].velocity;}
+void copy_clip_slot(int d,int s){clips[d].enabled=clips[s].enabled;clips[d].track=clips[s].track;clips[d].start=clips[s].start;clips[d].source_start=clips[s].source_start;clips[d].length=clips[s].length;clips[d].gain=clips[s].gain;}
+void copy_track_slot(int d,int s){tracks[d].type=tracks[s].type;tracks[d].enabled=tracks[s].enabled;tracks[d].volume=tracks[s].volume;tracks[d].pan=tracks[s].pan;tracks[d].synth.wave1=tracks[s].synth.wave1;tracks[d].synth.wave2=tracks[s].synth.wave2;tracks[d].synth.level1=tracks[s].synth.level1;tracks[d].synth.level2=tracks[s].synth.level2;tracks[d].synth.detune2=tracks[s].synth.detune2;tracks[d].synth.attack=tracks[s].synth.attack;tracks[d].synth.decay=tracks[s].synth.decay;tracks[d].synth.sustain=tracks[s].synth.sustain;tracks[d].synth.release=tracks[s].synth.release;track_wavs[d].valid=track_wavs[s].valid;track_wavs[d].channels=track_wavs[s].channels;track_wavs[d].sample_rate=track_wavs[s].sample_rate;track_wavs[d].bits=track_wavs[s].bits;track_wavs[d].data_offset=track_wavs[s].data_offset;track_wavs[d].data_bytes=track_wavs[s].data_bytes;track_wavs[d].frames=track_wavs[s].frames;track_wavs[d].file_size=track_wavs[s].file_size;track_wavs[d].signature=track_wavs[s].signature;str_copy_cap(track_paths[d],track_paths[s],MAX_PATH);}
+void remove_track(int idx){int i,w=0;if(idx<0||idx>=track_count)return;for(i=0;i<note_count;++i)if(notes[i].track==idx)mark_range_dirty(notes[i].start,notes[i].start+notes[i].length+(unsigned)tracks[idx].synth.release);for(i=0;i<clip_count;++i)if(clips[i].enabled&&clips[i].track==idx)mark_range_dirty(clips[i].start,clips[i].start+clips[i].length);for(i=0;i<note_count;++i){if(notes[i].track==idx)continue;if(notes[i].track>idx)--notes[i].track;if(w!=i)copy_note_slot(w,i);++w;}note_count=w;w=0;for(i=0;i<clip_count;++i){if(clips[i].track==idx)continue;if(clips[i].track>idx)--clips[i].track;if(w!=i)copy_clip_slot(w,i);++w;}clip_count=w;for(i=idx;i<track_count-1;++i)copy_track_slot(i,i+1);--track_count;if(track_count>=0)clear_track_slot(track_count);if(selected_track>=track_count)selected_track=track_count>0?track_count-1:0;if(first_visible_track>selected_track)first_visible_track=selected_track;waveform_loaded_track=-1;project_dirty=1;}
+
+unsigned put_u32(unsigned pos,unsigned v){if(pos+4u>PROJECT_IO_BYTES)return PROJECT_IO_BYTES+1u;set_u32_le(&project_io[pos],v);return pos+4u;}
+unsigned get_u32(unsigned *pos){unsigned v;if(*pos+4u>PROJECT_IO_BYTES){*pos=PROJECT_IO_BYTES+1u;return 0u;}v=read_u32_le(&project_io[*pos]);*pos+=4u;return v;}
+
+int save_project_data(void) {
+    unsigned pos=0u;int i,w;project_io[pos++]='N';project_io[pos++]='S';project_io[pos++]='P';project_io[pos++]='4';pos=put_u32(pos,4u);pos=put_u32(pos,project_frames);pos=put_u32(pos,(unsigned)track_count);pos=put_u32(pos,(unsigned)note_count);pos=put_u32(pos,(unsigned)clip_count);
+    for(i=0;i<track_count;++i){unsigned j,n;struct Track *t=&tracks[i];pos=put_u32(pos,t->type);pos=put_u32(pos,t->enabled);pos=put_u32(pos,t->volume);pos=put_u32(pos,t->pan);pos=put_u32(pos,t->synth.wave1);pos=put_u32(pos,t->synth.wave2);pos=put_u32(pos,t->synth.level1);pos=put_u32(pos,t->synth.level2);pos=put_u32(pos,t->synth.detune2);pos=put_u32(pos,t->synth.attack);pos=put_u32(pos,t->synth.decay);pos=put_u32(pos,t->synth.sustain);pos=put_u32(pos,t->synth.release);n=str_len(track_paths[i]);pos=put_u32(pos,n);for(j=0;j<n&&pos<PROJECT_IO_BYTES;++j)project_io[pos++]=track_paths[i][j];}
+    for(i=0;i<note_count;++i){pos=put_u32(pos,notes[i].track);pos=put_u32(pos,notes[i].start);pos=put_u32(pos,notes[i].length);pos=put_u32(pos,notes[i].pitch);pos=put_u32(pos,notes[i].velocity);}for(i=0;i<clip_count;++i){pos=put_u32(pos,clips[i].enabled);pos=put_u32(pos,clips[i].track);pos=put_u32(pos,clips[i].start);pos=put_u32(pos,clips[i].source_start);pos=put_u32(pos,clips[i].length);pos=put_u32(pos,clips[i].gain);}
+    if(pos>PROJECT_IO_BYTES)return -40;if(!narm_file_create(project_tmp_path,STORAGE_SD))return -41;w=file_write_exact(project_tmp_path,project_io,0u,pos,STORAGE_SD);if(!w)return -42;narm_file_delete(project_backup_path,STORAGE_SD);if(narm_file_exists(project_path,STORAGE_SD)){if(!narm_file_rename(project_path,project_backup_path,STORAGE_SD))return -43;}if(!narm_file_rename(project_tmp_path,project_path,STORAGE_SD)){if(narm_file_exists(project_backup_path,STORAGE_SD))narm_file_rename(project_backup_path,project_path,STORAGE_SD);return -44;}narm_file_delete(project_backup_path,STORAGE_SD);set_status("PROJECT SAVED");return 0;
+}
+
+int load_project_path(const char *path) {
+    unsigned size=0u,pos=0u,version,pframes,tc,nc,cc;int i,r,old2=0,old3=0;
+    if(!narm_file_exists(path,STORAGE_SD))return 0;if(narm_file_size(path,STORAGE_SD,&size)<0||size<24u||size>PROJECT_IO_BYTES)return -50;r=file_read_exact(path,project_io,0u,size,STORAGE_SD);if(!r)return -51;
+    if(bytes_eq4(project_io,'N','S','P','2'))old2=1;else if(bytes_eq4(project_io,'N','S','P','3'))old3=1;else if(!bytes_eq4(project_io,'N','S','P','4'))return -52;
+    pos=4u;version=get_u32(&pos);pframes=get_u32(&pos);tc=get_u32(&pos);nc=get_u32(&pos);cc=get_u32(&pos);if((old2&&version!=2u)||(old3&&version!=3u)||(!old2&&!old3&&version!=4u)||tc>MAX_TRACKS||nc>MAX_NOTES||cc>MAX_AUDIO_CLIPS)return -53;
+    project_frames=pframes;if(project_frames<INITIAL_PROJECT_FRAMES)project_frames=INITIAL_PROJECT_FRAMES;if(project_frames>MAX_PROJECT_FRAMES)project_frames=MAX_PROJECT_FRAMES;
+    track_count=(int)tc;note_count=(int)nc;clip_count=(int)cc;for(i=0;i<MAX_TRACKS;++i)clear_track_slot(i);
+    for(i=0;i<track_count;++i){unsigned j=0u,n=0u;struct Track *t=&tracks[i];t->type=(int)get_u32(&pos);t->enabled=(int)get_u32(&pos);t->volume=(int)get_u32(&pos);t->pan=(int)get_u32(&pos);t->synth.wave1=(int)get_u32(&pos);t->synth.wave2=(int)get_u32(&pos);t->synth.level1=(int)get_u32(&pos);t->synth.level2=(int)get_u32(&pos);t->synth.detune2=(int)get_u32(&pos);t->synth.attack=(int)get_u32(&pos);t->synth.decay=(int)get_u32(&pos);t->synth.sustain=(int)get_u32(&pos);t->synth.release=(int)get_u32(&pos);track_wavs[i].valid=0;str_clear(track_paths[i],MAX_PATH);if(!old2){n=get_u32(&pos);if(n>=MAX_PATH)n=MAX_PATH-1u;while(j<n&&pos<size)track_paths[i][j++]=project_io[pos++];track_paths[i][j]=0;}else if(t->type==TRACK_AUDIO&&narm_file_exists(legacy_input_path,STORAGE_SD))str_copy_cap(track_paths[i],legacy_input_path,MAX_PATH);if(t->type==TRACK_AUDIO&&track_paths[i][0])scan_wav_path(track_paths[i],&track_wavs[i]);}
+    for(i=0;i<note_count;++i){notes[i].track=(int)get_u32(&pos);notes[i].start=get_u32(&pos);notes[i].length=get_u32(&pos);notes[i].pitch=(int)get_u32(&pos);notes[i].velocity=(int)get_u32(&pos);}for(i=0;i<clip_count;++i){clips[i].enabled=(int)get_u32(&pos);clips[i].track=(int)get_u32(&pos);clips[i].start=get_u32(&pos);clips[i].source_start=get_u32(&pos);clips[i].length=get_u32(&pos);clips[i].gain=(int)get_u32(&pos);}if(pos>size)return -54;
+    selected_track=0;first_visible_track=0;selected_param=0;playhead_frame=0u;view_start_frame=0u;view_span_frames=SAMPLE_RATE*8u;if(view_span_frames>project_frames)view_span_frames=project_frames;waveform_loaded_track=-1;note_edit_pitch=60;note_edit_length=SAMPLE_RATE/2u;note_edit_velocity=100;mark_all_dirty();set_status(old2||old3?"LEGACY PROJECT LOADED":"PROJECT LOADED");return 1;
+}
+
+int load_project_current(void){return load_project_path(project_path);}
+
+void begin_project_name(void){project_name_input_len=0;project_name_input[0]=0;focus_mode=FOCUS_PROJECT_NAME;set_status("NAME THIS PROJECT");}
+int valid_project_name_char(unsigned ch){if(ch>='A'&&ch<='Z')return 1;if(ch>='a'&&ch<='z')return 1;if(ch>='0'&&ch<='9')return 1;if(ch==' '||ch=='_'||ch=='-')return 1;return 0;}
+void migrate_temp_waveforms(void){int i;char oldp[MAX_PATH],newp[MAX_PATH];for(i=0;i<track_count;++i){make_waveform_path_for_dir(temp_project_dir,i,oldp);make_waveform_path(i,newp);if(narm_file_exists(oldp,STORAGE_SD)){narm_file_delete(newp,STORAGE_SD);copy_file(oldp,newp);}}waveform_loaded_track=-1;}
+void migrate_temp_render_cache(void){char src[MAX_PATH];path_join(src,temp_project_dir,"preview.wav");if(narm_file_exists(src,STORAGE_SD))copy_file(src,preview_path);path_join(src,temp_project_dir,"cache.meta");if(narm_file_exists(src,STORAGE_SD))copy_file(src,cache_meta_path);}
+int accept_project_name(void){char target_dir[MAX_PATH],target_project[MAX_PATH];unsigned i=0u,j=0u;int r;while(project_name_input_len>0&&project_name_input[project_name_input_len-1]==' '){--project_name_input_len;project_name_input[project_name_input_len]=0;}if(project_name_input_len<=0){set_status("PROJECT NAME REQUIRED");return -1;}while(studio_root[i]&&i+1u<MAX_PATH){target_dir[i]=studio_root[i];++i;}if(i+1u<MAX_PATH)target_dir[i++]='/';while(project_name_input[j]&&i+1u<MAX_PATH)target_dir[i++]=project_name_input[j++];target_dir[i]=0;path_join(target_project,target_dir,"project.nprj");if(narm_file_exists(target_project,STORAGE_SD)){set_status("PROJECT ALREADY EXISTS - CHOOSE ANOTHER NAME");return -2;}narm_dir_make(target_dir,STORAGE_SD);set_named_identity(project_name_input);migrate_temp_render_cache();r=save_project_data();if(r<0){set_unsaved_identity();set_error(r,"PROJECT SAVE FAILED");return r;}migrate_temp_waveforms();try_reuse_persistent_cache();focus_mode=FOCUS_TIMELINE;set_status("PROJECT CREATED + SAVED");return 0;}
+
+int save_project(void){if(!project_named){begin_project_name();return 0;}return save_project_data();}
+
+int project_browser_scan(void){unsigned idx=0u,nlen,type;char name[PROJECT_NAME_MAX],d[MAX_PATH],p[MAX_PATH];int r;project_browser_count=0;project_browser_selected=0;project_browser_first=0;for(idx=0u;idx<512u&&project_browser_count<PROJECT_BROWSER_MAX;++idx){r=narm_dir_entry(studio_root,idx,name,PROJECT_NAME_MAX,&nlen,&type,STORAGE_SD);if(r<=0)break;if(r==2)continue;if(type!=1u)continue;if(name[0]=='_')continue;path_join(d,studio_root,name);path_join(p,d,"project.nprj");if(narm_file_exists(p,STORAGE_SD)){str_copy_cap(project_browser_names[project_browser_count],name,PROJECT_NAME_MAX);++project_browser_count;}}return project_browser_count;}
+void open_project_browser(void){ensure_editor_dirs();project_browser_scan();focus_mode=FOCUS_PROJECT_BROWSER;if(project_browser_count==0)set_status("NO SAVED PROJECTS IN /NARMStudio");else set_status("CHOOSE PROJECT");}
+void project_browser_accept(void){int r;if(project_browser_count<=0)return;narm_audio_stop_all();playing=0;set_named_identity(project_browser_names[project_browser_selected]);r=load_project_current();if(r<=0){set_error(r?r:-55,"PROJECT LOAD FAILED");focus_mode=FOCUS_TIMELINE;return;}build_missing_waveform_caches();try_reuse_persistent_cache();focus_mode=FOCUS_TIMELINE;if(project_dirty)set_status("PROJECT LOADED - CHANGED CHUNKS DIRTY");else set_status("PROJECT LOADED - CACHE READY");}
+
+int build_waveform_cache_for_track(int track) {
+    unsigned frame=0u,bucket_fill=0u,out_count=0u,total_buckets,write_off=WAVEFORM_HEADER_BYTES;int minv=32767,maxv=-32768;char wfpath[MAX_PATH];struct WavInfo *wi;
+    if(track<0||track>=track_count||tracks[track].type!=TRACK_AUDIO)return -1;
+    wi=&track_wavs[track];if(!wi->valid||!track_paths[track][0])return -2;
+    ensure_editor_dirs();narm_dir_make(project_dir,STORAGE_SD);
+    make_waveform_path(track,wfpath);total_buckets=(wi->frames+waveform_bucket_frames-1u)/waveform_bucket_frames;
+    if(!narm_file_create(wfpath,STORAGE_SD))return -61;
+    {unsigned z;for(z=0u;z<WAVEFORM_HEADER_BYTES;++z)waveform_header_block[z]=0;
+     waveform_header_block[0]='W';waveform_header_block[1]='F';waveform_header_block[2]='C';waveform_header_block[3]='3';
+     set_u32_le(&waveform_header_block[4],waveform_bucket_frames);set_u32_le(&waveform_header_block[8],wi->frames);
+     set_u32_le(&waveform_header_block[12],total_buckets);set_u32_le(&waveform_header_block[16],wi->signature);
+     set_u32_le(&waveform_header_block[20],WAVEFORM_HEADER_BYTES);
+     if(!file_write_exact(wfpath,waveform_header_block,0u,WAVEFORM_HEADER_BYTES,STORAGE_SD)){narm_file_delete(wfpath,STORAGE_SD);return -62;}}
+    while(frame<wi->frames){
+        unsigned take=8192u,i,bytes;if(take>wi->frames-frame)take=wi->frames-frame;bytes=take*wi->channels*2u;
+        if(!file_read_exact(track_paths[track],audio_in,wi->data_offset+frame*wi->channels*2u,bytes,STORAGE_SD))return -63;
+        for(i=0;i<take;++i){
+            int a,b,v;if(wi->channels==1u)v=(int)audio_in[i];else{a=(int)audio_in[i*2u];b=(int)audio_in[i*2u+1u];v=(a+b)/2;}
+            if(v<minv)minv=v;if(v>maxv)maxv=v;++bucket_fill;
+            if(bucket_fill==waveform_bucket_frames||frame+i+1u==wi->frames){
+                wfc_out[out_count*2u]=(short)minv;wfc_out[out_count*2u+1u]=(short)maxv;++out_count;
+                bucket_fill=0u;minv=32767;maxv=-32768;
+                if(out_count==WFC_WRITE_BUCKETS){unsigned nbytes=out_count*4u;if(!file_write_exact(wfpath,wfc_out,write_off,nbytes,STORAGE_SD))return -64;write_off+=nbytes;out_count=0u;}
+            }
+            if((i&4095u)==4095u)narm_yield();
+        }
+        frame+=take;narm_yield();
+    }
+    if(out_count){
+        unsigned nbytes=out_count*4u;
+        /* Keep the final SD transaction reasonably sized. Trailing zeros are
+         * outside total_buckets and therefore ignored by the reader. */
+        if(nbytes<FILE_IO_MIN_SLICE){unsigned shorts_needed=FILE_IO_MIN_SLICE/2u,z;for(z=out_count*2u;z<shorts_needed;++z)wfc_out[z]=0;nbytes=FILE_IO_MIN_SLICE;}
+        if(!file_write_exact(wfpath,wfc_out,write_off,nbytes,STORAGE_SD))return -65;
+    }
+    waveform_loaded_track=-1;set_status("WAVEFORM BUILT");return 0;
+}
+
+int waveform_cache_valid_for_track(int track){char wfpath[MAX_PATH];unsigned size=0u,cache_sig;if(track<0||track>=track_count||tracks[track].type!=TRACK_AUDIO||!track_wavs[track].valid)return 0;make_waveform_path(track,wfpath);if(!narm_file_exists(wfpath,STORAGE_SD))return 0;if(narm_file_size(wfpath,STORAGE_SD,&size)<0||size<20u)return 0;if(!file_read_at_least(wfpath,io_small,0u,24u,64u,STORAGE_SD))return 0;if(!bytes_eq4(io_small,'W','F','C','2')&&!bytes_eq4(io_small,'W','F','C','3'))return 0;cache_sig=read_u32_le(&io_small[16]);return cache_sig==track_wavs[track].signature;}
+void build_missing_waveform_caches(void){int i,r;unsigned oldb=waveform_bucket_frames;int oldl=waveform_level;waveform_bucket_frames=128u;waveform_level=1;for(i=0;i<track_count;++i)if(tracks[i].type==TRACK_AUDIO&&track_wavs[i].valid&&!waveform_cache_valid_for_track(i)){r=build_waveform_cache_for_track(i);if(r<0){/* Waveform persistence is only an optimization. Audio remains valid and the viewer falls back to live source peaks. */waveform_loaded_track=-1;waveform_ready=0;}}waveform_bucket_frames=oldb;waveform_level=oldl;waveform_loaded_track=-1;}
+
+/* Build a temporary peak window directly from the source WAV when persistent .wfc
+ * storage is unavailable. The cache covers roughly three visible widths so normal
+ * transport redraws and auto-scroll do not reread the SD card every frame. */
+int build_live_waveform_window(int track,unsigned sf0,unsigned sf1){
+    struct WavInfo *wi;unsigned span,bucket,cache0,cache1,first,last,count,frame,end,i,bi,take,bytes;
+    if(track<0||track>=track_count)return 0;wi=&track_wavs[track];if(!wi->valid||!track_paths[track][0]||wi->frames==0u)return 0;
+    if(sf0>=wi->frames)return 0;if(sf1>wi->frames)sf1=wi->frames;if(sf1<=sf0)sf1=sf0+1u;
+    span=sf1-sf0;bucket=(span+522u)/523u;if(bucket<1u)bucket=1u;
+    cache0=sf0>span?sf0-span:0u;cache1=sf1+span;if(cache1<sf1||cache1>wi->frames)cache1=wi->frames;
+    first=cache0/bucket;last=(cache1-1u)/bucket;count=last-first+1u;if(count>WFC_VIEW_BUCKETS){count=WFC_VIEW_BUCKETS;last=first+count-1u;}
+    if(waveform_loaded_track==track&&waveform_bucket_frames==bucket&&wfc_first_bucket<=sf0/bucket&&wfc_first_bucket+wfc_view_count>(sf1-1u)/bucket){waveform_ready=1;return 1;}
+    for(i=0u;i<count;++i){wfc_view[i*2u]=(short)32767;wfc_view[i*2u+1u]=(short)-32768;}
+    frame=first*bucket;end=(last+1u)*bucket;if(end<frame||end>wi->frames)end=wi->frames;
+    while(frame<end){take=8192u;if(take>end-frame)take=end-frame;bytes=take*wi->channels*2u;if(!file_read_exact(track_paths[track],audio_in,wi->data_offset+frame*wi->channels*2u,bytes,STORAGE_SD))return 0;
+        for(i=0u;i<take;++i){int a,b,v,lo,hi;bi=(frame+i)/bucket-first;if(bi>=count)continue;if(wi->channels==1u)v=(int)audio_in[i];else{a=(int)audio_in[i*2u];b=(int)audio_in[i*2u+1u];v=(a+b)/2;}lo=(int)wfc_view[bi*2u];hi=(int)wfc_view[bi*2u+1u];if(v<lo)wfc_view[bi*2u]=(short)v;if(v>hi)wfc_view[bi*2u+1u]=(short)v;if((i&4095u)==4095u)narm_yield();}
+        frame+=take;narm_yield();}
+    waveform_bucket_frames=bucket;wfc_first_bucket=first;wfc_view_count=count;wfc_total_buckets=(wi->frames+bucket-1u)/bucket;waveform_loaded_track=track;waveform_ready=1;return 1;
+}
+
+int ensure_waveform_window(int track,unsigned sf0,unsigned sf1) {
+    char wfpath[MAX_PATH];unsigned size=0u,total,first,last,count,nbytes,cache_bucket,cache_sig,data_off=20u;struct WavInfo *wi;
+    waveform_ready=0;if(track<0||track>=track_count||tracks[track].type!=TRACK_AUDIO)return 0;wi=&track_wavs[track];if(!wi->valid)return 0;make_waveform_path(track,wfpath);
+    if(narm_file_exists(wfpath,STORAGE_SD)&&narm_file_size(wfpath,STORAGE_SD,&size)>=0&&size>=20u&&file_read_at_least(wfpath,io_small,0u,24u,64u,STORAGE_SD)){
+        if(bytes_eq4(io_small,'W','F','C','3'))data_off=read_u32_le(&io_small[20]);else if(bytes_eq4(io_small,'W','F','C','2'))data_off=20u;else data_off=0u;
+        if(data_off){cache_bucket=read_u32_le(&io_small[4]);cache_sig=read_u32_le(&io_small[16]);if(cache_sig==wi->signature&&(cache_bucket==32u||cache_bucket==128u||cache_bucket==512u||cache_bucket==2048u)){
+            waveform_bucket_frames=cache_bucket;if(cache_bucket==32u)waveform_level=0;else if(cache_bucket==128u)waveform_level=1;else if(cache_bucket==512u)waveform_level=2;else waveform_level=3;total=read_u32_le(&io_small[12]);if(sf1<=sf0)sf1=sf0+1u;first=sf0/cache_bucket;last=(sf1-1u)/cache_bucket;if(first<total){if(last>=total)last=total-1u;count=last-first+1u;if(count>WFC_VIEW_BUCKETS){count=WFC_VIEW_BUCKETS;last=first+count-1u;}if(waveform_loaded_track==track&&wfc_first_bucket<=first&&wfc_first_bucket+wfc_view_count>last){waveform_ready=1;return 1;}nbytes=count*4u;if(bytes_eq4(io_small,'W','F','C','3')&&nbytes<FILE_IO_MIN_SLICE)nbytes=FILE_IO_MIN_SLICE;if(file_read_exact(wfpath,wfc_view,data_off+first*4u,nbytes,STORAGE_SD)){wfc_first_bucket=first;wfc_view_count=count;wfc_total_buckets=total;waveform_loaded_track=track;waveform_ready=1;return 1;}}}}}
+    return build_live_waveform_window(track,sf0,sf1);
+}
+
+
+int direct_audio_track_index(void) {
+    int i,found_track=-1,found_clip=-1;
+    if(note_count!=0)return -1;
+    for(i=0;i<clip_count;++i){
+        int tr;
+        if(!clips[i].enabled)continue;
+        tr=clips[i].track;
+        if(tr<0||tr>=track_count)continue;
+        if(!tracks[tr].enabled)continue;
+        if(found_clip>=0)return -1;
+        found_clip=i;found_track=tr;
+    }
+    if(found_clip<0||found_track<0)return -1;
+    if(tracks[found_track].type!=TRACK_AUDIO)return -1;
+    if(!track_wavs[found_track].valid)return -1;
+    if(!track_paths[found_track][0])return -1;
+    if(tracks[found_track].volume!=32767)return -1;
+    if(tracks[found_track].pan!=16384)return -1;
+    if(clips[found_clip].gain!=32767)return -1;
+    if(clips[found_clip].start!=0u)return -1;
+    if(clips[found_clip].source_start!=0u)return -1;
+    if(clips[found_clip].length!=track_wavs[found_track].frames)return -1;
+    return found_track;
+}
+
+int prepare_direct_source_from_cursor(int track,unsigned start_frame) {
+    struct WavInfo *wi=&track_wavs[track];
+    unsigned remain,src_off,dst_off,take;int got,w;
+    if(start_frame>=wi->frames)start_frame=0u;
+    remain=wi->frames-start_frame;
+    if(!narm_file_create(playback_path,STORAGE_SD))return -91;
+    build_wav_header_frames(remain);
+    if(!file_write_exact(playback_path,wav_header,0u,44u,STORAGE_SD))return -92;
+    src_off=wi->data_offset+start_frame*wi->channels*2u;dst_off=44u;
+    while(remain){
+        take=RENDER_FRAMES;if(take>remain)take=remain;
+        got=file_read_exact(track_paths[track],pcm_out,src_off,take*FRAME_BYTES,STORAGE_SD);
+        if(!got)return -93;
+        w=file_write_exact(playback_path,pcm_out,dst_off,take*FRAME_BYTES,STORAGE_SD);
+        if(!w)return -94;
+        src_off+=take*FRAME_BYTES;dst_off+=take*FRAME_BYTES;remain-=take;
+        narm_yield();
+    }
+    return 0;
+}
+
+int prepare_playback_from_cursor(unsigned start_frame) {
+    unsigned render_end=project_audio_end(),remain,src_off,dst_off,take; int got,w;
+    if(render_end<=1u)return -80;if(start_frame>=render_end)start_frame=0u;
+    remain=render_end-start_frame;
+    if(!narm_file_create(playback_path,STORAGE_SD))return -81;
+    build_wav_header_frames(remain);
+    if(!file_write_exact(playback_path,wav_header,0u,44u,STORAGE_SD))return -82;
+    src_off=44u+start_frame*FRAME_BYTES; dst_off=44u;
+    while(remain){
+        take=RENDER_FRAMES;if(take>remain)take=remain;
+        got=file_read_exact(preview_path,pcm_out,src_off,take*FRAME_BYTES,STORAGE_SD);
+        if(!got)return -83;
+        w=file_write_exact(playback_path,pcm_out,dst_off,take*FRAME_BYTES,STORAGE_SD);
+        if(!w)return -84;
+        src_off+=take*FRAME_BYTES;dst_off+=take*FRAME_BYTES;remain-=take;
+    }
+    return 0;
+}
+
+void keep_cursor_visible(void) {
+    unsigned margin=view_span_frames/12u,maxstart,target;if(view_span_frames>project_frames)view_span_frames=project_frames;
+    if(view_span_frames>=project_frames){view_start_frame=0u;return;}maxstart=project_frames-view_span_frames;
+    if(playing){
+        /* Page the timeline only when the playhead reaches an edge. Smooth
+         * per-frame scrolling would invalidate the static waveform layer on
+         * every transport update. */
+        if(playhead_frame<view_start_frame){target=playhead_frame>margin?playhead_frame-margin:0u;view_start_frame=target>maxstart?maxstart:target;}
+        else if(playhead_frame>view_start_frame+view_span_frames-margin){target=playhead_frame>margin?playhead_frame-margin:0u;view_start_frame=target>maxstart?maxstart:target;}
+        return;
+    }
+    if(playhead_frame<view_start_frame+margin){if(playhead_frame>margin)view_start_frame=playhead_frame-margin;else view_start_frame=0u;}
+    else if(playhead_frame>view_start_frame+view_span_frames-margin){target=playhead_frame-(view_span_frames-margin);view_start_frame=target>maxstart?maxstart:target;}
+}
+
+void update_transport_cursor(void) {
+    unsigned elapsed,seconds,remainder,frames,render_end=playback_end_frame;if(!playing)return;
+    elapsed=narm_micros()-playback_start_micros;seconds=elapsed/1000000u;remainder=elapsed%1000000u;frames=seconds*SAMPLE_RATE+(remainder*(SAMPLE_RATE/100u))/10000u;
+    if(playback_start_frame>=render_end)playback_start_frame=0u;if(frames>render_end-playback_start_frame)frames=render_end-playback_start_frame;playhead_frame=playback_start_frame+frames;ensure_project_capacity(playhead_frame+SAMPLE_RATE);keep_cursor_visible();
+}
+
+void set_timeline_zoom(int dir) {
+    unsigned old=view_span_frames,newspan,half,maxstart;if(dir<0){newspan=old/2u;if(newspan<SAMPLE_RATE/4u)newspan=SAMPLE_RATE/4u;}else{newspan=old*2u;if(newspan>project_frames||newspan<old)newspan=project_frames;}if(newspan==old)return;view_span_frames=newspan;half=newspan/2u;if(playhead_frame>half)view_start_frame=playhead_frame-half;else view_start_frame=0u;maxstart=project_frames-newspan;if(view_start_frame>maxstart)view_start_frame=maxstart;
+}
+
+void format_time(unsigned frame,char *out) {
+    unsigned sec=frame/SAMPLE_RATE,rem=frame%SAMPLE_RATE,ms=(rem*1000u)/SAMPLE_RATE,min=sec/60u;sec%=60u;if(min>99u)min=99u;
+    out[0]=(char)('0'+(min/10u)%10u);out[1]=(char)('0'+min%10u);out[2]=':';
+    out[3]=(char)('0'+sec/10u);out[4]=(char)('0'+sec%10u);out[5]='.';
+    out[6]=(char)('0'+ms/100u);out[7]=(char)('0'+(ms/10u)%10u);out[8]=(char)('0'+ms%10u);out[9]=0;
+}
+
+/* ---------------- tiny UI font ---------------- */
+
+void font_rows(char c, unsigned *r) {
+    int i;
+    for (i = 0; i < 7; ++i) r[i] = 0u;
+    if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+
+    if (c == 'A') { r[0]=14;r[1]=17;r[2]=17;r[3]=31;r[4]=17;r[5]=17;r[6]=17; }
+    else if (c == 'B') { r[0]=30;r[1]=17;r[2]=17;r[3]=30;r[4]=17;r[5]=17;r[6]=30; }
+    else if (c == 'C') { r[0]=14;r[1]=17;r[2]=16;r[3]=16;r[4]=16;r[5]=17;r[6]=14; }
+    else if (c == 'D') { r[0]=30;r[1]=17;r[2]=17;r[3]=17;r[4]=17;r[5]=17;r[6]=30; }
+    else if (c == 'E') { r[0]=31;r[1]=16;r[2]=16;r[3]=30;r[4]=16;r[5]=16;r[6]=31; }
+    else if (c == 'F') { r[0]=31;r[1]=16;r[2]=16;r[3]=30;r[4]=16;r[5]=16;r[6]=16; }
+    else if (c == 'G') { r[0]=14;r[1]=17;r[2]=16;r[3]=23;r[4]=17;r[5]=17;r[6]=15; }
+    else if (c == 'H') { r[0]=17;r[1]=17;r[2]=17;r[3]=31;r[4]=17;r[5]=17;r[6]=17; }
+    else if (c == 'I') { r[0]=14;r[1]=4;r[2]=4;r[3]=4;r[4]=4;r[5]=4;r[6]=14; }
+    else if (c == 'J') { r[0]=7;r[1]=2;r[2]=2;r[3]=2;r[4]=18;r[5]=18;r[6]=12; }
+    else if (c == 'K') { r[0]=17;r[1]=18;r[2]=20;r[3]=24;r[4]=20;r[5]=18;r[6]=17; }
+    else if (c == 'L') { r[0]=16;r[1]=16;r[2]=16;r[3]=16;r[4]=16;r[5]=16;r[6]=31; }
+    else if (c == 'M') { r[0]=17;r[1]=27;r[2]=21;r[3]=21;r[4]=17;r[5]=17;r[6]=17; }
+    else if (c == 'N') { r[0]=17;r[1]=25;r[2]=21;r[3]=19;r[4]=17;r[5]=17;r[6]=17; }
+    else if (c == 'O') { r[0]=14;r[1]=17;r[2]=17;r[3]=17;r[4]=17;r[5]=17;r[6]=14; }
+    else if (c == 'P') { r[0]=30;r[1]=17;r[2]=17;r[3]=30;r[4]=16;r[5]=16;r[6]=16; }
+    else if (c == 'Q') { r[0]=14;r[1]=17;r[2]=17;r[3]=17;r[4]=21;r[5]=18;r[6]=13; }
+    else if (c == 'R') { r[0]=30;r[1]=17;r[2]=17;r[3]=30;r[4]=20;r[5]=18;r[6]=17; }
+    else if (c == 'S') { r[0]=15;r[1]=16;r[2]=16;r[3]=14;r[4]=1;r[5]=1;r[6]=30; }
+    else if (c == 'T') { r[0]=31;r[1]=4;r[2]=4;r[3]=4;r[4]=4;r[5]=4;r[6]=4; }
+    else if (c == 'U') { r[0]=17;r[1]=17;r[2]=17;r[3]=17;r[4]=17;r[5]=17;r[6]=14; }
+    else if (c == 'V') { r[0]=17;r[1]=17;r[2]=17;r[3]=17;r[4]=17;r[5]=10;r[6]=4; }
+    else if (c == 'W') { r[0]=17;r[1]=17;r[2]=17;r[3]=21;r[4]=21;r[5]=21;r[6]=10; }
+    else if (c == 'X') { r[0]=17;r[1]=17;r[2]=10;r[3]=4;r[4]=10;r[5]=17;r[6]=17; }
+    else if (c == 'Y') { r[0]=17;r[1]=17;r[2]=10;r[3]=4;r[4]=4;r[5]=4;r[6]=4; }
+    else if (c == 'Z') { r[0]=31;r[1]=1;r[2]=2;r[3]=4;r[4]=8;r[5]=16;r[6]=31; }
+    else if (c == '0') { r[0]=14;r[1]=17;r[2]=19;r[3]=21;r[4]=25;r[5]=17;r[6]=14; }
+    else if (c == '1') { r[0]=4;r[1]=12;r[2]=4;r[3]=4;r[4]=4;r[5]=4;r[6]=14; }
+    else if (c == '2') { r[0]=14;r[1]=17;r[2]=1;r[3]=2;r[4]=4;r[5]=8;r[6]=31; }
+    else if (c == '3') { r[0]=30;r[1]=1;r[2]=1;r[3]=14;r[4]=1;r[5]=1;r[6]=30; }
+    else if (c == '4') { r[0]=2;r[1]=6;r[2]=10;r[3]=18;r[4]=31;r[5]=2;r[6]=2; }
+    else if (c == '5') { r[0]=31;r[1]=16;r[2]=16;r[3]=30;r[4]=1;r[5]=1;r[6]=30; }
+    else if (c == '6') { r[0]=14;r[1]=16;r[2]=16;r[3]=30;r[4]=17;r[5]=17;r[6]=14; }
+    else if (c == '7') { r[0]=31;r[1]=1;r[2]=2;r[3]=4;r[4]=8;r[5]=8;r[6]=8; }
+    else if (c == '8') { r[0]=14;r[1]=17;r[2]=17;r[3]=14;r[4]=17;r[5]=17;r[6]=14; }
+    else if (c == '9') { r[0]=14;r[1]=17;r[2]=17;r[3]=15;r[4]=1;r[5]=1;r[6]=14; }
+    else if (c == ':') { r[1]=4;r[2]=4;r[4]=4;r[5]=4; }
+    else if (c == '-') { r[3]=14; }
+    else if (c == '+') { r[2]=4;r[3]=14;r[4]=4; }
+    else if (c == '#') { r[1]=10;r[2]=31;r[3]=10;r[4]=31;r[5]=10; }
+    else if (c == '[') { r[0]=14;r[1]=8;r[2]=8;r[3]=8;r[4]=8;r[5]=8;r[6]=14; }
+    else if (c == ']') { r[0]=14;r[1]=2;r[2]=2;r[3]=2;r[4]=2;r[5]=2;r[6]=14; }
+    else if (c == '/') { r[0]=1;r[1]=2;r[2]=2;r[3]=4;r[4]=8;r[5]=8;r[6]=16; }
+    else if (c == '.') { r[6]=4; }
+    else if (c == '%') { r[0]=17;r[1]=2;r[2]=4;r[3]=8;r[4]=16;r[5]=17; }
+    else if (c == '>') { r[1]=8;r[2]=4;r[3]=2;r[4]=4;r[5]=8; }
+    else if (c == '<') { r[1]=2;r[2]=4;r[3]=8;r[4]=4;r[5]=2; }
+}
+
+void set_glyph_bit(int x, int y) {
+    unsigned bit;
+    unsigned word;
+    unsigned off;
+    bit = (unsigned)(y * 10 + x);
+    word = bit >> 5;
+    off = bit & 31u;
+    glyph_bits[word] |= 1u << (31u - off);
+}
+
+void draw_char2(int x, int y, char c, unsigned color) {
+    unsigned rows[7];
+    int ry;
+    int rx;
+    int dx;
+    int dy;
+    font_rows(c, rows);
+    for (ry = 0; ry < 5; ++ry) glyph_bits[ry] = 0u;
+    for (ry = 0; ry < 7; ++ry) {
+        for (rx = 0; rx < 5; ++rx) {
+            if (rows[ry] & (1u << (4 - rx))) {
+                for (dy = 0; dy < 2; ++dy)
+                    for (dx = 0; dx < 2; ++dx)
+                        set_glyph_bit(rx * 2 + dx, ry * 2 + dy);
+            }
+        }
+    }
+    narm_vga4_glyph(x, y, 10, 14, glyph_bits, color);
+}
+
+void draw_text(int x, int y, const char *s, unsigned color) {
+    int px;
+    px = x;
+    while (*s) {
+        if (*s == ' ') px += 12;
+        else { draw_char2(px, y, *s, color); px += 12; }
+        ++s;
+    }
+}
+
+void draw_number(int x, int y, int value, unsigned color) {
+    char buf[16];
+    int n;
+    int i;
+    unsigned v;
+    n = 0;
+    if (value < 0) {
+        draw_char2(x, y, '-', color);
+        x += 12;
+        v = (unsigned)(-value);
+    } else v = (unsigned)value;
+    if (v == 0u) buf[n++] = '0';
+    while (v && n < 15) { buf[n++] = (char)('0' + (v % 10u)); v /= 10u; }
+    for (i = n - 1; i >= 0; --i) { draw_char2(x, y, buf[i], color); x += 12; }
+}
+
+
+void draw_char1(int x,int y,char c,unsigned color){unsigned rows[7];unsigned bits[2];int ry,rx;bits[0]=0u;bits[1]=0u;font_rows(c,rows);for(ry=0;ry<7;++ry)for(rx=0;rx<5;++rx)if(rows[ry]&(1u<<(4-rx))){unsigned bit=(unsigned)(ry*5+rx);bits[bit>>5]|=1u<<(31u-(bit&31u));}narm_vga4_glyph(x,y,5,7,bits,color);}
+
+/* Rasterize a complete string into one transparent glyph.  The old path made
+ * one native service call per character; this makes one call per string. */
+void draw_small_text_count(int x,int y,const char *s,unsigned limit,unsigned color){
+    unsigned chars=0u,width,words,i,ry,rx,bit,rows[7];char c;
+    while(chars<limit&&chars<TEXT_BATCH_MAX_CHARS&&s[chars])++chars;
+    if(chars==0u)return;
+    width=chars*6u-1u;words=(width*7u+31u)/32u;
+    for(i=0u;i<words;++i)text_batch_bits[i]=0u;
+    for(i=0u;i<chars;++i){
+        c=s[i];if(c==' ')continue;font_rows(c,rows);
+        for(ry=0u;ry<7u;++ry)for(rx=0u;rx<5u;++rx)if(rows[ry]&(1u<<(4u-rx))){
+            bit=ry*width+i*6u+rx;
+            text_batch_bits[bit>>5]|=1u<<(31u-(bit&31u));
+        }
+    }
+    narm_vga4_glyph(x,y,(int)width,7,text_batch_bits,color);
+}
+void draw_small_text(int x,int y,const char *s,unsigned color){draw_small_text_count(x,y,s,TEXT_BATCH_MAX_CHARS,color);}
+void draw_small_text_n(int x,int y,const char *s,unsigned n,unsigned color){draw_small_text_count(x,y,s,n,color);}
+void draw_small_number(int x,int y,int value,unsigned color){
+    char out[17],rev[16];int pos=0,n=0,i;unsigned v;
+    if(value<0){out[pos++]='-';v=0u-(unsigned)value;}else v=(unsigned)value;
+    if(v==0u)rev[n++]='0';
+    while(v&&n<15){rev[n++]=(char)('0'+v%10u);v/=10u;}
+    for(i=n-1;i>=0;--i)out[pos++]=rev[i];out[pos]=0;
+    draw_small_text(x,y,out,color);
+}
+
+const char *wave_name(int w){if(w==WAVE_SAW)return "SAW";if(w==WAVE_SQUARE)return "SQUARE";if(w==WAVE_TRIANGLE)return "TRI";return "NOISE";}
+
+#define TL_X0 112
+#define TL_X1 634
+#define TL_W (TL_X1-TL_X0+1)
+#define TL_Y0 30
+#define TL_Y1 335
+#define LANE_H 66
+#define WAVE_COLOR 15u
+#define PLAYHEAD_COLOR 14u
+#define TIMELINE_CACHE_Y0 (TL_Y0-3)
+#define TIMELINE_CACHE_H (TL_Y1-TIMELINE_CACHE_Y0+1)
+#define TIMELINE_CACHE_PIXELS (TL_W*TIMELINE_CACHE_H)
+#define TIMELINE_CACHE_BYTES ((TIMELINE_CACHE_PIXELS+1)/2)
+#define TIMELINE_RESTORE_MAX_PIXELS (56*10)
+#define TIMELINE_RESTORE_WORDS ((TIMELINE_RESTORE_MAX_PIXELS+31)/32)
+
+unsigned char timeline_static_pixels[TIMELINE_CACHE_BYTES];
+unsigned timeline_restore_masks[16*TIMELINE_RESTORE_WORDS];
+int timeline_static_valid = 0;
+
+int frame_visible(unsigned frame){return frame>=view_start_frame&&frame<=view_start_frame+view_span_frames;}
+int timeline_x(unsigned frame){unsigned rel;if(frame<=view_start_frame)return TL_X0;if(frame>=view_start_frame+view_span_frames)return TL_X1;rel=frame-view_start_frame;return TL_X0+(int)((rel*(unsigned)(TL_W-1))/view_span_frames);}
+
+void timeline_cache_clear(unsigned color){
+    unsigned i;unsigned char packed=(unsigned char)(((color&15u)<<4)|(color&15u));
+    for(i=0u;i<TIMELINE_CACHE_BYTES;++i)timeline_static_pixels[i]=packed;
+    timeline_static_valid=0;
+}
+
+void timeline_cache_pixel(int x,int y,unsigned color){
+    unsigned index;unsigned char old;
+    if(x<TL_X0||x>TL_X1||y<TIMELINE_CACHE_Y0||y>TL_Y1)return;
+    index=(unsigned)(y-TIMELINE_CACHE_Y0)*(unsigned)TL_W+(unsigned)(x-TL_X0);old=timeline_static_pixels[index>>1];
+    if(index&1u)timeline_static_pixels[index>>1]=(unsigned char)((old&0xf0u)|(color&15u));
+    else timeline_static_pixels[index>>1]=(unsigned char)((old&0x0fu)|((color&15u)<<4));
+}
+
+unsigned timeline_cache_get(int x,int y){
+    unsigned index;unsigned char packed;
+    index=(unsigned)(y-TIMELINE_CACHE_Y0)*(unsigned)TL_W+(unsigned)(x-TL_X0);packed=timeline_static_pixels[index>>1];
+    return (index&1u)?(unsigned)(packed&15u):(unsigned)(packed>>4);
+}
+
+void timeline_cache_fill_rect(int x0,int y0,int x1,int y1,unsigned color){
+    int x,y;if(x0<TL_X0)x0=TL_X0;if(x1>TL_X1)x1=TL_X1;if(y0<TIMELINE_CACHE_Y0)y0=TIMELINE_CACHE_Y0;if(y1>TL_Y1)y1=TL_Y1;
+    if(x0>x1||y0>y1)return;for(y=y0;y<=y1;++y)for(x=x0;x<=x1;++x)timeline_cache_pixel(x,y,color);
+}
+
+void timeline_cache_hline(int x0,int x1,int y,unsigned color){int x;if(y<TIMELINE_CACHE_Y0||y>TL_Y1)return;if(x0<TL_X0)x0=TL_X0;if(x1>TL_X1)x1=TL_X1;for(x=x0;x<=x1;++x)timeline_cache_pixel(x,y,color);}
+void timeline_cache_vline(int x,int y0,int y1,unsigned color){int y;if(x<TL_X0||x>TL_X1)return;if(y0<TIMELINE_CACHE_Y0)y0=TIMELINE_CACHE_Y0;if(y1>TL_Y1)y1=TL_Y1;for(y=y0;y<=y1;++y)timeline_cache_pixel(x,y,color);}
+
+/* Restore a small rectangle from the already-rendered static timeline.  The
+ * cache is converted to palette masks over a fixed maximum of 560 pixels;
+ * this work never depends on project complexity. */
+void restore_timeline_pixels(int x0,int y0,int x1,int y1){
+    unsigned i,c,index=0u,used=0u,total,words;int x,y,width,height;
+    if(!timeline_static_valid)return;if(x0<TL_X0)x0=TL_X0;if(x1>TL_X1)x1=TL_X1;if(y0<TIMELINE_CACHE_Y0)y0=TIMELINE_CACHE_Y0;if(y1>TL_Y1)y1=TL_Y1;
+    if(x0>x1||y0>y1)return;width=x1-x0+1;height=y1-y0+1;total=(unsigned)width*(unsigned)height;if(total>TIMELINE_RESTORE_MAX_PIXELS)return;
+    for(i=0u;i<16u*TIMELINE_RESTORE_WORDS;++i)timeline_restore_masks[i]=0u;
+    for(y=y0;y<=y1;++y)for(x=x0;x<=x1;++x){c=timeline_cache_get(x,y);timeline_restore_masks[c*TIMELINE_RESTORE_WORDS+(index>>5)]|=1u<<(31u-(index&31u));used|=1u<<c;++index;}
+    words=(total+31u)/32u;
+    for(c=0u;c<16u;++c)if(used&(1u<<c))narm_vga4_glyph(x0,y0,width,height,&timeline_restore_masks[c*TIMELINE_RESTORE_WORDS],c);
+}
+
+unsigned waveform_screen_state_signature(void){
+    unsigned h=2166136261u;int row,t,ci;
+    h=fnv_u32(h,view_start_frame);h=fnv_u32(h,view_span_frames);
+    h=fnv_u32(h,waveform_bucket_frames);h=fnv_u32(h,(unsigned)first_visible_track);
+    h=fnv_u32(h,(unsigned)track_count);h=fnv_u32(h,(unsigned)clip_count);
+    for(row=0;row<VISIBLE_TRACKS;++row){
+        t=first_visible_track+row;if(t<0||t>=track_count)continue;
+        h=fnv_u32(h,(unsigned)t);h=fnv_u32(h,(unsigned)tracks[t].type);
+        h=fnv_u32(h,track_wavs[t].valid?track_wavs[t].signature:0u);
+        for(ci=0;ci<clip_count;++ci)if(clips[ci].enabled&&clips[ci].track==t){
+            h=fnv_u32(h,clips[ci].start);h=fnv_u32(h,clips[ci].source_start);
+            h=fnv_u32(h,clips[ci].length);
+        }
+    }
+    return h;
+}
+
+/* Convert source peak buckets into one min/max pair per visible screen column.
+ * The expensive bucket aggregation only runs when the view or clip layout
+ * changes; ordinary redraws reuse these 523-column rows. */
+void prepare_waveform_screen_cache(int allow_io){
+    unsigned sig,i;int row,t,ci,x,all_ready=1;
+    ensure_track_visible();sig=waveform_screen_state_signature();
+    if(waveform_screen_valid&&waveform_screen_signature==sig&&
+       (waveform_screen_complete||!allow_io))return;
+    for(i=0u;i<VISIBLE_TRACKS*WAVEFORM_SCREEN_COLUMNS;++i){
+        waveform_screen_min[i]=(short)32767;
+        waveform_screen_max[i]=(short)-32768;
+    }
+    for(row=0;row<VISIBLE_TRACKS;++row){
+        t=first_visible_track+row;if(t<0||t>=track_count||tracks[t].type!=TRACK_AUDIO)continue;
+        for(ci=0;ci<clip_count;++ci){
+            struct AudioClip *c=&clips[ci];unsigned clip0,clip1,vis0,vis1,svis0,svis1;int xa,xb,ready=0;
+            if(!c->enabled||c->track!=t)continue;clip0=c->start;clip1=clip0+c->length;
+            if(clip1<view_start_frame||clip0>view_start_frame+view_span_frames)continue;
+            xa=timeline_x(clip0);xb=timeline_x(clip1);if(xa<TL_X0)xa=TL_X0;if(xb>TL_X1)xb=TL_X1;if(xb<xa)continue;
+            vis0=clip0>view_start_frame?clip0:view_start_frame;
+            vis1=clip1<view_start_frame+view_span_frames?clip1:view_start_frame+view_span_frames;
+            if(vis1<=vis0)continue;svis0=c->source_start+(vis0-clip0);svis1=c->source_start+(vis1-clip0);
+            if(allow_io)ready=ensure_waveform_window(t,svis0,svis1);
+            if(!ready)all_ready=0;
+            for(x=xa;x<=xb;++x){
+                unsigned index=(unsigned)row*WAVEFORM_SCREEN_COLUMNS+(unsigned)(x-TL_X0);
+                int minv=32767,maxv=-32768;
+                if(ready){
+                    unsigned tf0=view_start_frame+((unsigned)(x-TL_X0)*view_span_frames)/(unsigned)TL_W;
+                    unsigned tf1=view_start_frame+((unsigned)(x-TL_X0+1)*view_span_frames)/(unsigned)TL_W;
+                    unsigned sf0,sf1,b0,b1,b;
+                    if(tf0<clip0)tf0=clip0;if(tf1>clip1)tf1=clip1;if(tf1<=tf0)tf1=tf0+1u;
+                    sf0=c->source_start+(tf0-clip0);sf1=c->source_start+(tf1-clip0);
+                    b0=sf0/waveform_bucket_frames;b1=(sf1-1u)/waveform_bucket_frames;
+                    if(b0<wfc_first_bucket)b0=wfc_first_bucket;
+                    if(b1>=wfc_first_bucket+wfc_view_count)b1=wfc_first_bucket+wfc_view_count-1u;
+                    if(b1>=b0)for(b=b0;b<=b1;++b){unsigned bi=b-wfc_first_bucket;int lo=(int)wfc_view[bi*2u],hi=(int)wfc_view[bi*2u+1u];if(lo<minv)minv=lo;if(hi>maxv)maxv=hi;}
+                } else {minv=0;maxv=0;}
+                if(minv<=maxv){if(minv<(int)waveform_screen_min[index])waveform_screen_min[index]=(short)minv;if(maxv>(int)waveform_screen_max[index])waveform_screen_max[index]=(short)maxv;}
+            }
+        }
+    }
+    waveform_screen_signature=waveform_screen_state_signature();
+    waveform_screen_valid=1;waveform_screen_complete=allow_io&&all_ready;
+}
+
+void draw_waveform_track_cached(int row,int track,int y0,int y1){
+    int ci,x,mid=(y0+y1)/2,amp=(y1-y0)/2-3;
+    for(ci=0;ci<clip_count;++ci)if(clips[ci].enabled&&clips[ci].track==track){
+        unsigned c0=clips[ci].start,c1=c0+clips[ci].length;int xa,xb;
+        if(c1<view_start_frame||c0>view_start_frame+view_span_frames)continue;
+        xa=timeline_x(c0);xb=timeline_x(c1);if(xa<TL_X0)xa=TL_X0;if(xb>TL_X1)xb=TL_X1;
+        if(xb>=xa){narm_line(xa,y0,xb,y0,2u);narm_line(xa,y1,xb,y1,2u);timeline_cache_hline(xa,xb,y0,2u);timeline_cache_hline(xa,xb,y1,2u);}
+    }
+    for(x=TL_X0;x<=TL_X1;++x){
+        unsigned index=(unsigned)row*WAVEFORM_SCREEN_COLUMNS+(unsigned)(x-TL_X0);
+        int minv=(int)waveform_screen_min[index],maxv=(int)waveform_screen_max[index],yhi,ylo;
+        if(minv>maxv)continue;yhi=mid-(maxv*amp)/32768;ylo=mid-(minv*amp)/32768;
+        if(yhi<y0+1)yhi=y0+1;if(ylo>y1-1)ylo=y1-1;narm_line(x,yhi,x,ylo,WAVE_COLOR);timeline_cache_vline(x,yhi,ylo,WAVE_COLOR);
+    }
+}
+
+void ensure_track_visible(void){if(selected_track<first_visible_track)first_visible_track=selected_track;if(selected_track>=first_visible_track+VISIBLE_TRACKS)first_visible_track=selected_track-VISIBLE_TRACKS+1;if(first_visible_track<0)first_visible_track=0;if(first_visible_track>track_count)first_visible_track=track_count;}
+
+void draw_timeline_playhead(void){
+    int px=timeline_x(playhead_frame),tx=px-27;char tb[12];
+    if(tx<TL_X0)tx=TL_X0;if(tx>TL_X1-54)tx=TL_X1-54;format_time(playhead_frame,tb);
+    narm_line(px,TL_Y0-3,px,TL_Y1,PLAYHEAD_COLOR);
+    narm_fill_rect(tx,TL_Y1-9,tx+55,TL_Y1,0u);draw_small_text(tx+1,TL_Y1-8,tb,PLAYHEAD_COLOR);
+    playback_cursor_x=px;playback_cursor_box_x=tx;
+}
+
+void draw_timeline(void){
+    int row,t,ni;narm_fill_rect(2,TL_Y0-4,637,TL_Y1+2,1u);ensure_track_visible();timeline_cache_clear(1u);
+    for(row=0;row<VISIBLE_TRACKS;++row){t=first_visible_track+row;if(t>=track_count)break;{int top=TL_Y0+row*LANE_H,bottom=top+LANE_H-4,mid=(top+bottom)/2;if(t==selected_track&&focus_mode==FOCUS_TIMELINE){narm_fill_rect(3,top,637,bottom,3u);timeline_cache_fill_rect(TL_X0,top,TL_X1,bottom,3u);}narm_fill_rect(4,top+2,108,bottom-1,1u);narm_fill_rect(7,top+7,18,top+18,4u);draw_small_text(9,top+9,"X",15u);draw_small_text(24,top+7,tracks[t].type==TRACK_SYNTH?"SYNTH":"AUDIO",tracks[t].enabled?15u:8u);draw_small_number(82,top+7,t+1,10u);draw_small_text(24,top+20,"VOL",7u);draw_small_number(48,top+20,tracks[t].volume,10u);draw_small_text(24,top+31,"PAN",7u);draw_small_number(48,top+31,tracks[t].pan,10u);if(tracks[t].type==TRACK_AUDIO&&track_paths[t][0]){draw_small_text(24,top+44,"WAV",7u);}
+        narm_line(TL_X0,top,TL_X1,top,8u);narm_line(TL_X0,bottom,TL_X1,bottom,8u);narm_line(TL_X0,mid,TL_X1,mid,2u);timeline_cache_hline(TL_X0,TL_X1,top,8u);timeline_cache_hline(TL_X0,TL_X1,bottom,8u);timeline_cache_hline(TL_X0,TL_X1,mid,2u);
+        if(tracks[t].type==TRACK_SYNTH){
+            for(ni=0;ni<note_count;++ni){
+                if(playing&&(((unsigned)ni&(DRAW_SERVICE_STRIDE-1u))==0u))playback_service_checkpoint();
+                if(notes[ni].track==t){unsigned n0=notes[ni].start,n1=n0+notes[ni].length;if(n1<view_start_frame||n0>view_start_frame+view_span_frames)continue;{int x0=timeline_x(n0),x1=timeline_x(n1),pitch=notes[ni].pitch,py;unsigned color=(unsigned)(10+(t&3));if(pitch<36)pitch=36;if(pitch>84)pitch=84;py=bottom-6-((pitch-36)*(LANE_H-14))/48;if(x1<=x0)x1=x0+1;narm_fill_rect(x0,py,x1,py+2,color);timeline_cache_fill_rect(x0,py,x1,py+2,color);}}
+            }
+        } else draw_waveform_track_cached(row,t,top+7,bottom-7);
+        playback_service_checkpoint();
+    }}
+    {int addrow=track_count-first_visible_track;if(addrow<0)addrow=0;if(addrow>VISIBLE_TRACKS)addrow=VISIBLE_TRACKS;if(addrow<VISIBLE_TRACKS){int y=TL_Y0+addrow*LANE_H+5;if(selected_track==track_count&&focus_mode==FOCUS_TIMELINE)narm_fill_rect(4,y-3,108,y+13,3u);draw_small_text(10,y,"+ ADD TRACK",15u);}}
+    timeline_static_valid=1;draw_timeline_playhead();
+}
+
+void draw_param_cell(int x,int y,const char *name,int value,const char *textv,int selected){unsigned c=selected?15u:10u;if(selected)narm_fill_rect(x-3,y-3,x+102,y+18,2u);draw_small_text(x,y,name,c);if(textv)draw_small_text(x+48,y,textv,c);else draw_small_number(x+48,y,value,c);}
+
+int find_note_at_cursor_pitch(void){int i;if(selected_track<0||selected_track>=track_count)return -1;for(i=0;i<note_count;++i)if(notes[i].track==selected_track&&notes[i].pitch==note_edit_pitch&&playhead_frame>=notes[i].start&&playhead_frame<notes[i].start+notes[i].length)return i;return -1;}
+void insert_note_here(void){int before=note_count;if(selected_track<0||selected_track>=track_count||tracks[selected_track].type!=TRACK_SYNTH)return;if(find_note_at_cursor_pitch()>=0){set_status("NOTE ALREADY HERE");return;}add_note(selected_track,playhead_frame,note_edit_length,note_edit_pitch,note_edit_velocity);if(note_count==before){set_status("NOTE LIMIT");return;}set_status("NOTE INSERTED");}
+void delete_note_index(int idx){int i;unsigned s0,s1;if(idx<0||idx>=note_count)return;s0=notes[idx].start;s1=s0+notes[idx].length+(unsigned)tracks[notes[idx].track].synth.release;for(i=idx;i<note_count-1;++i)copy_note_slot(i,i+1);--note_count;mark_range_dirty(s0,s1);set_status("NOTE DELETED");}
+void delete_note_here(void){int i=find_note_at_cursor_pitch();if(i<0)set_status("NO NOTE AT CURSOR/PITCH");else delete_note_index(i);}
+unsigned frames_from_ms(unsigned ms){unsigned sec=ms/1000u,rem=ms%1000u,frames;if(sec>MAX_PROJECT_SECONDS)sec=MAX_PROJECT_SECONDS;frames=sec*SAMPLE_RATE+(rem*(SAMPLE_RATE/100u))/10u;if(frames<1u)frames=1u;if(frames>MAX_PROJECT_FRAMES)frames=MAX_PROJECT_FRAMES;return frames;}
+unsigned ms_from_frames(unsigned frames){unsigned sec=frames/SAMPLE_RATE,rem=frames%SAMPLE_RATE;return sec*1000u+(rem*1000u)/SAMPLE_RATE;}
+unsigned musical_length_frames(int idx){unsigned q=(SAMPLE_RATE*60u)/tempo_bpm;if(q<1u)q=1u;if(idx==0)return q*4u;if(idx==1)return q*2u;if(idx==2)return q;if(idx==3)return q/2u;if(idx==4)return q/4u;if(idx==5)return q/8u;if(idx==6)return (q*3u)/2u;if(idx==7)return (q*3u)/4u;if(idx==8)return (q*2u)/3u;return q/3u;}
+void draw_musical_name(int x,int y,int idx,unsigned color){if(idx==0)draw_small_text(x,y,"1/1",color);else if(idx==1)draw_small_text(x,y,"1/2",color);else if(idx==2)draw_small_text(x,y,"1/4",color);else if(idx==3)draw_small_text(x,y,"1/8",color);else if(idx==4)draw_small_text(x,y,"1/16",color);else if(idx==5)draw_small_text(x,y,"1/32",color);else if(idx==6)draw_small_text(x,y,"1/4 DOT",color);else if(idx==7)draw_small_text(x,y,"1/8 DOT",color);else if(idx==8)draw_small_text(x,y,"1/4 TRI",color);else draw_small_text(x,y,"1/8 TRI",color);}
+void open_note_length_menu(void){length_menu_choice=0;focus_mode=FOCUS_NOTE_LENGTH;set_status("CHOOSE NOTE LENGTH METHOD");}
+void cycle_musical_length(int dir){musical_length_index+=dir;if(musical_length_index<0)musical_length_index=9;if(musical_length_index>9)musical_length_index=0;note_edit_length=musical_length_frames(musical_length_index);}
+void begin_ms_input(void){length_ms_digits=0;length_ms_input[0]=0;focus_mode=FOCUS_MS_INPUT;}
+void accept_ms_input(void){unsigned ms=0u;int i;if(length_ms_digits<=0)return;for(i=0;i<length_ms_digits;++i)ms=ms*10u+(unsigned)(length_ms_input[i]-'0');if(ms<1u)ms=1u;if(ms>3600000u)ms=3600000u;note_edit_length=frames_from_ms(ms);focus_mode=FOCUS_NOTES;set_status("EXACT MS LENGTH SET");}
+void begin_length_points(void){length_point_a=playhead_frame;focus_mode=FOCUS_LENGTH_POINTS;set_status("POINT A SET - MOVE TO B, ENTER");}
+void accept_length_points(void){unsigned a=length_point_a,b=playhead_frame,len;if(a==b){set_status("POINT B MUST DIFFER");return;}len=a>b?a-b:b-a;note_edit_length=len;playhead_frame=a;keep_cursor_visible();focus_mode=FOCUS_NOTES;set_status("LENGTH SET FROM A TO B");}
+void adjust_note_length(int dir){cycle_musical_length(dir);set_status("MUSICAL NOTE LENGTH");}
+void draw_pitch_label(int x,int y,int pitch,unsigned color){const char *n="C";int pc=pitch%12,oct=pitch/12-1;if(pc==1)n="C#";else if(pc==2)n="D";else if(pc==3)n="D#";else if(pc==4)n="E";else if(pc==5)n="F";else if(pc==6)n="F#";else if(pc==7)n="G";else if(pc==8)n="G#";else if(pc==9)n="A";else if(pc==10)n="A#";else if(pc==11)n="B";draw_small_text(x,y,n,color);draw_small_number(x+16,y,oct,color);}
+void draw_note_editor(void){
+    int rows=20,row,p,low=note_edit_pitch-10,i;int gy0=370,gy1=470,rowh=5;if(low<0)low=0;if(low+rows>128)low=108;
+    draw_small_text(8,348,"PIANO ROLL",15u);draw_small_text(88,348,"ENTER/N INSERT  DEL REMOVE  L LENGTH  ESC TIMELINE",7u);draw_small_text(8,359,"PITCH",7u);draw_pitch_label(44,359,note_edit_pitch,15u);draw_small_text(92,359,"LEN MS",7u);draw_small_number(134,359,(int)ms_from_frames(note_edit_length),10u);draw_small_text(220,359,"VEL",7u);draw_small_number(244,359,note_edit_velocity,10u);
+    for(row=0;row<rows;++row){p=low+row;{int y=gy1-row*rowh;unsigned c=(p==note_edit_pitch)?4u:((p%12==0)?3u:2u);narm_line(TL_X0,y,TL_X1,y,c);if(p%12==0)draw_pitch_label(5,y-3,p,7u);}}
+    for(i=0;i<note_count;++i)if(notes[i].track==selected_track&&notes[i].pitch>=low&&notes[i].pitch<low+rows){unsigned n0=notes[i].start,n1=n0+notes[i].length;if(n1>=view_start_frame&&n0<=view_start_frame+view_span_frames){int x0=timeline_x(n0),x1=timeline_x(n1),y=gy1-(notes[i].pitch-low)*rowh-3;if(x1<=x0)x1=x0+1;narm_fill_rect(x0,y,x1,y+2,(notes[i].pitch==note_edit_pitch&&playhead_frame>=n0&&playhead_frame<n1)?15u:10u);}}
+    if(playing){int px=timeline_x(playhead_frame),x0=px-1,x1=px+1;if(x0<TL_X0)x0=TL_X0;if(x1>TL_X1)x1=TL_X1;narm_fill_rect(TL_X0,gy0-4,TL_X1,gy0-1,1u);narm_line(TL_X0,gy0-2,TL_X1,gy0-2,8u);narm_fill_rect(x0,gy0-4,x1,gy0-1,PLAYHEAD_COLOR);}
+    else {int px=timeline_x(playhead_frame);narm_line(px,gy0,px,gy1,PLAYHEAD_COLOR);}
+}
+
+void draw_note_length_menu(void){unsigned c0=length_menu_choice==0?15u:10u,c1=length_menu_choice==1?15u:10u,c2=length_menu_choice==2?15u:10u;draw_small_text(8,350,"NOTE LENGTH",15u);draw_small_text(8,362,"UP/DOWN METHOD  LEFT/RIGHT VALUE  ENTER CHOOSE  ESC BACK",7u);if(length_menu_choice==0)narm_fill_rect(7,380,315,396,3u);draw_small_text(12,385,"MUSICAL",c0);draw_musical_name(92,385,musical_length_index,c0);draw_small_text(174,385,"BPM",c0);draw_small_number(200,385,(int)tempo_bpm,c0);draw_small_text(250,385,"MS",c0);draw_small_number(268,385,(int)ms_from_frames(musical_length_frames(musical_length_index)),c0);if(length_menu_choice==1)narm_fill_rect(7,402,315,418,3u);draw_small_text(12,407,"EXACT MS",c1);draw_small_number(92,407,(int)ms_from_frames(note_edit_length),c1);if(length_menu_choice==2)narm_fill_rect(7,424,315,440,3u);draw_small_text(12,429,"BETWEEN TWO POINTS",c2);draw_small_text(8,452,"MUSICAL PRESETS FOLLOW PROJECT 120 BPM; EXACT MS IS SAMPLE ACCURATE",7u);}
+void draw_ms_input(void){draw_small_text(8,350,"EXACT NOTE LENGTH IN MILLISECONDS",15u);draw_small_text(8,364,"TYPE NUMBER  ENTER ACCEPT  BACKSPACE EDIT  ESC CANCEL",7u);draw_small_text(8,384,"CURRENT",7u);draw_small_number(62,384,(int)ms_from_frames(note_edit_length),10u);draw_small_text(8,402,"NEW MS",10u);if(length_ms_digits>0)draw_small_text(62,402,length_ms_input,15u);else draw_small_text(62,402,"_",15u);}
+void draw_length_points(void){char a[12],b[12];format_time(length_point_a,a);format_time(playhead_frame,b);draw_small_text(8,350,"NOTE LENGTH BETWEEN TWO TIMELINE POINTS",15u);draw_small_text(8,364,"POINT A",7u);draw_small_text(58,364,a,15u);draw_small_text(150,364,"POINT B",7u);draw_small_text(200,364,b,PLAYHEAD_COLOR);draw_small_text(8,382,"MOVE LEFT/RIGHT TO POINT B, THEN ENTER. ESC CANCELS.",10u);draw_small_text(8,399,"AFTER ACCEPT, CURSOR RETURNS TO POINT A READY TO INSERT THE NOTE.",7u);}
+
+/* Playback touches only fixed-size pixel regions from the static timeline
+ * shadow.  Runtime cost is independent of project notes, clips, and voices. */
+void draw_playback_dynamic(void){
+    char tb[12];format_time(playhead_frame,tb);
+    narm_fill_rect(181,6,240,17,1u);draw_small_text(184,8,tb,PLAYHEAD_COLOR);
+    if(playback_cursor_x>=TL_X0)restore_timeline_pixels(playback_cursor_x,TIMELINE_CACHE_Y0,playback_cursor_x,TL_Y1);
+    if(playback_cursor_box_x>=TL_X0)restore_timeline_pixels(playback_cursor_box_x,TL_Y1-9,playback_cursor_box_x+55,TL_Y1);
+    draw_timeline_playhead();
+    if(focus_mode==FOCUS_NOTES){int px=timeline_x(playhead_frame),x0=px-1,x1=px+1;if(x0<TL_X0)x0=TL_X0;if(x1>TL_X1)x1=TL_X1;narm_fill_rect(TL_X0,366,TL_X1,369,1u);narm_line(TL_X0,368,TL_X1,368,8u);narm_fill_rect(x0,366,x1,369,PLAYHEAD_COLOR);}
+    narm_present();
+}
+
+void draw_ui(void){int dirty=dirty_count();char tb[12],endtb[12];playback_service_checkpoint();format_time(playhead_frame,tb);format_time(project_frames,endtb);narm_clear(0u);narm_fill_rect(0,0,639,24,1u);draw_small_text(8,8,"NARM STUDIO V0.14.2",15u);draw_small_text(137,8,playing?"PLAY":"PAUSE",playing?10u:8u);draw_small_text(184,8,tb,PLAYHEAD_COLOR);draw_small_text(250,8,"END",7u);draw_small_text(274,8,endtb,10u);draw_small_text(338,8,"WF",7u);draw_small_number(356,8,(int)waveform_bucket_frames,10u);draw_small_text(401,8,project_dirty?"DIRTY":"CACHED",project_dirty?14u:10u);if(project_dirty){draw_small_number(437,8,dirty,14u);}draw_small_text(470,8,"TRK",7u);draw_small_number(494,8,track_count,10u);draw_small_text(524,8,"P",7u);draw_small_text_n(536,8,project_named?project_name:"UNTITLED",17u,project_named?10u:14u);prepare_waveform_screen_cache(!playing);draw_timeline();playback_service_checkpoint();narm_fill_rect(2,342,637,477,1u);
+    if(focus_mode==FOCUS_PROJECT_NAME){draw_small_text(8,350,"SAVE NEW PROJECT",15u);draw_small_text(8,363,"TYPE PROJECT NAME   ENTER SAVE   ESC CANCEL",7u);draw_small_text(8,386,"NAME",10u);if(project_name_input_len>0)draw_small_text(48,386,project_name_input,15u);else draw_small_text(48,386,"_",15u);draw_small_text(8,408,"WILL CREATE",7u);draw_small_text(76,408,"/NARMStudio/<name>/",10u);draw_small_text(8,428,"AFTER THIS, P SAVES INTO THE SAME FOLDER.",7u);
+    } else if(focus_mode==FOCUS_PROJECT_BROWSER){int i;draw_small_text(8,350,"LOAD PROJECT FROM /NARMStudio",15u);draw_small_text(8,362,"UP/DOWN SELECT   ENTER LOAD   ESC CANCEL",7u);for(i=0;i<10&&project_browser_first+i<project_browser_count;++i){int bi=project_browser_first+i,y=380+i*9;if(bi==project_browser_selected)narm_fill_rect(7,y-1,390,y+7,3u);draw_small_text(10,y,project_browser_names[bi],bi==project_browser_selected?15u:10u);}if(project_browser_count==0)draw_small_text(10,382,"NO SAVED PROJECTS FOUND",12u);
+    } else if(focus_mode==FOCUS_BROWSER){int i;draw_small_text(8,350,"LOAD WAV FROM SD ROOT",15u);draw_small_text(8,362,"UP/DOWN SELECT   ENTER LOAD   ESC CANCEL",7u);for(i=0;i<10&&browser_first+i<browser_count;++i){int bi=browser_first+i,y=380+i*9;if(bi==browser_selected)narm_fill_rect(7,y-1,390,y+7,3u);draw_small_text(10,y,browser_names[bi],bi==browser_selected?15u:10u);}if(browser_count==0)draw_small_text(10,382,"NO WAV FILES FOUND",12u);
+    } else if(focus_mode==FOCUS_ADD){draw_small_text(8,350,"ADD TRACK",15u);draw_small_text(8,362,"UP/DOWN CHOOSE   ENTER ADD   ESC CANCEL",7u);if(add_choice==0)narm_fill_rect(8,382,150,396,3u);draw_small_text(12,386,"SYNTH TRACK",15u);if(add_choice==1)narm_fill_rect(8,404,150,418,3u);draw_small_text(12,408,"AUDIO TRACK",15u);
+    } else if(focus_mode==FOCUS_NOTE_LENGTH){draw_note_length_menu();
+    } else if(focus_mode==FOCUS_MS_INPUT){draw_ms_input();
+    } else if(focus_mode==FOCUS_LENGTH_POINTS){draw_length_points();
+    } else if(focus_mode==FOCUS_NOTES&&selected_track<track_count&&tracks[selected_track].type==TRACK_SYNTH){draw_note_editor();
+    } else if(focus_mode==FOCUS_SYNTH&&selected_track<track_count&&tracks[selected_track].type==TRACK_SYNTH){struct SynthPatch *p=&tracks[selected_track].synth;draw_small_text(8,350,"SYNTH PATCH",15u);draw_small_text(8,362,"UP/DOWN SELECT   LEFT/RIGHT CHANGE   TAB TIMELINE",7u);draw_param_cell(12,382,"OSC1",p->wave1,wave_name(p->wave1),selected_param==0);draw_param_cell(170,382,"OSC2",p->wave2,wave_name(p->wave2),selected_param==1);draw_param_cell(328,382,"LVL1",p->level1,0,selected_param==2);draw_param_cell(486,382,"LVL2",p->level2,0,selected_param==3);draw_param_cell(12,419,"DETUNE",p->detune2,0,selected_param==4);draw_param_cell(170,419,"ATTACK",p->attack,0,selected_param==5);draw_param_cell(328,419,"SUSTAIN",p->sustain,0,selected_param==6);draw_param_cell(486,419,"RELEASE",p->release,0,selected_param==7);
+    } else {draw_small_text(8,350,"TIMELINE",15u);draw_small_text(8,363,"SPACE PLAY/PAUSE  LEFT/RIGHT CURSOR  Z/X ZOOM",10u);draw_small_text(8,376,"ENTER/N SYNTH NOTES  TAB SYNTH PATCH  W WAVE DETAIL",7u);draw_small_text(8,389,"ENTER ADD  DEL REMOVE  I IMPORT  E EXPORT  P SAVE  L LOAD  F2 NEW",7u);draw_small_text(8,410,"SELECTED",7u);if(selected_track<track_count){draw_small_number(62,410,selected_track+1,15u);draw_small_text(92,410,tracks[selected_track].type==TRACK_SYNTH?"SYNTH":"AUDIO",15u);if(tracks[selected_track].type==TRACK_SYNTH){int cnt=0,i;for(i=0;i<note_count;++i)if(notes[i].track==selected_track)++cnt;draw_small_text(150,410,"NOTES",7u);draw_small_number(186,410,cnt,10u);}}else draw_small_text(62,410,"ADD TRACK",15u);draw_small_text(8,424,"CURSOR FRAME",7u);draw_small_number(80,424,(int)playhead_frame,10u);draw_small_text(8,438,"STATUS",7u);if(status_text[0])draw_small_text(50,438,status_text,status_code<0?12u:10u);
+    }if(status_code<0){draw_small_text(430,463,"ERROR",12u);draw_small_number(466,463,status_code,12u);}else if(rendering){draw_small_text(430,463,"RENDER",15u);draw_small_number(472,463,render_percent,15u);draw_char1(493,463,'%',15u);}else draw_small_text(560,463,"READY",10u);playback_service_checkpoint();narm_present();playback_service_checkpoint();}
+
+void adjust_synth_selected(int dir){struct SynthPatch *p=&tracks[selected_track].synth;int old_release=p->release,i;if(selected_param==0){p->wave1+=dir;if(p->wave1<0)p->wave1=3;if(p->wave1>3)p->wave1=0;}else if(selected_param==1){p->wave2+=dir;if(p->wave2<0)p->wave2=3;if(p->wave2>3)p->wave2=0;}else if(selected_param==2){p->level1+=dir*1000;if(p->level1<0)p->level1=0;if(p->level1>32767)p->level1=32767;}else if(selected_param==3){p->level2+=dir*1000;if(p->level2<0)p->level2=0;if(p->level2>32767)p->level2=32767;}else if(selected_param==4){p->detune2+=dir;if(p->detune2<-32)p->detune2=-32;if(p->detune2>32)p->detune2=32;}else if(selected_param==5){p->attack+=dir*200;if(p->attack<0)p->attack=0;if(p->attack>22050)p->attack=22050;}else if(selected_param==6){p->sustain+=dir*1000;if(p->sustain<0)p->sustain=0;if(p->sustain>32767)p->sustain=32767;}else if(selected_param==7){p->release+=dir*500;if(p->release<0)p->release=0;if(p->release>44100)p->release=44100;}for(i=0;i<note_count;++i)if(notes[i].track==selected_track){unsigned tail=(unsigned)(old_release>p->release?old_release:p->release);mark_range_dirty(notes[i].start,notes[i].start+notes[i].length+tail);}}
+
+void move_selected_audio_clip(int dir){int ci;unsigned step=SAMPLE_RATE/4u;for(ci=0;ci<clip_count;++ci)if(clips[ci].enabled&&clips[ci].track==selected_track){unsigned old0=clips[ci].start,old1=old0+clips[ci].length;if(dir<0){if(clips[ci].start>step)clips[ci].start-=step;else clips[ci].start=0u;}else{unsigned target=clips[ci].start+step;ensure_project_capacity(target+clips[ci].length+SAMPLE_RATE);if(target+clips[ci].length<=MAX_PROJECT_FRAMES)clips[ci].start=target;}mark_range_dirty(old0,old1);mark_range_dirty(clips[ci].start,clips[ci].start+clips[ci].length);return;}}
+
+unsigned cursor_step_for_hold(unsigned key,unsigned action){unsigned base=view_span_frames/160u,held=0u,stage=0u,mul=1u;if(base<1u)base=1u;if(action==KEY_PRESS||cursor_hold_key!=key){cursor_hold_key=key;cursor_hold_start_ms=narm_millis();return base;}held=narm_millis()-cursor_hold_start_ms;if(held<=2000u)return base;stage=1u+(held-2000u)/500u;if(stage>8u)stage=8u;mul=1u<<stage;if(base>MAX_PROJECT_FRAMES/mul)return MAX_PROJECT_FRAMES;return base*mul;}
+void timeline_left_right(int dir,unsigned key,unsigned action){unsigned step=cursor_step_for_hold(key,action);if(playing){update_transport_cursor();narm_audio_stop_all();playing=0;}if(dir<0){if(playhead_frame>step)playhead_frame-=step;else playhead_frame=0u;}else{unsigned target=playhead_frame+step;if(target<playhead_frame||target>MAX_PROJECT_FRAMES)target=MAX_PROJECT_FRAMES;ensure_project_capacity(target+view_span_frames/4u+1u);playhead_frame=target;}keep_cursor_visible();}
+
+void pause_playback(void){if(!playing)return;update_transport_cursor();narm_audio_stop_all();playing=0;set_status("PAUSED");}
+
+/* Convert project-timeline frames to the native frame domain of a source WAV.
+ * Written without 64-bit arithmetic because NARMCC intentionally uses 32-bit integers.
+ */
+unsigned timeline_frames_to_rate(unsigned timeline_frames,unsigned native_rate){
+    unsigned seconds=timeline_frames/SAMPLE_RATE;
+    unsigned rem=timeline_frames%SAMPLE_RATE;
+    unsigned rate_q=native_rate/SAMPLE_RATE;
+    unsigned rate_r=native_rate%SAMPLE_RATE;
+    return seconds*native_rate + rem*rate_q + (rem*rate_r)/SAMPLE_RATE;
+}
+
+void start_playback(void){
+    unsigned render_end=project_audio_end(),wav_start_frame=0u;int r,dtrack=-1;const char *play_path=preview_path;
+    status_code=0;if(render_end<=1u){set_status("NO AUDIO TO PLAY");return;}
+    if(playhead_frame>=render_end){playhead_frame=0u;view_start_frame=0u;}
+
+    /* Zero-DSP fast path: one untouched WAV track needs no premix at all.
+     * The seek API wants a frame in the SOURCE WAV's native sample-rate domain,
+     * not a project-timeline frame.
+     */
+    dtrack=direct_audio_track_index();
+    if(dtrack>=0){
+        play_path=track_paths[dtrack];
+        wav_start_frame=timeline_frames_to_rate(playhead_frame,track_wavs[dtrack].sample_rate);
+        if(wav_start_frame>=track_wavs[dtrack].frames)wav_start_frame=0u;
+        set_status(wav_start_frame?"DIRECT WAV SEEK PLAYBACK":"DIRECT WAV PLAYBACK");
+    } else {
+        /* Normal editor playback uses the premixed preview. Its native rate is the
+         * project rate, so the editor cursor already IS the correct WAV frame.
+         */
+        refresh_dirty_from_hashes();if(project_dirty){r=render_dirty_regions();draw_ui();if(r<0)return;}
+        play_path=preview_path;
+        wav_start_frame=playhead_frame;
+        if(wav_start_frame>=render_end)wav_start_frame=0u;
+        if(!verify_preview_wav_header(render_end)){
+            build_wav_header_frames(render_end);
+            if(!file_write_exact(preview_path,wav_header,0u,44u,STORAGE_SD)||!verify_preview_wav_header(render_end)){
+                set_error(-22,"PREVIEW WAV HEADER INVALID");return;
+            }
+        }
+    }
+
+    /* Resolve the visible waveform into screen columns before audio owns the
+     * SD bandwidth. Playback redraws will reuse this memory-only cache. */
+    prepare_waveform_screen_cache(1);
+    if(!narm_audio_ready()){set_error(-20,"AUDIO OUTPUT NOT READY");return;}
+    if(wav_start_frame==0u)r=narm_audio_play_wav(0u,play_path);
+    else r=narm_audio_play_wav_from(0u,play_path,wav_start_frame);
+    if(r<0){set_error(-21,"WAV PLAYBACK START FAILED");return;}
+    playback_start_frame=playhead_frame;playback_end_frame=render_end;playback_start_micros=narm_micros();last_transport_draw_ms=narm_millis();playing=1;playback_starvation_events=0u;last_starvations=narm_audio_starvations();
+    if(dtrack<0)set_status(wav_start_frame?"PLAYING FROM CURSOR":"PLAYING");
+}
+void toggle_playback(void){if(playing)pause_playback();else start_playback();}
+
+int browser_scan(void){unsigned idx=0u,nlen,type;char name[BROWSER_NAME];int r;browser_count=0;browser_selected=0;browser_first=0;for(idx=0u;idx<512u&&browser_count<BROWSER_MAX;++idx){r=narm_dir_entry("/",idx,name,BROWSER_NAME,&nlen,&type,STORAGE_SD);if(r<=0)break;if(type==0u&&has_wav_ext(name)){str_copy_cap(browser_names[browser_count],name,BROWSER_NAME);++browser_count;}}return browser_count;}
+void open_browser(int target){browser_target_track=target;browser_scan();focus_mode=FOCUS_BROWSER;if(browser_count==0)set_status("NO WAV FILES IN SD ROOT");}
+void browser_accept(void){char path[MAX_PATH];int t,r,wfr;if(browser_count<=0)return;make_root_path(browser_names[browser_selected],path);if(browser_target_track<0){r=add_audio_track_path(path);if(r<0){if(r==-13)set_error(r,"WAV SAMPLE RATE MUST BE 44100 HZ");else if(r==-8)set_error(r,"WAV MUST BE 16-BIT PCM MONO/STEREO");else if(r==-10||r==-11||r==-12)set_error(r,"UNSUPPORTED WAVE_FORMAT_EXTENSIBLE");else set_error(r,"WAV IMPORT/PARSE FAILED");focus_mode=FOCUS_TIMELINE;return;}t=r;}else{t=browser_target_track;if(t<0||t>=track_count)return;{int ci;for(ci=0;ci<clip_count;++ci)if(clips[ci].enabled&&clips[ci].track==t){mark_range_dirty(clips[ci].start,clips[ci].start+clips[ci].length);clips[ci].enabled=0;}}str_copy_cap(track_paths[t],path,MAX_PATH);r=scan_wav_path(track_paths[t],&track_wavs[t]);if(r<=0){if(r==-13)set_error(r,"WAV SAMPLE RATE MUST BE 44100 HZ");else if(r==-8)set_error(r,"WAV MUST BE 16-BIT PCM MONO/STEREO");else set_error(r,"UNSUPPORTED WAV");focus_mode=FOCUS_TIMELINE;return;}{unsigned len=track_wavs[t].frames;if(len>MAX_PROJECT_FRAMES)len=MAX_PROJECT_FRAMES;add_clip(t,0u,0u,len,32767);}waveform_loaded_track=-1;}selected_track=t;focus_mode=FOCUS_TIMELINE;waveform_level=1;waveform_bucket_frames=128u;str_copy_cap(status_text,"BUILDING WAVEFORM",64u);status_code=0;draw_ui();wfr=build_waveform_cache_for_track(t);if(wfr<0){waveform_loaded_track=-1;waveform_ready=0;set_status("WAV LOADED - LIVE WAVEFORM MODE");}else set_status("WAV LOADED + WAVEFORM READY");}
+
+int copy_file(const char *src,const char *dst){unsigned size=0u,off=0u,take;if(narm_file_size(src,STORAGE_SD,&size)<0)return -1;if(!narm_file_create(dst,STORAGE_SD))return -2;while(off<size){take=sizeof(pcm_out);if(take>size-off)take=size-off;if(!file_read_exact(src,pcm_out,off,take,STORAGE_SD))return -3;if(!file_write_exact(dst,pcm_out,off,take,STORAGE_SD))return -4;off+=take;}return 0;}
+int export_mix(void){int r;refresh_dirty_from_hashes();if(project_dirty){render_percent=1;draw_ui();r=render_dirty_regions();if(r<0)return r;}r=copy_file(preview_path,export_path);if(r==0)set_status("EXPORTED TO PROJECT FOLDER / export.wav");return r;}
+
+int main(void){unsigned key,action,mods,ch;int redraw=1,transport_redraw=0,loaded;
+    status_text[0]=0;if(!narm_storage_mount(STORAGE_SD))status_code=-1;ensure_editor_dirs();set_unsaved_identity();init_default_project();loaded=0;if(project_browser_scan()>0){set_status("SAVED PROJECTS FOUND - PRESS L TO LOAD");}else if(narm_file_exists(legacy_project_path,STORAGE_SD)){loaded=load_project_path(legacy_project_path);if(loaded<0)set_error(loaded,"LEGACY PROJECT LOAD ERROR");else if(loaded>0){project_named=0;str_clear(project_name,PROJECT_NAME_MAX);build_missing_waveform_caches();set_status("LEGACY PROJECT LOADED - P TO NAME IT");}}
+    for(;;){
+        if(playing){
+            unsigned now,starv,redraw_elapsed,previous_view=view_start_frame;
+            /* Every ABI call already services the firmware. Keep playback
+             * cooperative without inserting a fixed delay before each frame. */
+            update_transport_cursor();
+            if(view_start_frame!=previous_view)redraw=1;
+            starv=narm_audio_starvations();
+            if(starv!=last_starvations){
+                playback_starvation_events+=starv-last_starvations;
+                last_starvations=starv;
+                set_status("AUDIO STREAM STARVATION DETECTED");
+                redraw=1;
+            }
+            now=narm_millis();
+            redraw_elapsed=(unsigned)(now-last_transport_draw_ms);
+            if(redraw_elapsed>=PLAYBACK_REDRAW_MS){
+                /* Advance by complete periods instead of resetting to now.
+                 * This prevents small loop delays from accumulating into a
+                 * progressively lower average refresh rate. */
+                last_transport_draw_ms+=(redraw_elapsed/PLAYBACK_REDRAW_MS)*PLAYBACK_REDRAW_MS;
+                transport_redraw=1;
+            }
+        }
+        if(redraw){draw_ui();redraw=0;transport_redraw=0;}
+        else if(transport_redraw){draw_playback_dynamic();transport_redraw=0;}
+        if(playing&&!narm_audio_active(0u)){unsigned rend=playback_end_frame;update_transport_cursor();playing=0;playhead_frame=rend;ensure_project_capacity(playhead_frame+SAMPLE_RATE);keep_cursor_visible();last_starvations=narm_audio_starvations();set_status("END");redraw=1;}
+        while(narm_next_key_event(&key,&action,&mods,&ch)>0){
+            if(action==KEY_RELEASE){if(key==cursor_hold_key){cursor_hold_key=0u;cursor_hold_start_ms=0u;}continue;}if(action!=KEY_PRESS&&action!=KEY_REPEAT)continue;
+            if(focus_mode==FOCUS_PROJECT_NAME){if(key==KEY_ESCAPE&&action==KEY_PRESS){focus_mode=FOCUS_TIMELINE;set_status("SAVE CANCELLED");redraw=1;}else if(key==KEY_BACKSPACE&&action==KEY_PRESS){if(project_name_input_len>0){--project_name_input_len;project_name_input[project_name_input_len]=0;}redraw=1;}else if(key==KEY_ENTER&&action==KEY_PRESS){accept_project_name();redraw=1;}else if(action==KEY_PRESS&&valid_project_name_char(ch)&&project_name_input_len+1<PROJECT_NAME_MAX&&!(project_name_input_len==0&&ch==' ')){project_name_input[project_name_input_len++]=(char)ch;project_name_input[project_name_input_len]=0;redraw=1;}continue;}
+            if(focus_mode==FOCUS_PROJECT_BROWSER){if(key==KEY_ESCAPE&&action==KEY_PRESS){focus_mode=FOCUS_TIMELINE;set_status("LOAD CANCELLED");redraw=1;}else if(key==KEY_UP){if(project_browser_count){--project_browser_selected;if(project_browser_selected<0)project_browser_selected=project_browser_count-1;if(project_browser_selected<project_browser_first)project_browser_first=project_browser_selected;if(project_browser_selected>=project_browser_first+10)project_browser_first=project_browser_selected-9;}redraw=1;}else if(key==KEY_DOWN){if(project_browser_count){++project_browser_selected;if(project_browser_selected>=project_browser_count)project_browser_selected=0;if(project_browser_selected<project_browser_first)project_browser_first=project_browser_selected;if(project_browser_selected>=project_browser_first+10)project_browser_first=project_browser_selected-9;}redraw=1;}else if(key==KEY_ENTER&&action==KEY_PRESS){project_browser_accept();redraw=1;}continue;}
+            if(focus_mode==FOCUS_BROWSER){if(key==KEY_ESCAPE&&action==KEY_PRESS){focus_mode=FOCUS_TIMELINE;set_status("IMPORT CANCELLED");redraw=1;}else if(key==KEY_UP){if(browser_count){--browser_selected;if(browser_selected<0)browser_selected=browser_count-1;if(browser_selected<browser_first)browser_first=browser_selected;if(browser_selected>=browser_first+10)browser_first=browser_selected-9;}redraw=1;}else if(key==KEY_DOWN){if(browser_count){++browser_selected;if(browser_selected>=browser_count)browser_selected=0;if(browser_selected<browser_first)browser_first=browser_selected;if(browser_selected>=browser_first+10)browser_first=browser_selected-9;}redraw=1;}else if(key==KEY_ENTER&&action==KEY_PRESS){browser_accept();redraw=1;}continue;}
+            if(focus_mode==FOCUS_ADD){if(key==KEY_ESCAPE&&action==KEY_PRESS){focus_mode=FOCUS_TIMELINE;redraw=1;}else if((key==KEY_UP||key==KEY_DOWN)&&action==KEY_PRESS){add_choice=1-add_choice;redraw=1;}else if(key==KEY_ENTER&&action==KEY_PRESS){if(add_choice==0){if(add_synth_track()<0){status_code=-92;set_status("TRACK LIMIT");}else set_status("EMPTY SYNTH TRACK - ENTER/N FOR NOTES");focus_mode=FOCUS_TIMELINE;}else open_browser(-1);redraw=1;}continue;}
+            if(focus_mode==FOCUS_NOTE_LENGTH){
+                if(key==KEY_ESCAPE&&action==KEY_PRESS){focus_mode=FOCUS_NOTES;redraw=1;continue;}
+                if(key==KEY_UP&&action==KEY_PRESS){--length_menu_choice;if(length_menu_choice<0)length_menu_choice=2;redraw=1;continue;}
+                if(key==KEY_DOWN&&action==KEY_PRESS){++length_menu_choice;if(length_menu_choice>2)length_menu_choice=0;redraw=1;continue;}
+                if((key==KEY_LEFT||key==KEY_RIGHT)&&length_menu_choice==0){cycle_musical_length(key==KEY_LEFT?-1:1);redraw=1;continue;}
+                if(key==KEY_ENTER&&action==KEY_PRESS){if(length_menu_choice==0){note_edit_length=musical_length_frames(musical_length_index);focus_mode=FOCUS_NOTES;set_status("MUSICAL LENGTH SET");}else if(length_menu_choice==1)begin_ms_input();else begin_length_points();redraw=1;continue;}
+                continue;
+            }
+            if(focus_mode==FOCUS_MS_INPUT){
+                if(key==KEY_ESCAPE&&action==KEY_PRESS){focus_mode=FOCUS_NOTE_LENGTH;redraw=1;continue;}
+                if(key==KEY_BACKSPACE&&action==KEY_PRESS){if(length_ms_digits>0){--length_ms_digits;length_ms_input[length_ms_digits]=0;}redraw=1;continue;}
+                if(key==KEY_ENTER&&action==KEY_PRESS){accept_ms_input();redraw=1;continue;}
+                if((action==KEY_PRESS||action==KEY_REPEAT)&&ch>='0'&&ch<='9'&&length_ms_digits<7){length_ms_input[length_ms_digits++]=(char)ch;length_ms_input[length_ms_digits]=0;redraw=1;continue;}
+                continue;
+            }
+            if(focus_mode==FOCUS_LENGTH_POINTS){
+                if(key==KEY_ESCAPE&&action==KEY_PRESS){playhead_frame=length_point_a;keep_cursor_visible();focus_mode=FOCUS_NOTE_LENGTH;set_status("POINT LENGTH CANCELLED");redraw=1;continue;}
+                if(key==KEY_LEFT){timeline_left_right(-1,key,action);redraw=1;continue;}
+                if(key==KEY_RIGHT){timeline_left_right(1,key,action);redraw=1;continue;}
+                if(key==KEY_ENTER&&action==KEY_PRESS){accept_length_points();redraw=1;continue;}
+                continue;
+            }
+            if(focus_mode==FOCUS_NOTES){
+                if(key==KEY_ESCAPE&&action==KEY_PRESS){focus_mode=FOCUS_TIMELINE;redraw=1;continue;}
+                if(key==KEY_TAB&&action==KEY_PRESS){focus_mode=FOCUS_SYNTH;redraw=1;continue;}
+                if(key==KEY_UP){if(note_edit_pitch<127)++note_edit_pitch;redraw=1;continue;}
+                if(key==KEY_DOWN){if(note_edit_pitch>0)--note_edit_pitch;redraw=1;continue;}
+                if(key==KEY_LEFT){timeline_left_right(-1,key,action);redraw=1;continue;}
+                if(key==KEY_RIGHT){timeline_left_right(1,key,action);redraw=1;continue;}
+                if((key==KEY_ENTER||key==KEY_N)&&action==KEY_PRESS){insert_note_here();redraw=1;continue;}
+                if((key==KEY_DELETE||key==KEY_BACKSPACE)&&action==KEY_PRESS){delete_note_here();redraw=1;continue;}
+                if(key==KEY_L&&action==KEY_PRESS){open_note_length_menu();redraw=1;continue;}
+                if(key==KEY_LBRACKET&&action==KEY_PRESS){adjust_note_length(-1);redraw=1;continue;}
+                if(key==KEY_RBRACKET&&action==KEY_PRESS){adjust_note_length(1);redraw=1;continue;}
+                if(key==KEY_SPACE&&action==KEY_PRESS){toggle_playback();redraw=1;continue;}
+                if(key==KEY_Z&&action==KEY_PRESS){set_timeline_zoom(-1);redraw=1;continue;}
+                if(key==KEY_X&&action==KEY_PRESS){set_timeline_zoom(1);redraw=1;continue;}
+                continue;
+            }
+            if(focus_mode==FOCUS_SYNTH){
+                if(key==KEY_ESCAPE&&action==KEY_PRESS){focus_mode=FOCUS_TIMELINE;redraw=1;continue;}
+                if(key==KEY_TAB&&action==KEY_PRESS){focus_mode=FOCUS_TIMELINE;redraw=1;continue;}
+                if(key==KEY_UP){--selected_param;if(selected_param<0)selected_param=PARAM_COUNT-1;redraw=1;continue;}
+                if(key==KEY_DOWN){++selected_param;if(selected_param>=PARAM_COUNT)selected_param=0;redraw=1;continue;}
+                if(key==KEY_LEFT){adjust_synth_selected(-1);redraw=1;continue;}
+                if(key==KEY_RIGHT){adjust_synth_selected(1);redraw=1;continue;}
+                if(key==KEY_N&&action==KEY_PRESS){focus_mode=FOCUS_NOTES;redraw=1;continue;}
+                if(key==KEY_SPACE&&action==KEY_PRESS){toggle_playback();redraw=1;continue;}
+                continue;
+            }
+            if(key==KEY_ESCAPE){narm_audio_stop_all();return 0;}
+            if(key==KEY_TAB&&action==KEY_PRESS){if(selected_track<track_count&&tracks[selected_track].type==TRACK_SYNTH)focus_mode=FOCUS_SYNTH;redraw=1;}
+            else if(key==KEY_UP){--selected_track;if(selected_track<0)selected_track=track_count;ensure_track_visible();redraw=1;}
+            else if(key==KEY_DOWN){++selected_track;if(selected_track>track_count)selected_track=0;ensure_track_visible();redraw=1;}
+            else if(key==KEY_LEFT){timeline_left_right(-1,key,action);redraw=1;}
+            else if(key==KEY_RIGHT){timeline_left_right(1,key,action);redraw=1;}
+            else if(key==KEY_SPACE&&action==KEY_PRESS){toggle_playback();redraw=1;}
+            else if(key==KEY_ENTER&&action==KEY_PRESS&&selected_track==track_count){add_choice=0;focus_mode=FOCUS_ADD;redraw=1;}
+            else if((key==KEY_ENTER||key==KEY_N)&&action==KEY_PRESS&&selected_track<track_count&&tracks[selected_track].type==TRACK_SYNTH){focus_mode=FOCUS_NOTES;redraw=1;}
+            else if((key==KEY_DELETE||key==KEY_BACKSPACE)&&action==KEY_PRESS&&selected_track<track_count){remove_track(selected_track);set_status("TRACK REMOVED");redraw=1;}
+            else if(key==KEY_F2&&action==KEY_PRESS){narm_audio_stop_all();playing=0;clear_temp_workspace();set_unsaved_identity();init_default_project();set_status("NEW EMPTY PROJECT - P TO NAME/SAVE");redraw=1;}
+            else if(key==KEY_I&&action==KEY_PRESS){if(selected_track<track_count&&tracks[selected_track].type==TRACK_AUDIO)open_browser(selected_track);else set_status("SELECT AUDIO TRACK OR ADD ONE");redraw=1;}
+            else if(key==KEY_E&&action==KEY_PRESS){status_code=export_mix();redraw=1;}
+            else if(key==KEY_R&&action==KEY_PRESS){mark_all_dirty();narm_file_delete(cache_meta_path,STORAGE_SD);set_status("ALL RENDER CHUNKS INVALIDATED");redraw=1;}
+            else if(key==KEY_P&&action==KEY_PRESS){status_code=save_project();redraw=1;}
+            else if(key==KEY_L&&action==KEY_PRESS){open_project_browser();redraw=1;}
+            else if(key==KEY_W&&action==KEY_PRESS){if(selected_track<track_count&&tracks[selected_track].type==TRACK_AUDIO&&track_wavs[selected_track].valid){int wr;waveform_level=(waveform_level+1)%WAVEFORM_LEVELS;waveform_bucket_frames=waveform_levels[waveform_level];wr=build_waveform_cache_for_track(selected_track);if(wr<0){waveform_loaded_track=-1;waveform_ready=0;set_status("WAVEFORM CACHE UNAVAILABLE - LIVE MODE");}}else set_status("SELECT AUDIO TRACK WITH WAV");redraw=1;}
+            else if(key==KEY_Z&&action==KEY_PRESS){set_timeline_zoom(-1);waveform_loaded_track=-1;redraw=1;}
+            else if(key==KEY_X&&action==KEY_PRESS){set_timeline_zoom(1);waveform_loaded_track=-1;redraw=1;}
+        }
+        if(playing)narm_yield();
+        else narm_sleep_ms(8u);
+    }
+}

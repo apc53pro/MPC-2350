@@ -1,0 +1,35 @@
+{
+  "format_version": "1.20.0",
+  "minecraft:entity": {
+    "description": {
+      "identifier": "tinycraft:zombie",
+      "is_spawnable": true,
+      "is_summonable": true
+    },
+    "components": {
+      "minecraft:type_family": { "family": ["monster", "zombie"] },
+      "minecraft:health": { "value": 20, "max": 20 },
+      "minecraft:collision_box": { "width": 0.6, "height": 1.8 },
+      "minecraft:movement": { "value": 0.23 },
+      "minecraft:navigation.walk": { "can_path_over_water": true },
+      "minecraft:behavior.melee_attack": { "priority": 3, "speed_multiplier": 1.0 },
+      "tinycraft:runtime": {
+        "entity_id": 2,
+        "behavior": "controller_aggressive_00",
+        "max_active": 2,
+        "hitbox": [0.30, 0.30],
+        "height": 1.80,
+        "eye_height": 1.62,
+        "render_radius": 1.25,
+        "lod_distance_sq": 144,
+        "ai_tick_ms": 96,
+        "move_speed": 0.00070,
+        "turn_speed": 0.0021,
+        "head_turn_speed": 0.0024,
+        "head_yaw_limit": 1.309,
+        "head_pitch_limit": 0.70,
+        "loot_table": "loot_tables/entities/zombie.json"
+      }
+    }
+  }
+}

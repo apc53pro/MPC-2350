@@ -1,0 +1,23 @@
+#ifndef TINYCRAFT_NARM_COMPAT_TCH
+#define TINYCRAFT_NARM_COMPAT_TCH
+
+/* VMCC compatibility used by TinyCraft v59.
+   These wrappers preserve the legacy array-sized file operations while using
+   the explicit NARM runtime API. */
+#define millis() narm_millis()
+#define rand32() narm_random_u32()
+#define sinf(value) narm_sin((value))
+#define cosf(value) narm_cos((value))
+
+#define key(scan_code, data_out, pressed_out) \
+    ((pressed_out) = (narm_ps2_key_down((scan_code), 0) > 0))
+
+#define sdFileRead(path, buffer, file_offset) \
+    narm_file_read((path), (buffer), (file_offset), sizeof(buffer), NARM_STORAGE_SD)
+#define sdFileWrite(path, buffer, file_offset) \
+    narm_file_write((path), (buffer), (file_offset), sizeof(buffer), NARM_STORAGE_SD)
+#define sdDirEntry(path, index, name_out, name_length_out, type_out) \
+    narm_dir_entry((path), (index), (name_out), sizeof(name_out), \
+                   &(name_length_out), &(type_out), NARM_STORAGE_SD)
+
+#endif

@@ -1,0 +1,241 @@
+/* Source GuiIngame / GuiInventory / supported RenderItem sprite path.
+ * Fixed-resolution RGB332 adaptation; converted assets only, never PNG decode.
+ * UI caches are private: terrain may overwrite the shared asset scratch later. */
+#ifdef MC10_PLAYER_FOUNDATION
+#define MC_UI_PIXEL_WORDS 10500
+#define MC_UI_MASK_WORDS 1400
+#define MC_UI_ICON_COUNT 48
+struct MCUISprite {int pixel;int mask;int width;int height;};
+struct MCUISprite mc_ui_sprites[6];
+uint mc_ui_pixels[MC_UI_PIXEL_WORDS];
+uint mc_ui_masks[MC_UI_MASK_WORDS];
+uint mc_ui_icon_pixels[MC_UI_ICON_COUNT*64];
+uint mc_ui_icon_masks[MC_UI_ICON_COUNT*8];
+int mc_ui_icon_ids[MC_UI_ICON_COUNT],mc_ui_icon_damage[MC_UI_ICON_COUNT];
+uint mc_ui_scratch_pixels[256],mc_ui_scratch_masks[32];
+int mc_ui_pixel_used,mc_ui_mask_used,mc_ui_icon_used,mc_player_ui_ready;
+int mc_hud_underwater,mc_hud_hardcore;
+uint mc_hud_ticks;
+struct MCJavaRandom mc_hud_random;
+#ifdef MC10_WORLD_SYSTEMS
+int mc_third_block_icon(struct MCItemStack *stack,int x,int y);
+void mc_third_inventory_preview(int left,int top,int mouse_x,int mouse_y);
+#endif
+
+int mc_ui_asset_mask(int x,int y)
+{int bit=y*(int)mc_asset_loaded_width+x;if(!mc_asset_loaded_mask_bytes)return 1;return (mc_asset_mask[bit>>5]&((uint)1<<(31-(bit&31))))!=0;}
+int mc_ui_crop_loaded(int index,int x,int y,int width,int height)
+{
+    int words=((width+3)/4)*height,mask_words=(width*height+31)/32,row,column,bit;char *output,*input;
+    struct MCUISprite *sprite=&mc_ui_sprites[index];
+    if(index<0||index>=6||x<0||y<0||x+width>(int)mc_asset_loaded_width||y+height>(int)mc_asset_loaded_height)return 0;
+    if(mc_ui_pixel_used+words>MC_UI_PIXEL_WORDS||mc_ui_mask_used+mask_words>MC_UI_MASK_WORDS)return 0;
+    sprite->pixel=mc_ui_pixel_used;sprite->mask=mc_ui_mask_used;sprite->width=width;sprite->height=height;
+    for(row=0;row<words;row=row+1)mc_ui_pixels[mc_ui_pixel_used+row]=0;
+    for(row=0;row<mask_words;row=row+1)mc_ui_masks[mc_ui_mask_used+row]=0;
+    output=(char *)&mc_ui_pixels[mc_ui_pixel_used];input=(char *)&mc_asset_pixels[0];
+    for(row=0;row<height;row=row+1)for(column=0;column<width;column=column+1)
+    {
+        output[row*((width+3)&~3)+column]=input[(y+row)*(((int)mc_asset_loaded_width+3)&~3)+x+column];
+        bit=row*width+column;if(mc_ui_asset_mask(x+column,y+row))mc_ui_masks[mc_ui_mask_used+(bit>>5)]=mc_ui_masks[mc_ui_mask_used+(bit>>5)]|((uint)1<<(31-(bit&31)));
+    }
+    mc_ui_pixel_used=mc_ui_pixel_used+words;mc_ui_mask_used=mc_ui_mask_used+mask_words;return 1;
+}
+void mc_ui_draw_sprite(int index,int x,int y)
+{struct MCUISprite *sprite=&mc_ui_sprites[index];narm_half_blit_masked(x,y,sprite->width,sprite->height,&mc_ui_pixels[sprite->pixel],&mc_ui_masks[sprite->mask]);}
+void mc_ui_draw_region(int index,int x,int y,int u,int v,int width,int height)
+{
+    struct MCUISprite *sprite=&mc_ui_sprites[index];int row,column,bit,source_bit,words=((width+3)/4)*height,mask_words=(width*height+31)/32;
+    char *out=(char *)&mc_ui_scratch_pixels[0],*input=(char *)&mc_ui_pixels[sprite->pixel];
+    if(width<=0||height<=0||words>256||mask_words>32||u<0||v<0||u+width>sprite->width||v+height>sprite->height)return;
+    for(row=0;row<words;row=row+1)mc_ui_scratch_pixels[row]=0;
+    for(row=0;row<mask_words;row=row+1)mc_ui_scratch_masks[row]=0;
+    for(row=0;row<height;row=row+1)for(column=0;column<width;column=column+1)
+    {out[row*((width+3)&~3)+column]=input[(v+row)*((sprite->width+3)&~3)+u+column];bit=row*width+column;source_bit=(v+row)*sprite->width+u+column;
+     if(mc_ui_masks[sprite->mask+(source_bit>>5)]&((uint)1<<(31-(source_bit&31))))mc_ui_scratch_masks[bit>>5]=mc_ui_scratch_masks[bit>>5]|((uint)1<<(31-(bit&31)));}
+    narm_half_blit_masked(x,y,width,height,&mc_ui_scratch_pixels[0],&mc_ui_scratch_masks[0]);
+}
+int mc_ui_cache_item(struct MCItemStack *stack)
+{
+    int index,tile,row,column,bit,x,y,r,g,b;uint color,tint;char *output,*input;
+    if(stack->count<=0)return 1;
+    tile=mc_item_icon(stack->id,stack->damage);if(tile<0)return 1;
+    for(index=0;index<mc_ui_icon_used;index=index+1)if(mc_ui_icon_ids[index]==stack->id&&mc_ui_icon_damage[index]==stack->damage)return 1;
+    if(mc_ui_icon_used==MC_UI_ICON_COUNT)return 0;index=mc_ui_icon_used;mc_ui_icon_used=index+1;
+    mc_ui_icon_ids[index]=stack->id;mc_ui_icon_damage[index]=stack->damage;
+    output=(char *)&mc_ui_icon_pixels[index*64];input=(char *)&mc_asset_pixels[0];x=(tile&15)*16;y=(tile>>4)*16;
+    for(row=0;row<8;row=row+1)mc_ui_icon_masks[index*8+row]=0;
+    tint=mc_menu_rgb888_to_rgb332(mc_item_icon_color(stack->id,stack->damage));
+    for(row=0;row<16;row=row+1)for(column=0;column<16;column=column+1)
+    {
+        bit=row*16+column;color=(uint)input[(y+row)*256+x+column]&255;
+        /* Same explicit RGB332 multiplication boundary as the terrain tint
+         * path, with source inventory colors rather than a guessed biome. */
+        r=((int)(color>>5)*(int)(tint>>5)+3)/7;
+        g=((int)((color>>2)&7)*(int)((tint>>2)&7)+3)/7;
+        b=((int)(color&3)*(int)(tint&3)+1)/3;output[bit]=(char)((r<<5)|(g<<2)|b);
+        if(mc_ui_asset_mask(x+column,y+row))mc_ui_icon_masks[index*8+(bit>>5)]=mc_ui_icon_masks[index*8+(bit>>5)]|((uint)1<<(31-(bit&31)));
+    }
+    return 1;
+}
+int mc_player_ui_icon(struct MCItemStack *stack,uint **pixels,uint **mask)
+{
+    int index;*pixels=0;*mask=0;if(stack->count<=0)return 0;
+    for(index=0;index<mc_ui_icon_used;index=index+1)if(mc_ui_icon_ids[index]==stack->id&&mc_ui_icon_damage[index]==stack->damage)
+    {*pixels=&mc_ui_icon_pixels[index*64];*mask=&mc_ui_icon_masks[index*8];return 1;}return 0;
+}
+int mc_player_ui_init(void)
+{
+    int i,terrain=0;mc_player_ui_ready=0;mc_ui_pixel_used=0;mc_ui_mask_used=0;mc_ui_icon_used=0;mc_hud_ticks=0;
+    if(!mc_asset_load_image("gui/inventory.png")||!mc_ui_crop_loaded(0,0,0,176,166))return 0;
+    if(!mc_asset_load_image("gui/gui.png")||!mc_ui_crop_loaded(1,0,0,182,22)||!mc_ui_crop_loaded(2,0,22,24,22))return 0;
+    if(!mc_asset_load_image("gui/icons.png")||!mc_ui_crop_loaded(3,0,0,80,54)||!mc_ui_crop_loaded(4,0,64,182,5)||!mc_ui_crop_loaded(5,0,69,182,5))return 0;
+    if(!mc_asset_load_image("gui/items.png")||mc_asset_loaded_width!=256||mc_asset_loaded_height!=256)return 0;
+    for(i=0;i<40;i=i+1)
+    {if(mc_inventory_slots[i].id>=256){if(!mc_ui_cache_item(&mc_inventory_slots[i]))return 0;}else if(mc_inventory_slots[i].count>0&&mc_item_icon(mc_inventory_slots[i].id,mc_inventory_slots[i].damage)>=0)terrain=1;}
+    if(terrain)
+    {
+        if(!mc_asset_load_image("terrain.png")||mc_asset_loaded_width!=256||mc_asset_loaded_height!=256)return 0;
+        for(i=0;i<40;i=i+1)if(mc_inventory_slots[i].id<256&&!mc_ui_cache_item(&mc_inventory_slots[i]))return 0;
+    }
+    mc_player_ui_ready=1;return 1;
+}
+void mc_player_ui_tick(void)
+{mc_hud_ticks=mc_hud_ticks+1;}
+void mc_ui_fill(int x,int y,int width,int height,uint rgb)
+{
+    if(width<=0||height<=0)return;
+    /* The generic native rectangle clips and uses inclusive end coordinates.
+     * One call preserves the source pixels without per-pixel service overhead. */
+    narm_half_fill_rect(x,y,x+width-1,y+height-1,mc_menu_rgb888_to_rgb332(rgb));
+}
+void mc_ui_draw_stack(struct MCItemStack *stack,int x,int y)
+{
+    uint *pixels,*mask;int damage,maximum,length,green;char count[16];
+    if(stack->count<=0)return;
+    if(mc_player_ui_icon(stack,&pixels,&mask))narm_half_blit_masked(x,y,16,16,pixels,mask);
+    else
+    {
+#ifdef MC10_WORLD_SYSTEMS
+        if(!mc_third_block_icon(stack,x,y))
+#endif
+        mc_menu_draw_string_raw("?",x+5,y+4,mc_menu_rgb888_to_rgb332(0xffff55)); /* Explicit unported visual. */
+    }
+    if(stack->count>1)
+    {count[0]=0;mc_world_append_int(count,16,stack->count);mc_menu_draw_string(count,x+17-mc_menu_font_width(count),y+9,0xffffff);}
+    maximum=mc_item_max_damage(stack->id);damage=stack->damage;
+    if(maximum>0&&damage>0)
+    {
+        /* Positive Java Math.round ratios, using exact integer arithmetic. */
+        length=(26*maximum-damage*26+maximum)/(2*maximum);green=(510*maximum-damage*510+maximum)/(2*maximum);
+        if(length<0)length=0;if(length>13)length=13;if(green<0)green=0;if(green>255)green=255;
+        mc_ui_fill(x+2,y+13,13,2,0);mc_ui_fill(x+2,y+13,12,1,((255-green)/4<<16)|16128);
+        mc_ui_fill(x+2,y+13,length,1,((255-green)<<16)|(green<<8));
+    }
+}
+void mc_hud_draw(void)
+{
+    int i,y,armor,hearty=mc_hud_hardcore?45:0,full,partial,xp,x;uint seed;char level[16];
+    if(!mc_player_ui_ready||!mc_inventory_ready)return;
+    mc_ui_draw_sprite(1,69,218);mc_ui_draw_sprite(2,68+mc_inventory_selected*20,217);
+    /* Original crosshair mask; white RGB332 is a presentation adaptation of
+     * its destination-invert blend (the API has no framebuffer readback). */
+    mc_ui_draw_region(3,153,113,0,0,16,16);
+    if(!mc_inventory_creative)
+    {
+        mc_ui_draw_sprite(4,69,211);xp=(int)(mc_inventory_xp_progress*183.0f);if(xp<0)xp=0;if(xp>182)xp=182;
+        if(xp>0)mc_ui_draw_region(5,69,211,0,0,xp,5);
+        armor=mc_inventory_armor_value();seed=mc_hud_ticks*312871;mc_java_random_seed_parts(&mc_hud_random,seed,(seed&0x80000000)?65535:0);
+        for(i=0;i<10;i=i+1)
+        {
+            if(armor>0)mc_ui_draw_region(3,69+i*8,191,i*2+1<armor?34:(i*2+1==armor?25:16),9,9,9);
+            y=201;if(mc_inventory_health<=4)y=y+mc_java_random_next_int_bound(&mc_hud_random,2);
+            mc_ui_draw_region(3,69+i*8,y,16,hearty,9,9);
+            if(i*2+1<=mc_inventory_health)mc_ui_draw_region(3,69+i*8,y,i*2+1<mc_inventory_health?52:61,hearty,9,9);
+        }
+        for(i=0;i<10;i=i+1)
+        {
+            y=201;if(mc_inventory_food_saturation<=0.0f&&mc_hud_ticks%(uint)(mc_inventory_food*3+1)==0)y=y+mc_java_random_next_int_bound(&mc_hud_random,3)-1;
+            mc_ui_draw_region(3,242-i*8,y,16,27,9,9);
+            if(i*2+1<=mc_inventory_food)mc_ui_draw_region(3,242-i*8,y,i*2+1<mc_inventory_food?52:61,27,9,9);
+        }
+        if(mc_hud_underwater)
+        {
+            full=(mc_inventory_air-2)*10;full=full>=0?(full+299)/300:full/300;
+            partial=mc_inventory_air*10;partial=partial>=0?(partial+299)/300:partial/300;partial=partial-full;
+            for(i=0;i<full+partial&&i<10;i=i+1)mc_ui_draw_region(3,242-i*8,191,i<full?16:25,18,9,9);
+        }
+    }
+    for(i=0;i<9;i=i+1)mc_ui_draw_stack(&mc_inventory_slots[i],72+i*20,221);
+    if(!mc_inventory_creative&&mc_inventory_xp_level>0)
+    {
+        level[0]=0;mc_world_append_int(level,16,mc_inventory_xp_level);x=(320-mc_menu_font_width(level))/2;
+        mc_menu_draw_string_raw(level,x+1,205,0);mc_menu_draw_string_raw(level,x-1,205,0);mc_menu_draw_string_raw(level,x,206,0);mc_menu_draw_string_raw(level,x,204,0);
+        mc_menu_draw_string_raw(level,x,205,mc_menu_rgb888_to_rgb332(8453920));
+    }
+}
+int mc_inventory_slot_x(int slot)
+{if(slot>=36)return 80;return 80+(slot%9)*18;}
+int mc_inventory_slot_y(int slot)
+{if(slot>=36)return 45+(39-slot)*18;if(slot<9)return 179;return 121+((slot-9)/9)*18;}
+int mc_inventory_hover_slot(void)
+{
+    int slot,x,y;for(slot=39;slot>=36;slot=slot-1){x=mc_inventory_slot_x(slot);y=mc_inventory_slot_y(slot);if(mc_menu_pointer_x>=x-1&&mc_menu_pointer_x<x+17&&mc_menu_pointer_y>=y-1&&mc_menu_pointer_y<y+17)return slot;}
+    for(slot=9;slot<45;slot=slot+1){x=mc_inventory_slot_x(slot>=36?slot-36:slot);y=mc_inventory_slot_y(slot>=36?slot-36:slot);if(mc_menu_pointer_x>=x-1&&mc_menu_pointer_x<x+17&&mc_menu_pointer_y>=y-1&&mc_menu_pointer_y<y+17)return slot>=36?slot-36:slot;}return -1;
+}
+void mc_inventory_draw(void)
+{
+    int slot,x,y;mc_options_draw_background();mc_ui_draw_sprite(0,72,37);
+#ifdef MC10_WORLD_SYSTEMS
+    mc_third_inventory_preview(72,37,mc_menu_pointer_x,mc_menu_pointer_y);
+#endif
+    for(slot=0;slot<40;slot=slot+1)mc_ui_draw_stack(&mc_inventory_slots[slot],mc_inventory_slot_x(slot),mc_inventory_slot_y(slot));
+    slot=mc_inventory_hover_slot();if(slot>=0)
+    {x=mc_inventory_slot_x(slot);y=mc_inventory_slot_y(slot);narm_half_line(x,y,x+15,y,255);narm_half_line(x,y+15,x+15,y+15,255);narm_half_line(x,y,x,y+15,255);narm_half_line(x+15,y,x+15,y+15,255);}
+    mc_menu_draw_string_raw("Crafting",158,53,mc_menu_rgb888_to_rgb332(4210752));
+    mc_menu_draw_string_raw("pending",162,94,mc_menu_rgb888_to_rgb332(0xaa0000));
+#ifndef MC10_WORLD_SYSTEMS
+    mc_menu_draw_string_raw("Preview",103,67,mc_menu_rgb888_to_rgb332(0xa0a0a0));mc_menu_draw_string_raw("pending",103,77,mc_menu_rgb888_to_rgb332(0xa0a0a0));
+#endif
+    mc_ui_draw_stack(&mc_inventory_carried,mc_menu_pointer_x-8,mc_menu_pointer_y-8);
+    mc_menu_draw_centered_string("Enter: left   Space: right   Shift: quick move",160,210,0xffffff);
+    if(mc_inventory_error==-4)mc_menu_draw_centered_string("Place the held stack before closing",160,224,0xffff55);
+    else if(mc_inventory_error==-3)mc_menu_draw_centered_string("Crafting / dropping are not implemented",160,224,0xffff55);
+    else mc_menu_draw_centered_string("? = item visual pending; changes are not saved",160,224,0xa0a0a0);
+    mc_menu_draw_pointer();narm_half_present();
+}
+int mc_inventory_close_key_held(void)
+{
+    int key,code=mc_options.key_codes[9];
+    if(narm_key_down(NARM_KEY_ESCAPE))return 1;
+    if(code<=0)return 0; /* No mouse-button binding is exposed by this adapter. */
+    for(key=4;key<256;key=key+1)if(mc_options_narm_to_lwjgl((uint)key)==code&&narm_key_down((uint)key))return 1;
+    return 0;
+}
+int mc_inventory_run(void)
+{
+    uint key,action,mods,character;int dirty=1,event,slot,blocked_enter,blocked_space,blocked_close;
+    if(!mc_player_ui_ready||!mc_inventory_ready)return 0;
+    if(mc_inventory_creative){mc_ui_draw_status("CREATIVE INVENTORY PORT PENDING");mc_wait_for_return();return 0;}
+    blocked_enter=narm_key_down(NARM_KEY_ENTER)>0;blocked_space=narm_key_down(NARM_KEY_SPACE)>0;blocked_close=1;
+    while(narm_next_key_event(&key,&action,&mods,&character)>0){}
+    while(1)
+    {
+        if(!narm_key_down(NARM_KEY_ENTER))blocked_enter=0;if(!narm_key_down(NARM_KEY_SPACE))blocked_space=0;
+        if(blocked_close&&!mc_inventory_close_key_held())blocked_close=0;
+        if(mc_menu_update_pointer_held(narm_millis()))dirty=1;
+        while(narm_next_key_event(&key,&action,&mods,&character)>0)
+        {
+            if(action!=NARM_KEY_ACTION_PRESS)continue;
+            if((key==NARM_KEY_ESCAPE||mc_options_narm_to_lwjgl(key)==mc_options.key_codes[9])&&!blocked_close)
+            {if(mc_inventory_can_close())return 1;dirty=1;}
+            else if((key==NARM_KEY_ENTER&&!blocked_enter)||(key==NARM_KEY_SPACE&&!blocked_space))
+            {slot=mc_inventory_hover_slot();if((narm_key_down(NARM_KEY_LEFT_SHIFT)||narm_key_down(NARM_KEY_RIGHT_SHIFT))&&slot>=0)mc_inventory_quick_transfer(slot);else mc_inventory_click(slot,key==NARM_KEY_SPACE);dirty=1;}
+        }
+        event=narm_poll_system_event();if(event==NARM_EVENT_CLOSE_REQUESTED)return -1;
+        if(dirty){mc_inventory_draw();dirty=0;}narm_sleep_ms(2);
+    }
+    return 1;
+}
+#endif
+

@@ -1,0 +1,104 @@
+/* Isolated actual-Thumb fixture. Production modules are included unchanged.
+ * Native math/blit ABI calls are intercepted by the CPU fixture; no firmware,
+ * graphics device, files or attached hardware are invoked. */
+#define MC10_WORLD_SYSTEMS 1
+#define NARM_STORAGE_SD 0
+int narm_file_read(char *name,void *data,int offset,int size,int storage){return -1;}
+int narm_half_blit(int x,int y,int width,int height,const uint *pixels){return 0;}
+float narm_sin(float value);
+float narm_cos(float value);
+#include "mc10_u64.tc"
+#include "mc10_java_double.tc"
+#include "mc10_fp64.tc"
+#include "mc10_math.tc"
+struct MCJDouble mc_tp_old_position[3],mc_tp_tick_position[3];
+#include "third_eye_getter.tc"
+struct ProbeInfo {uint world_time_lo;uint world_time_hi;int raining;int thundering;};
+struct ProbeWorld {struct ProbeInfo *info;};
+struct ProbeOptions {int anaglyph;};
+struct ProbePlayer {int block_x;int block_z;struct MCJDouble pos_y;};
+struct ProbeInfo probe_info;
+struct ProbeWorld mc_runtime_world;
+struct ProbeOptions mc_options;
+struct ProbePlayer mc_runtime_player;
+struct MCBiomeSample {int biome;float temperature;float rainfall;};
+float probe_temperature;
+int mc_biome_query(int x,int z,struct MCBiomeSample *sample)
+{sample->temperature=probe_temperature;return 1;}
+float mc_render_camera[18];
+uint mc_asset_pixels[19200];
+float mc_render_double_to_float(struct MCJDouble *value)
+{return mc_fp_to_f32(mc_fp_bits(value->lo,value->hi));}
+float narm_sin(float value){return mc_math_sin(value);}
+float narm_cos(float value){return mc_math_cos(value);}
+#include "mc10_cos_celestial.tc"
+#include "mc10_world_clock.tc"
+#include "mc10_sky.tc"
+uint probe_control[16];
+uint probe_input[128];
+uint probe_output[64];
+int main(void)
+{
+    int mode=(int)probe_control[0];int value;int i;
+    float *input=(float *)&probe_input[0];float partial;
+    if(mode==0)
+    {
+        probe_control[1]=(uint)&probe_input[0];probe_control[2]=(uint)&probe_output[0];
+        probe_control[3]=(uint)&mc_math_sine[0];probe_control[4]=(uint)&mc_sky_canvas[0];
+        probe_control[5]=(uint)&mc_sky_texture[0];probe_control[6]=(uint)&mc_sky_input[0];
+        probe_control[7]=(uint)&mc_sky_clip[0];probe_control[8]=(uint)&mc_sky_projected[0];
+        probe_control[9]=(uint)&mc_asset_pixels[0];probe_control[10]=(uint)&mc_render_camera[0];
+        return (int)&probe_control[0];
+    }
+    mc_fp_init();mc_runtime_world.info=&probe_info;
+    if(mode==1)
+    {
+        value=mc_fp_cos_celestial(mc_fp_bits(probe_input[0],probe_input[1]));
+        probe_output[0]=mc_fp_values[value].lo;probe_output[1]=mc_fp_values[value].hi;
+        probe_output[2]=(uint)mc_fp_error;return 0;
+    }
+    if(mode==2 || mode==6)
+    {
+        probe_info.world_time_lo=probe_input[0];probe_info.world_time_hi=probe_input[1];
+        partial=input[2];mc_world_rain_strength=input[3];mc_world_thunder_strength=input[4];
+        probe_temperature=input[5];mc_options.anaglyph=(int)probe_input[6];
+        mc_sky_angle=mc_world_celestial_angle(partial);
+        if(mode==6){mc_sky_ready=1;mc_sky_count=0;mc_sky_draw(partial);return 0;}
+        *((float *)&probe_output[0])=mc_sky_angle;probe_output[1]=(uint)mc_world_moon_phase();
+        probe_output[2]=(uint)mc_world_skylight_subtracted(partial);
+        *((float *)&probe_output[3])=mc_world_star_brightness(partial);
+        mc_sky_colors(partial);probe_output[4]=mc_sky_biome_color(probe_temperature);
+        *((float *)&probe_output[5])=mc_sky_red;*((float *)&probe_output[6])=mc_sky_green;
+        *((float *)&probe_output[7])=mc_sky_blue;
+        mc_world_clock_tick();probe_output[8]=probe_info.world_time_lo;
+        probe_output[9]=probe_info.world_time_hi;probe_output[10]=(uint)mc_world_skylight;
+        return 0;
+    }
+    if(mode==3)
+    {
+        mc_sky_triangle(0,1,2,(int)probe_input[0],probe_input[1],(int)probe_input[2]);return 0;
+    }
+    if(mode==4)
+    {
+        mc_sky_polygon((int)probe_input[0],(int)probe_input[1],probe_input[2],(int)probe_input[3]);return 0;
+    }
+    if(mode==5)
+    {
+        mc_sky_angle=input[7];mc_sky_sin=input[8];mc_sky_cos=input[9];
+        mc_sky_vertex(0,input[0],input[1],input[2],input[3],input[4],input[5],(int)probe_input[6]);return 0;
+    }
+    if(mode==7)
+    {probe_output[0]=mc_sky_rgb(input[0],input[1],input[2]);return 0;}
+    if(mode==8 || mode==9)
+    {
+        mc_tp_old_position[1].lo=probe_input[0];mc_tp_old_position[1].hi=probe_input[1];
+        mc_tp_tick_position[1].lo=probe_input[2];mc_tp_tick_position[1].hi=probe_input[3];
+        if(mode==8)
+        {mc_sky_red=input[5];mc_sky_green=input[6];mc_sky_blue=input[7];mc_sky_lower(input[4]);}
+        else
+        {value=mc_third_interpolated_eye_y(input[4]);probe_output[0]=mc_fp_values[value].lo;probe_output[1]=mc_fp_values[value].hi;}
+        return 0;
+    }
+    return 999;
+}
+

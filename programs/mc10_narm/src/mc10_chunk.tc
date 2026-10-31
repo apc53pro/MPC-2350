@@ -1,0 +1,225 @@
+/*
+ * Reproduction of the dependency-free Minecraft 1.0 NibbleArray behavior and
+ * read-only Chunk methods.  The fixed shifts 7 and 11 are the 128-high World
+ * values used by the original Chunk index expressions.
+ */
+
+struct MCNibbleArray {
+    char *data;
+    int chunk_size_y_shift;
+    int chunk_size_yz_shift;
+};
+
+struct MCChunk {
+    char *blocks;
+    struct MCNibbleArray *data;
+    struct MCNibbleArray *skylight_map;
+    struct MCNibbleArray *blocklight_map;
+    char *height_map;
+    int x_position;
+    int z_position;
+    uint last_update_lo;
+    uint last_update_hi;
+    int is_terrain_populated;
+    int has_entities;
+    int entity_count;
+    int tile_entity_count;
+    int tile_tick_count;
+};
+
+char mc_chunk_blocks[MC_CHUNK_BLOCK_COUNT];
+char mc_chunk_metadata[MC_CHUNK_NIBBLE_BYTES];
+char mc_chunk_skylight[MC_CHUNK_NIBBLE_BYTES];
+char mc_chunk_blocklight[MC_CHUNK_NIBBLE_BYTES];
+char mc_chunk_heightmap[256];
+
+struct MCNibbleArray mc_chunk_data;
+struct MCNibbleArray mc_chunk_skylight_map;
+struct MCNibbleArray mc_chunk_blocklight_map;
+struct MCChunk mc_chunk_test_chunk;
+struct MCU64 mc_chunk_seed_term_a;
+struct MCU64 mc_chunk_seed_term_b;
+struct MCU64 mc_chunk_seed_sum;
+struct MCU64 mc_chunk_seed_test_world;
+struct MCU64 mc_chunk_seed_test_salt;
+struct MCU64 mc_chunk_random_seed_value;
+struct MCJavaRandom mc_chunk_seed_test_random;
+
+/* NibbleArray(byte[] var1, int var2), adapted to caller-owned NARM storage. */
+void mc_nibble_array_bind(struct MCNibbleArray *array, char *data, int depth_bits)
+{
+    array->data = data;
+    array->chunk_size_y_shift = depth_bits;
+    array->chunk_size_yz_shift = depth_bits + 4;
+}
+
+uint mc_nibble_array_get(struct MCNibbleArray *array, int x, int y, int z)
+{
+    int index = x << array->chunk_size_yz_shift |
+                z << array->chunk_size_y_shift | y;
+    int byte_index = index >> 1;
+    int half = index & 1;
+    return half == 0 ? (uint)array->data[byte_index] & 15 :
+                       (uint)(array->data[byte_index] >> 4) & 15;
+}
+
+void mc_nibble_array_set(struct MCNibbleArray *array, int x, int y, int z,
+                         int value)
+{
+    int index = x << array->chunk_size_yz_shift |
+                z << array->chunk_size_y_shift | y;
+    int byte_index = index >> 1;
+    int half = index & 1;
+    if (half == 0)
+        array->data[byte_index] =
+            (char)((array->data[byte_index] & 240) | value & 15);
+    else
+        array->data[byte_index] =
+            (char)((array->data[byte_index] & 15) | (value & 15) << 4);
+}
+
+int mc_nibble_array_is_valid(struct MCNibbleArray *array)
+{
+    return array->data != 0;
+}
+
+/* Chunk(World, byte[], int, int), with World-owned allocations bound here. */
+void mc_chunk_bind(struct MCChunk *chunk, char *blocks, char *height_map,
+                   struct MCNibbleArray *data,
+                   struct MCNibbleArray *skylight_map,
+                   struct MCNibbleArray *blocklight_map,
+                   int x_position, int z_position)
+{
+    chunk->blocks = blocks;
+    chunk->height_map = height_map;
+    chunk->data = data;
+    chunk->skylight_map = skylight_map;
+    chunk->blocklight_map = blocklight_map;
+    chunk->x_position = x_position;
+    chunk->z_position = z_position;
+    chunk->last_update_lo = 0;
+    chunk->last_update_hi = 0;
+    chunk->is_terrain_populated = 0;
+    chunk->has_entities = 0;
+    chunk->entity_count = 0;
+    chunk->tile_entity_count = 0;
+    chunk->tile_tick_count = 0;
+}
+
+int mc_chunk_is_at_location(struct MCChunk *chunk, int x, int z)
+{
+    return x == chunk->x_position && z == chunk->z_position;
+}
+
+uint mc_chunk_get_height_value(struct MCChunk *chunk, int x, int z)
+{
+    return (uint)chunk->height_map[z << 4 | x] & 255;
+}
+
+uint mc_chunk_get_block_id(struct MCChunk *chunk, int x, int y, int z)
+{
+    return (uint)chunk->blocks[x << 11 | z << 7 | y] & 255;
+}
+
+uint mc_chunk_get_block_metadata(struct MCChunk *chunk, int x, int y, int z)
+{
+    return mc_nibble_array_get(chunk->data, x, y, z);
+}
+
+int mc_chunk_can_block_see_the_sky(struct MCChunk *chunk, int x, int y, int z)
+{
+    return y >= ((uint)chunk->height_map[z << 4 | x] & 255);
+}
+
+int mc_chunk_get_false(void)
+{
+    return 0;
+}
+
+/*
+ * Chunk.getRandomWithSeed(long).  Products cast to Java long only after the
+ * source expression casts them; earlier int products therefore wrap at 32
+ * bits exactly as they do on the JVM.
+ */
+void mc_chunk_get_random_seed(struct MCU64 *result, struct MCU64 *world_seed,
+                              int x_position, int z_position,
+                              struct MCU64 *salt)
+{
+    uint x = (uint)x_position;
+    uint z = (uint)z_position;
+    uint int_product;
+
+    result->lo = world_seed->lo;
+    result->hi = world_seed->hi;
+
+    int_product = x * x * (uint)4987142;
+    mc_u64_from_i32(&mc_chunk_seed_term_a, (int)int_product);
+    mc_u64_add(&mc_chunk_seed_sum, result, &mc_chunk_seed_term_a);
+    result->lo = mc_chunk_seed_sum.lo;
+    result->hi = mc_chunk_seed_sum.hi;
+
+    int_product = x * (uint)5947611;
+    mc_u64_from_i32(&mc_chunk_seed_term_a, (int)int_product);
+    mc_u64_add(&mc_chunk_seed_sum, result, &mc_chunk_seed_term_a);
+    result->lo = mc_chunk_seed_sum.lo;
+    result->hi = mc_chunk_seed_sum.hi;
+
+    int_product = z * z;
+    mc_u64_from_i32(&mc_chunk_seed_term_a, (int)int_product);
+    mc_u64_set(&mc_chunk_seed_term_b, 4392871, 0);
+    mc_u64_multiply(&mc_chunk_seed_term_a, &mc_chunk_seed_term_a,
+                    &mc_chunk_seed_term_b);
+    mc_u64_add(&mc_chunk_seed_sum, result, &mc_chunk_seed_term_a);
+    result->lo = mc_chunk_seed_sum.lo;
+    result->hi = mc_chunk_seed_sum.hi;
+
+    int_product = z * (uint)389711;
+    mc_u64_from_i32(&mc_chunk_seed_term_a, (int)int_product);
+    mc_u64_add(&mc_chunk_seed_sum, result, &mc_chunk_seed_term_a);
+    mc_u64_xor(result, &mc_chunk_seed_sum, salt);
+}
+
+void mc_chunk_get_random_with_seed(struct MCJavaRandom *random,
+                                   struct MCU64 *world_seed,
+                                   int x_position, int z_position,
+                                   struct MCU64 *salt)
+{
+    mc_chunk_get_random_seed(&mc_chunk_random_seed_value, world_seed,
+                             x_position, z_position, salt);
+    mc_java_random_seed_u64(random, &mc_chunk_random_seed_value);
+}
+
+int mc_chunk_self_test(void)
+{
+    int block_index = 3 << 11 | 9 << 7 | 64;
+
+    mc_nibble_array_bind(&mc_chunk_data, &mc_chunk_metadata[0], 7);
+    mc_nibble_array_bind(&mc_chunk_skylight_map, &mc_chunk_skylight[0], 7);
+    mc_nibble_array_bind(&mc_chunk_blocklight_map, &mc_chunk_blocklight[0], 7);
+    mc_chunk_bind(&mc_chunk_test_chunk, &mc_chunk_blocks[0],
+                  &mc_chunk_heightmap[0], &mc_chunk_data,
+                  &mc_chunk_skylight_map, &mc_chunk_blocklight_map, 12, -3);
+
+    mc_chunk_blocks[block_index] = (char)122;
+    mc_nibble_array_set(&mc_chunk_data, 3, 64, 9, 13);
+    mc_chunk_heightmap[9 << 4 | 3] = (char)65;
+
+    if (!mc_nibble_array_is_valid(&mc_chunk_data)) return 0;
+    if (!mc_chunk_is_at_location(&mc_chunk_test_chunk, 12, -3)) return 0;
+    if (mc_chunk_get_block_id(&mc_chunk_test_chunk, 3, 64, 9) != 122) return 0;
+    if (mc_chunk_get_block_metadata(&mc_chunk_test_chunk, 3, 64, 9) != 13) return 0;
+    if (mc_chunk_get_height_value(&mc_chunk_test_chunk, 3, 9) != 65) return 0;
+    if (!mc_chunk_can_block_see_the_sky(&mc_chunk_test_chunk, 3, 65, 9)) return 0;
+    if (mc_chunk_can_block_see_the_sky(&mc_chunk_test_chunk, 3, 64, 9)) return 0;
+    if (mc_chunk_get_false()) return 0;
+
+    mc_u64_set(&mc_chunk_seed_test_world, 0xffffffff, 0xffffffff);
+    mc_u64_set(&mc_chunk_seed_test_salt, 0, 0x80000000);
+    mc_chunk_get_random_with_seed(&mc_chunk_seed_test_random,
+                                  &mc_chunk_seed_test_world,
+                                  50000, -70000, &mc_chunk_seed_test_salt);
+    if (mc_chunk_random_seed_value.lo != 0x0197c0df) return 0;
+    if (mc_chunk_random_seed_value.hi != 0x80097148) return 0;
+    if (mc_java_random_next_u32(&mc_chunk_seed_test_random) != 0xc780d44b) return 0;
+    return 1;
+}

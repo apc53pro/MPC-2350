@@ -1,0 +1,323 @@
+/* Minecraft 1.0 GenLayer behavior, bounded regional evaluator.
+ * Inputs/outputs and PRNG order are checked against the user's Java oracle.
+ * The source allocates and crops expanded zoom images. Here each requested
+ * output cell replays its independent 2x2/4x4 cell PRNG, avoiding those images.
+ * Call only outside a physics/render expression: Voronoi uses mc_fp temporaries.
+ * Caller supplies temporary int workspace; no heap, retained map or save writes.
+ */
+#ifdef MC10_WORLD_SYSTEMS
+#define MC_BIOME_NODES 64
+struct MCBiomeLayer {
+    int kind; int parent; int auxiliary; int parameter;
+    struct MCU64 base; struct MCU64 world;
+};
+struct MCBiomeLayer mc_biome_layers[MC_BIOME_NODES];
+int mc_biome_layer_count;
+int mc_biome_roots[4]; /* low-resolution biomes, Voronoi, temperature, rainfall */
+int *mc_biome_work;
+int mc_biome_work_capacity;
+int mc_biome_work_used;
+int mc_biome_work_peak;
+int mc_biome_error;
+char mc_biome_seeded[MC_BIOME_NODES];
+uint mc_biome_work_cells;
+uint mc_biome_yields;
+int mc_biome_yield(void); /* caller: 1 continue, 0 cancel; no nested FP/query */
+int mc_biome_scratch[3072];
+int mc_biome_cached[768];
+int mc_biome_cached_x;
+int mc_biome_cached_z;
+int mc_biome_cached_valid;
+struct MCBiomeSample {int biome;float temperature;float rainfall;};
+
+/* Numeric kinds: initial island, fuzzy zoom, island, zoom, snow, mushroom,
+ * river init, river, smooth, biome selection, temperature, rainfall,
+ * smooth climate zoom, temperature mix, rainfall mix, mushroom shore,
+ * river mix, Voronoi. Climate values are Java float*65536 truncated to int. */
+int mc_biome_climate(int biome,int rainfall)
+{
+    int temperatures[16]={32768,52428,131072,13107,45875,19660,52428,32768,
+                          131072,32768,0,0,0,0,58982,58982};
+    int rains[16]={32768,26214,0,19660,52428,52428,58982,32768,
+                  0,32768,32768,32768,32768,32768,65536,65536};
+    if(biome<0 || biome>15){mc_biome_error=3;return 0;}
+    return rainfall?rains[biome]:temperatures[biome];
+}
+void mc_biome_step(struct MCU64 *value,struct MCU64 *addition)
+{
+    struct MCU64 multiplier;struct MCU64 increment;struct MCU64 temporary;
+    mc_u64_set(&multiplier,0x4c957f2d,0x5851f42d);
+    mc_u64_set(&increment,0xf767814f,0x14057b7e);
+    mc_u64_multiply(&temporary,value,&multiplier);
+    mc_u64_add(&temporary,&temporary,&increment);
+    mc_u64_multiply(value,value,&temporary);
+    mc_u64_add(value,value,addition);
+}
+int mc_biome_node(int kind,int parent,int auxiliary,int parameter,int seed)
+{
+    int n=mc_biome_layer_count;struct MCU64 initial;int i;
+    if(n>=MC_BIOME_NODES){mc_biome_error=1;return 0;}
+    mc_biome_layer_count=n+1;
+    mc_biome_layers[n].kind=kind;mc_biome_layers[n].parent=parent;
+    mc_biome_layers[n].auxiliary=auxiliary;mc_biome_layers[n].parameter=parameter;
+    mc_u64_from_i32(&initial,seed);
+    mc_biome_layers[n].base.lo=initial.lo;mc_biome_layers[n].base.hi=initial.hi;
+    for(i=0;i<3;i=i+1)mc_biome_step(&mc_biome_layers[n].base,&initial);
+    mc_u64_set(&mc_biome_layers[n].world,0,0);
+    return n;
+}
+void mc_biome_seed_node(int n,struct MCU64 *seed)
+{
+    int i;
+    if(mc_biome_seeded[n])return;
+    if(mc_biome_layers[n].parent>=0)mc_biome_seed_node(mc_biome_layers[n].parent,seed);
+    if(mc_biome_layers[n].kind==16)mc_biome_seed_node(mc_biome_layers[n].auxiliary,seed);
+    mc_biome_layers[n].world.lo=seed->lo;mc_biome_layers[n].world.hi=seed->hi;
+    for(i=0;i<3;i=i+1)mc_biome_step(&mc_biome_layers[n].world,&mc_biome_layers[n].base);
+    mc_biome_seeded[n]=1;
+}
+void mc_biome_seed(struct MCU64 *seed)
+{
+    int a;int river;int biome;int temperature;int rainfall;int i;
+    mc_biome_layer_count=0;mc_biome_error=0;mc_biome_cached_valid=0;
+    for(i=0;i<MC_BIOME_NODES;i=i+1)mc_biome_seeded[i]=0;
+    a=mc_biome_node(0,-1,-1,0,1);
+    a=mc_biome_node(1,a,-1,0,2000);a=mc_biome_node(2,a,-1,0,1);
+    a=mc_biome_node(3,a,-1,0,2001);a=mc_biome_node(2,a,-1,0,2);
+    a=mc_biome_node(4,a,-1,0,2);a=mc_biome_node(3,a,-1,0,2002);
+    a=mc_biome_node(2,a,-1,0,3);a=mc_biome_node(3,a,-1,0,2003);
+    a=mc_biome_node(2,a,-1,0,4);a=mc_biome_node(5,a,-1,0,5);
+    river=mc_biome_node(6,a,-1,0,100);
+    for(i=0;i<6;i=i+1)river=mc_biome_node(3,river,-1,0,1000+i);
+    river=mc_biome_node(7,river,-1,0,1);river=mc_biome_node(8,river,-1,0,1000);
+    biome=mc_biome_node(9,a,-1,0,200);
+    for(i=0;i<2;i=i+1)biome=mc_biome_node(3,biome,-1,0,1000+i);
+    temperature=mc_biome_node(10,biome,-1,0,0);
+    rainfall=mc_biome_node(11,biome,-1,0,0);
+    for(i=0;i<4;i=i+1)
+    {
+        biome=mc_biome_node(3,biome,-1,0,1000+i);
+        if(i==0){biome=mc_biome_node(2,biome,-1,0,3);biome=mc_biome_node(15,biome,-1,0,1000);}
+        temperature=mc_biome_node(12,temperature,-1,0,1000+i);
+        temperature=mc_biome_node(13,biome,temperature,i,0);
+        rainfall=mc_biome_node(12,rainfall,-1,0,1000+i);
+        rainfall=mc_biome_node(14,biome,rainfall,i,0);
+    }
+    biome=mc_biome_node(8,biome,-1,0,1000);
+    biome=mc_biome_node(16,biome,river,0,100);
+    for(i=0;i<2;i=i+1)
+    {
+        temperature=mc_biome_node(12,temperature,-1,0,1000+i);
+        rainfall=mc_biome_node(12,rainfall,-1,0,1000+i);
+    }
+    mc_biome_roots[0]=biome;mc_biome_roots[1]=mc_biome_node(17,biome,-1,0,10);
+    mc_biome_roots[2]=temperature;mc_biome_roots[3]=rainfall;
+    /* Mirrors the actual root initialization calls. Mix's auxiliary climate
+     * branch is deliberately NOT traversed by the inherited seed initializer. */
+    mc_biome_seed_node(biome,seed);mc_biome_seed_node(temperature,seed);
+    mc_biome_seed_node(rainfall,seed);mc_biome_seed_node(mc_biome_roots[1],seed);
+}
+void mc_biome_chunk_seed(int n,int x,int z,struct MCU64 *state)
+{
+    struct MCU64 coordinate;int i;
+    state->lo=mc_biome_layers[n].world.lo;state->hi=mc_biome_layers[n].world.hi;
+    for(i=0;i<4;i=i+1)
+    {mc_u64_from_i32(&coordinate,(i&1)?z:x);mc_biome_step(state,&coordinate);}
+}
+int mc_biome_next(int n,struct MCU64 *state,int bound)
+{
+    uint lo=(state->lo>>24)|(state->hi<<8);uint hi=state->hi>>24;
+    uint carry;uint remainder;int negative=(state->hi&0x80000000)!=0;
+    if(negative){hi=hi|0xffffff00;lo=~lo+1;carry=lo==0;hi=~hi+carry;}
+    remainder=((hi%(uint)bound)*((0xffffffff%(uint)bound+1)%(uint)bound)+lo%(uint)bound)%(uint)bound;
+    mc_biome_step(state,&mc_biome_layers[n].world);
+    if(negative && remainder!=0)return bound-(int)remainder;
+    return (int)remainder;
+}
+int mc_biome_allocate(int count)
+{
+    int at=mc_biome_work_used;
+    if(count<0 || at+count>mc_biome_work_capacity){mc_biome_error=2;return 0;}
+    mc_biome_work_used=at+count;
+    if(mc_biome_work_used>mc_biome_work_peak)mc_biome_work_peak=mc_biome_work_used;
+    return at;
+}
+int mc_biome_majority(int n,struct MCU64 *state,int a,int b,int c,int d)
+{
+    int choice;
+    if(b==c && c==d)return b;
+    if(a==b && a==c)return a;
+    if(a==b && a==d)return a;
+    if(a==c && a==d)return a;
+    if(a==b && c!=d)return a;
+    if(a==c && b!=d)return a;
+    if(a==d && b!=c)return a;
+    if(b==c && a!=d)return b;
+    if(b==d && a!=c)return b;
+    if(c==d && a!=b)return c;
+    choice=mc_biome_next(n,state,4);
+    return choice==0?a:(choice==1?b:(choice==2?c:d));
+}
+int mc_biome_voronoi(int n,int x,int z,int dx,int dz,int a,int b,int c,int d)
+{
+    struct MCU64 state;int k;int jitter[8];int px[4];int pz[4];int distances[4];
+    int ox;int oz;int vx;int vz;int scale;int base;
+    mc_fp_reset();scale=mc_fp_bits(0xcccccccd,0x400ccccc);base=mc_fp_i32(4);
+    for(k=0;k<4;k=k+1)
+    {
+        ox=k&1;oz=k>>1;mc_biome_chunk_seed(n,(x+ox)<<2,(z+oz)<<2,&state);
+        jitter[k*2]=mc_biome_next(n,&state,1024);jitter[k*2+1]=mc_biome_next(n,&state,1024);
+        px[k]=mc_fp_mul(mc_fp_sub(mc_fp_div(mc_fp_i32(jitter[k*2]),mc_fp_i32(1024)),D05),scale);
+        pz[k]=mc_fp_mul(mc_fp_sub(mc_fp_div(mc_fp_i32(jitter[k*2+1]),mc_fp_i32(1024)),D05),scale);
+        if(ox)px[k]=mc_fp_add(px[k],base);if(oz)pz[k]=mc_fp_add(pz[k],base);
+        vz=mc_fp_sub(mc_fp_i32(dz),pz[k]);vx=mc_fp_sub(mc_fp_i32(dx),px[k]);
+        distances[k]=mc_fp_add(mc_fp_mul(vz,vz),mc_fp_mul(vx,vx));
+    }
+    if(mc_fp_lt(distances[0],distances[1])&&mc_fp_lt(distances[0],distances[2])&&mc_fp_lt(distances[0],distances[3]))return a;
+    if(mc_fp_lt(distances[1],distances[0])&&mc_fp_lt(distances[1],distances[2])&&mc_fp_lt(distances[1],distances[3]))return b;
+    if(mc_fp_lt(distances[2],distances[0])&&mc_fp_lt(distances[2],distances[1])&&mc_fp_lt(distances[2],distances[3]))return c;
+    return d;
+}
+int mc_biome_evaluate(int n,int x,int z,int width,int height)
+{
+    int result=mc_biome_allocate(width*height);int keep=mc_biome_work_used;
+    int kind=mc_biome_layers[n].kind;int parent=mc_biome_layers[n].parent;
+    int source=0;int auxiliary=0;int sx=x;int sz=z;int sw=width;int sh=height;
+    int px;int pz;int i;int j;int index;int value;int a;int b;int c;int d;int e;
+    int north;int south;int west;int east;int choice;int amount;int count;
+    int lower;int right;int middle;int u;int v;int step;struct MCU64 state;
+    int allowed[6]={2,4,3,6,1,5};
+    if(mc_biome_error)return result;
+    if(kind==1 || kind==3 || kind==12){sx=x>>1;sz=z>>1;sw=(width>>1)+3;sh=(height>>1)+3;}
+    else if(kind==17){sx=(x-2)>>2;sz=(z-2)>>2;sw=(width>>2)+3;sh=(height>>2)+3;}
+    else if(kind==2 || kind==4 || kind==5 || kind==7 || kind==8 || kind==15)
+    {sx=x-1;sz=z-1;sw=width+2;sh=height+2;}
+    if(parent>=0)source=mc_biome_evaluate(parent,sx,sz,sw,sh);
+    if(kind==13 || kind==14 || kind==16)auxiliary=mc_biome_evaluate(mc_biome_layers[n].auxiliary,x,z,width,height);
+    if(mc_biome_error)return result;
+    for(j=0;j<height;j=j+1)for(i=0;i<width;i=i+1)
+    {
+        index=result+i+j*width;
+        if(kind==0 || kind==2 || kind==4 || kind==5 || kind==6 || kind==8 || kind==9)
+            mc_biome_chunk_seed(n,x+i,z+j,&state);
+        if(kind==0){value=mc_biome_next(n,&state,10)==0?1:0;if(x+i==0 && z+j==0)value=1;}
+        else if(kind==1 || kind==3 || kind==12 || kind==17)
+        {
+            step=kind==17?4:2;u=kind==17?(x-2+i)&3:(x+i)&1;v=kind==17?(z-2+j)&3:(z+j)&1;
+            px=kind==17?((x-2+i)>>2)-sx:((x+i)>>1)-sx;
+            pz=kind==17?((z-2+j)>>2)-sz:((z+j)>>1)-sz;
+            a=mc_biome_work[source+px+pz*sw];b=mc_biome_work[source+px+1+pz*sw];
+            c=mc_biome_work[source+px+(pz+1)*sw];d=mc_biome_work[source+px+1+(pz+1)*sw];
+            mc_biome_chunk_seed(n,(sx+px)*step,(sz+pz)*step,&state);
+            if(kind==17)value=mc_biome_voronoi(n,sx+px,sz+pz,u,v,a,b,c,d);
+            else
+            {
+                if(kind==12)
+                {
+                    lower=a+(c-a)*mc_biome_next(n,&state,256)/256;
+                    right=a+(b-a)*mc_biome_next(n,&state,256)/256;
+                    middle=a+(b-a)*mc_biome_next(n,&state,256)/256;
+                    e=c+(d-c)*mc_biome_next(n,&state,256)/256;
+                    middle=middle+(e-middle)*mc_biome_next(n,&state,256)/256;
+                }
+                else
+                {
+                    lower=mc_biome_next(n,&state,2)==0?a:c;
+                    right=mc_biome_next(n,&state,2)==0?a:b;
+                    if(kind==1){choice=mc_biome_next(n,&state,4);middle=choice==0?a:(choice==1?b:(choice==2?c:d));}
+                    else middle=mc_biome_majority(n,&state,a,b,c,d);
+                }
+                value=v?(u?middle:lower):(u?right:a);
+            }
+        }
+        else if(kind==2 || kind==4 || kind==5 || kind==7 || kind==8 || kind==15)
+        {
+            e=mc_biome_work[source+i+1+(j+1)*sw];
+            a=mc_biome_work[source+i+j*sw];b=mc_biome_work[source+i+2+j*sw];
+            c=mc_biome_work[source+i+(j+2)*sw];d=mc_biome_work[source+i+2+(j+2)*sw];
+            west=mc_biome_work[source+i+(j+1)*sw];east=mc_biome_work[source+i+2+(j+1)*sw];
+            north=mc_biome_work[source+i+1+j*sw];south=mc_biome_work[source+i+1+(j+2)*sw];value=e;
+            if(kind==2)
+            {
+                if(e==0 && (a!=0 || b!=0 || c!=0 || d!=0))
+                {
+                    count=1;choice=1;
+                    if(a!=0){if(mc_biome_next(n,&state,count)==0)choice=a;count=count+1;}
+                    if(b!=0){if(mc_biome_next(n,&state,count)==0)choice=b;count=count+1;}
+                    if(c!=0){if(mc_biome_next(n,&state,count)==0)choice=c;count=count+1;}
+                    if(d!=0){if(mc_biome_next(n,&state,count)==0)choice=d;count=count+1;}
+                    value=mc_biome_next(n,&state,3)==0?choice:(choice==12?10:0);
+                }
+                else if(e>0 && (a==0 || b==0 || c==0 || d==0))
+                {if(mc_biome_next(n,&state,5)==0)value=e==12?10:0;}
+            }
+            else if(kind==4){if(e!=0)value=mc_biome_next(n,&state,5)==0?12:1;}
+            else if(kind==5){if(e==0 && a==0 && b==0 && c==0 && d==0 && mc_biome_next(n,&state,100)==0)value=14;}
+            else if(kind==7){value=e!=0 && west!=0 && east!=0 && north!=0 && south!=0 && e==west && e==east && e==north && e==south?-1:7;}
+            else if(kind==8)
+            {
+                if(west==east && north==south)value=mc_biome_next(n,&state,2)==0?west:north;
+                else{if(west==east)value=west;if(north==south)value=north;}
+            }
+            else if(kind==15){if(e==14 && (west==0 || east==0 || north==0 || south==0))value=15;}
+        }
+        else
+        {
+            a=mc_biome_work[source+i+j*width];value=a;
+            if(kind==6)value=a>0?mc_biome_next(n,&state,2)+2:0;
+            else if(kind==9){if(a!=0 && a!=14)value=a==1?allowed[mc_biome_next(n,&state,6)]:12;}
+            else if(kind==10 || kind==11)value=mc_biome_climate(a,kind==11);
+            else if(kind==13 || kind==14)
+            {
+                b=mc_biome_work[auxiliary+i+j*width];amount=mc_biome_layers[n].parameter;
+                value=b+(mc_biome_climate(a,kind==14)-b)/(kind==13?amount*2+1:amount+1);
+            }
+            else if(kind==16)
+            {
+                b=mc_biome_work[auxiliary+i+j*width];
+                if(a!=0 && b>=0)value=a==12?11:((a==14 || a==15)?15:b);
+            }
+        }
+        mc_biome_work[index]=value;
+        mc_biome_work_cells=mc_biome_work_cells+1;
+        if((mc_biome_work_cells&63)==0)
+        {
+            mc_biome_yields=mc_biome_yields+1;
+            if(!mc_biome_yield()){mc_biome_error=4;return result;}
+        }
+    }
+    mc_biome_work_used=keep;return result;
+}
+int mc_biome_region(int output,int x,int z,int width,int height,int *destination,
+                    int *workspace,int workspace_ints)
+{
+    int at;int i;
+    if(output<0 || output>3 || width<1 || height<1 || width>16 || height>16)return 0;
+    mc_biome_work=workspace;mc_biome_work_capacity=workspace_ints;mc_biome_work_used=0;
+    mc_biome_work_peak=0;mc_biome_error=0;mc_biome_work_cells=0;mc_biome_yields=0;
+    at=mc_biome_evaluate(mc_biome_roots[output],x,z,width,height);
+    if(mc_biome_error)return 0;
+    for(i=0;i<width*height;i=i+1)destination[i]=mc_biome_work[at+i];
+    mc_biome_work=0;return 1;
+}
+int mc_biome_query(int x,int z,struct MCBiomeSample *sample)
+{
+    int tx=x>>4;int tz=z>>4;int index;int output;
+    if(!mc_biome_cached_valid || tx!=mc_biome_cached_x || tz!=mc_biome_cached_z)
+    {
+        mc_biome_cached_valid=0;
+        for(output=1;output<4;output=output+1)
+            if(!mc_biome_region(output,tx*16,tz*16,16,16,
+                mc_biome_cached+(output-1)*256,mc_biome_scratch,3072))return 0;
+        mc_biome_cached_x=tx;mc_biome_cached_z=tz;mc_biome_cached_valid=1;
+    }
+    index=(x&15)+(z&15)*16;
+    sample->biome=mc_biome_cached[index];
+    sample->temperature=(float)mc_biome_cached[index+256]/65536.0f;
+    sample->rainfall=(float)mc_biome_cached[index+512]/65536.0f;
+    if(sample->temperature>1.0f)sample->temperature=1.0f;
+    if(sample->rainfall>1.0f)sample->rainfall=1.0f;
+    return 1;
+}
+#endif
+

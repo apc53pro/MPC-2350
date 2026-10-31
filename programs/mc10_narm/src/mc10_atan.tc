@@ -1,0 +1,54 @@
+/* Finite binary64 atan adapter for source EntityPlayer cameraPitch.
+ * Algorithm/constants: Sun fdlibm s_atan.c, https://netlib.org/fdlibm/s_atan.c
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this software is freely
+ * granted, provided that this notice is preserved.
+ *
+ * Uses the existing integer IEEE-754 operations; no float approximation of
+ * Math.atan and no new firmware dependency. Like mc_fp64, input is finite.
+ */
+uint mc_atan_coefficients[22]={
+ 0x5555550d,0x3fd55555,0x9998ebc4,0xbfc99999,0x920083ff,0x3fc24924,
+ 0xfe231671,0xbfbc71c6,0xc54c206e,0x3fb745cd,0xaf749a6d,0xbfb3b0f2,
+ 0xa0d03d51,0x3fb10d66,0x52defd9a,0xbfadde2d,0x24760deb,0x3fa97b4b,
+ 0x2c6a6c2f,0xbfa2b444,0xe322da11,0x3f90ad3a};
+uint mc_atan_angles[16]={
+ 0x0561bb4f,0x3fddac67,0x54442d18,0x3fe921fb,0xd281f69b,0x3fef730b,0x54442d18,0x3ff921fb,
+ 0x222f65e2,0x3c7a2b7f,0x33145c07,0x3c81a626,0x7af0cbbd,0x3c700788,0x33145c07,0x3c91a626};
+
+int mc_atan_coefficient(int i)
+{return mc_fp_bits(mc_atan_coefficients[i*2],mc_atan_coefficients[i*2+1]);}
+int mc_atan_angle(int i)
+{return mc_fp_bits(mc_atan_angles[i*2],mc_atan_angles[i*2+1]);}
+int mc_fp_atan(int input)
+{
+    uint sign=mc_fp_values[input].hi>>31,high=mc_fp_values[input].hi&0x7fffffff;
+    int x=input,id=-1,z,w,even,odd,i,result;
+    if(high>=0x44100000)
+    {result=mc_fp_add(mc_atan_angle(3),mc_atan_angle(7));return sign?mc_fp_neg(result):result;}
+    if(high<0x3e200000)return input; /* Retains signed zero and tiny values. */
+    if(high>=0x3fdc0000)
+    {
+        x=mc_fp_abs(input);
+        if(high<0x3ff30000)
+        {
+            if(high<0x3fe60000)
+            {id=0;i=mc_fp_i32(2);x=mc_fp_div(mc_fp_sub(mc_fp_mul(i,x),D1),mc_fp_add(i,x));}
+            else{id=1;x=mc_fp_div(mc_fp_sub(x,D1),mc_fp_add(x,D1));}
+        }
+        else if(high<0x40038000)
+        {id=2;i=mc_fp_bits(0,0x3ff80000);x=mc_fp_div(mc_fp_sub(x,i),mc_fp_add(D1,mc_fp_mul(i,x)));}
+        else{id=3;x=mc_fp_div(mc_fp_neg(D1),x);}
+    }
+    z=mc_fp_mul(x,x);w=mc_fp_mul(z,z);
+    even=mc_atan_coefficient(10);
+    for(i=8;i>=0;i=i-2)even=mc_fp_add(mc_atan_coefficient(i),mc_fp_mul(w,even));
+    odd=mc_atan_coefficient(9);
+    for(i=7;i>=1;i=i-2)odd=mc_fp_add(mc_atan_coefficient(i),mc_fp_mul(w,odd));
+    even=mc_fp_mul(z,even);odd=mc_fp_mul(w,odd);
+    result=mc_fp_mul(x,mc_fp_add(even,odd));
+    if(id<0)return mc_fp_sub(x,result);
+    result=mc_fp_sub(mc_atan_angle(id),mc_fp_sub(mc_fp_sub(result,mc_atan_angle(id+4)),x));
+    return sign?mc_fp_neg(result):result;
+}

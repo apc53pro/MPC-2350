@@ -1,0 +1,54 @@
+void initRuntimeAssetTables()
+{
+    initTextureRegistry();
+    initBlockRegistry();
+    loadBinaryAssetCache();
+    if (asset_cache_loaded_blocks <= 0) initFallbackBlockRegistry();
+    if (asset_cache_loaded_entities <= 0) initFallbackEntityRegistry();
+    applyPigEntityDefinition();
+
+    initItemRegistry();
+    applyLoadedItemMeshesToItemRegistry();
+
+    runtime_tables_ready = 1;
+}
+
+uint *runtimeTexturePtr(int tex_id)
+{
+    return textureRegistryPtr(tex_id);
+}
+
+void selectRenderMeshTexturesFromRuntime(uint block_id)
+{
+    if (block_id < (uint)16)
+    {
+        if (blockDefs[(int)block_id].used != 0)
+        {
+            db_top_tex = runtimeTexturePtr(blockDefs[(int)block_id].tex_top);
+            db_bottom_tex = runtimeTexturePtr(blockDefs[(int)block_id].tex_bottom);
+            db_side_tex = runtimeTexturePtr(blockDefs[(int)block_id].tex_side);
+            return;
+        }
+    }
+    db_top_tex = textureRegistryPtr(TC_TEX_MISSING);
+    db_side_tex = textureRegistryPtr(TC_TEX_MISSING);
+    db_bottom_tex = textureRegistryPtr(TC_TEX_MISSING);
+}
+
+void initRenderMeshTextureTablesFromRuntime()
+{
+    gm_x = 0;
+    while (gm_x < 16)
+    {
+        render_mesh_top_tex_by_block[gm_x] = textureRegistryPtr(TC_TEX_MISSING);
+        render_mesh_bottom_tex_by_block[gm_x] = textureRegistryPtr(TC_TEX_MISSING);
+        render_mesh_side_tex_by_block[gm_x] = textureRegistryPtr(TC_TEX_MISSING);
+        if (blockDefs[gm_x].used != 0)
+        {
+            render_mesh_top_tex_by_block[gm_x] = runtimeTexturePtr(blockDefs[gm_x].tex_top);
+            render_mesh_bottom_tex_by_block[gm_x] = runtimeTexturePtr(blockDefs[gm_x].tex_bottom);
+            render_mesh_side_tex_by_block[gm_x] = runtimeTexturePtr(blockDefs[gm_x].tex_side);
+        }
+        gm_x = gm_x + 1;
+    }
+}

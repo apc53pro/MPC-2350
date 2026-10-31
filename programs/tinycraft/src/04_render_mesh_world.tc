@@ -1,0 +1,2590 @@
+void initCamera()
+{
+    /* Same projection scale style as the working texture demo. Geometry is
+       rendered in large units, so the near plane must not be a tiny 0.08. */
+    cam[12] = 260.0f;     /* focal_x */
+    cam[13] = 260.0f;     /* focal_y */
+    cam[14] = 160.0f;     /* screen center x */
+    cam[15] = 120.0f;     /* screen center y */
+    cam[16] = 64.0f;      /* near z in scaled render units */
+    cam[17] = 0.0f;       /* disable far clipping, same convention as demo */
+}
+
+void initHandCamera()
+{
+    hand_cam[0] = 1.0f; hand_cam[1] = 0.0f; hand_cam[2] = 0.0f; hand_cam[3] = 0.0f;
+    hand_cam[4] = 0.0f; hand_cam[5] = 1.0f; hand_cam[6] = 0.0f; hand_cam[7] = 0.0f;
+    hand_cam[8] = 0.0f; hand_cam[9] = 0.0f; hand_cam[10] = 1.0f; hand_cam[11] = 0.0f;
+    hand_cam[12] = 260.0f;
+    hand_cam[13] = 260.0f;
+    hand_cam[14] = 160.0f;
+    hand_cam[15] = 120.0f;
+    hand_cam[16] = 16.0f;
+    hand_cam[17] = 0.0f;
+}
+
+
+void updateCamera()
+{
+    cam_right_x = cos_yaw;
+    cam_right_z = 0.0f - sin_yaw;
+
+    cam_up_x = 0.0f - sin_yaw * sin_pitch;
+    cam_up_y = cos_pitch;
+    cam_up_z = 0.0f - cos_yaw * sin_pitch;
+
+    cam_px = (player_x * block_world_size) + (cam_right_x * cam_bob_x * block_world_size);
+    cam_py = (player_y + cam_bob_y + land_cam_y) * block_world_size;
+    cam_pz = (player_z * block_world_size) + (cam_right_z * cam_bob_x * block_world_size);
+
+    /* Right vector row. */
+    cam[0] = cam_right_x;
+    cam[1] = 0.0f;
+    cam[2] = cam_right_z;
+    cam[3] = 0.0f - cam_px * cam_right_x - cam_pz * cam_right_z;
+
+    /* Up vector row. */
+    cam[4] = cam_up_x;
+    cam[5] = cam_up_y;
+    cam[6] = cam_up_z;
+    cam[7] = 0.0f - cam_px * cam_up_x - cam_py * cam_up_y - cam_pz * cam_up_z;
+
+    /* Forward vector row. */
+    cam[8] = view_x;
+    cam[9] = view_y;
+    cam[10] = view_z;
+    cam[11] = 0.0f - cam_px * view_x - cam_py * view_y - cam_pz * view_z;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Packed far-render cache                                                   */
+/* ------------------------------------------------------------------------- */
+
+uint renderBlockAtCache(int x, int y, int z)
+{
+    rb_local_x = x - gm_chunk_x0;
+    rb_local_y = y - gm_section_y0;
+    rb_local_z = z - gm_chunk_z0;
+
+    if (y < 0) return (uint)0;
+    if (y >= 64) return (uint)0;
+
+    if ((rb_local_x < 0) || (rb_local_x >= 8) || (rb_local_z < 0) || (rb_local_z >= 8) || (rb_local_y < 0) || (rb_local_y >= 8))
+    {
+        return blockAtAbs(render_cache_origin_x + x, y, render_cache_origin_z + z);
+    }
+
+    rb_idx = (rb_local_z * 8) + rb_local_x;
+    rb_shift = rb_local_y << 2;
+    return (render_section_block[rb_idx] >> rb_shift) & (uint)15;
+}
+
+int renderBlockOccludesCubeAtCache(int x, int y, int z)
+{
+    rc_neighbor_block = renderBlockAtCache(x, y, z);
+    return blockRegistryOccludesCube(rc_neighbor_block);
+}
+
+uint renderFaceBitsAt(int x, int y, int z)
+{
+    rf_local_x = x - gm_chunk_x0;
+    rf_local_y = y - gm_section_y0;
+    rf_local_z = z - gm_chunk_z0;
+    if (rf_local_x < 0) return (uint)0;
+    if (rf_local_x >= 8) return (uint)0;
+    if (rf_local_z < 0) return (uint)0;
+    if (rf_local_z >= 8) return (uint)0;
+    if (rf_local_y < 0) return (uint)0;
+    if (rf_local_y >= 8) return (uint)0;
+
+    rf_idx = (rf_local_z * 8) + rf_local_x;
+    if (rf_local_y < 4)
+    {
+        rf_shift = rf_local_y << 3;
+        return (render_section_face_low[rf_idx] >> rf_shift) & (uint)63;
+    }
+
+    rf_shift = (rf_local_y - 4) << 3;
+    return (render_section_face_high[rf_idx] >> rf_shift) & (uint)63;
+}
+void clearRenderFaceBitAt(int x, int y, int z, uint bit)
+{
+    cf_local_x = x - gm_chunk_x0;
+    cf_local_y = y - gm_section_y0;
+    cf_local_z = z - gm_chunk_z0;
+    if (cf_local_x < 0) return;
+    if (cf_local_x >= 8) return;
+    if (cf_local_z < 0) return;
+    if (cf_local_z >= 8) return;
+    if (cf_local_y < 0) return;
+    if (cf_local_y >= 8) return;
+
+    cf_idx = (cf_local_z * 8) + cf_local_x;
+    if (cf_local_y < 4)
+    {
+        cf_shift = cf_local_y << 3;
+        rc_mask = ~((bit & (uint)63) << cf_shift);
+        render_section_face_low[cf_idx] = render_section_face_low[cf_idx] & rc_mask;
+        return;
+    }
+
+    cf_shift = (cf_local_y - 4) << 3;
+    rc_mask = ~((bit & (uint)63) << cf_shift);
+    render_section_face_high[cf_idx] = render_section_face_high[cf_idx] & rc_mask;
+}
+int greedyFaceMatches(int x, int y, int z, uint face, uint id)
+{
+    if (renderBlockAtCache(x, y, z) != id) return 0;
+    if ((renderFaceBitsAt(x, y, z) & face) == (uint)0) return 0;
+    return 1;
+}
+
+void clearRenderChunkHeads()
+{
+    render_chunk_i = 0;
+    while (render_chunk_i < 12288)
+    {
+        render_chunk_face_head[render_chunk_i] = -1;
+        render_chunk_i = render_chunk_i + 1;
+    }
+
+    render_chunk_i = 0;
+    while (render_chunk_i < 2048)
+    {
+        render_chunk_face_mask[render_chunk_i] = 0;
+        render_chunk_has_fast_faces[render_chunk_i] = 0;
+        render_chunk_i = render_chunk_i + 1;
+    }
+}
+
+void clearRenderCustomBlockLists()
+{
+    render_chunk_i = 0;
+    while (render_chunk_i < 2048)
+    {
+        render_custom_block_head[render_chunk_i] = -1;
+        render_chunk_i = render_chunk_i + 1;
+    }
+    render_custom_block_count = 0;
+    render_custom_block_free_head = -1;
+}
+
+void clearCustomBlocksForChunk(int chunk_id)
+{
+    render_custom_block_slot = render_custom_block_head[chunk_id];
+    while (render_custom_block_slot >= 0)
+    {
+        render_custom_block_next_slot = render_custom_block_next[render_custom_block_slot];
+        render_custom_block_next[render_custom_block_slot] = render_custom_block_free_head;
+        render_custom_block_free_head = render_custom_block_slot;
+        render_custom_block_slot = render_custom_block_next_slot;
+    }
+    render_custom_block_head[chunk_id] = -1;
+}
+
+void addCustomBlockForCurrentChunk(int wx, int y, int wz, uint b)
+{
+    if (render_custom_block_free_head >= 0)
+    {
+        render_custom_block_slot = render_custom_block_free_head;
+        render_custom_block_free_head = render_custom_block_next[render_custom_block_slot];
+    }
+    else
+    {
+        if (render_custom_block_count >= 1024) return;
+        render_custom_block_slot = render_custom_block_count;
+        render_custom_block_count = render_custom_block_count + 1;
+    }
+
+    render_custom_block_x[render_custom_block_slot] = wx;
+    render_custom_block_y[render_custom_block_slot] = y;
+    render_custom_block_z[render_custom_block_slot] = wz;
+    render_custom_block_id[render_custom_block_slot] = b;
+    render_custom_block_next[render_custom_block_slot] = render_custom_block_head[gm_chunk_id];
+    render_custom_block_head[gm_chunk_id] = render_custom_block_slot;
+    render_chunk_has_custom_model[gm_chunk_id] = 1;
+}
+
+void clearRenderChunkBuiltFlags()
+{
+    render_chunk_i = 0;
+    while (render_chunk_i < 2048)
+    {
+        render_chunk_built[render_chunk_i] = 0;
+        render_chunk_max_y[render_chunk_i] = -2;
+        render_chunk_has_edit[render_chunk_i] = 0;
+        render_chunk_has_custom_model[render_chunk_i] = 0;
+        render_chunk_has_fast_faces[render_chunk_i] = 0;
+        render_chunk_face_mask[render_chunk_i] = 0;
+        render_bg_greedy_dirty[render_chunk_i] = 0;
+        render_chunk_dirty[render_chunk_i] = 0;
+        render_chunk_dirty_edit[render_chunk_i] = 0;
+        render_chunk_fast_edit[render_chunk_i] = 0;
+        render_chunk_edit_head[render_chunk_i] = -1;
+        render_chunk_visible_stamp[render_chunk_i] = 0;
+        render_chunk_i = render_chunk_i + 1;
+    }
+
+    clearRenderCustomBlockLists();
+    render_bg_greedy_count = 0;
+    render_bg_greedy_pick = -1;
+    render_dead_mesh_count = 0;
+    render_mesh_compact_needed = 0;
+
+    render_chunk_i = 0;
+    while (render_chunk_i < 256)
+    {
+        render_xz_visible_stamp[render_chunk_i] = 0;
+        render_chunk_natural_max_section[render_chunk_i] = -2;
+        render_chunk_i = render_chunk_i + 1;
+    }
+}
+
+int naturalMaxSectionForRenderChunk(int cx, int cz)
+{
+    /* Compute the highest generated block that can naturally appear inside this
+       8x8 render chunk. This follows the terrain/tree generator itself, so
+       changing terrain height, trunk height, or leaf shape no longer requires
+       changing a separate render-height constant. */
+    rn_x0 = render_cache_origin_x + cx * 8;
+    rn_z0 = render_cache_origin_z + cz * 8;
+    rn_x1 = rn_x0 + 7;
+    rn_z1 = rn_z0 + 7;
+
+    if ((cx * 8) >= render_cache_width) return -1;
+    if ((cz * 8) >= render_cache_width) return -1;
+    if (((cx * 8) + 7) >= render_cache_width) rn_x1 = render_cache_origin_x + render_cache_width - 1;
+    if (((cz * 8) + 7) >= render_cache_width) rn_z1 = render_cache_origin_z + render_cache_width - 1;
+
+    rn_max_y = -1;
+
+    rn_z = rn_z0;
+    while (rn_z <= rn_z1)
+    {
+        rn_x = rn_x0;
+        while (rn_x <= rn_x1)
+        {
+            render_column_info_word = naturalColumnInfoAtAbs(rn_x, rn_z);
+            rn_h = (int)(render_column_info_word & (uint)63);
+            if (rn_h > rn_max_y) rn_max_y = rn_h;
+            rn_x = rn_x + 1;
+        }
+        rn_z = rn_z + 1;
+    }
+
+    /* Trees/leaves can extend into this chunk from bases up to two blocks
+       outside its x/z bounds. Include only tree blocks that actually overlap
+       this chunk, not every nearby tree blindly. */
+    rn_tree_z = rn_z0 - 2;
+    while (rn_tree_z <= (rn_z1 + 2))
+    {
+        rn_tree_x = rn_x0 - 2;
+        while (rn_tree_x <= (rn_x1 + 2))
+        {
+            render_column_tree_word = naturalColumnInfoAtAbs(rn_tree_x, rn_tree_z);
+            if ((render_column_tree_word & ((uint)1 << 8)) != (uint)0)
+            {
+                rn_h = (int)(render_column_tree_word & (uint)63);
+                rn_trunk_h = 3;
+                if ((render_column_tree_word & ((uint)1 << 9)) != (uint)0) rn_trunk_h = 4;
+
+                if ((rn_tree_x >= rn_x0) && (rn_tree_x <= rn_x1) && (rn_tree_z >= rn_z0) && (rn_tree_z <= rn_z1))
+                {
+                    rn_leaf_y = rn_h + rn_trunk_h;
+                    if (rn_leaf_y > rn_max_y) rn_max_y = rn_leaf_y;
+                }
+
+                rn_dz = -2;
+                while (rn_dz <= 2)
+                {
+                    rn_dx = -2;
+                    while (rn_dx <= 2)
+                    {
+                        rn_adx = absSmallInt(rn_dx);
+                        rn_adz = absSmallInt(rn_dz);
+                        if ((rn_adx + rn_adz) < 4)
+                        {
+                            rn_lx = rn_tree_x + rn_dx;
+                            rn_lz = rn_tree_z + rn_dz;
+                            if ((rn_lx >= rn_x0) && (rn_lx <= rn_x1) && (rn_lz >= rn_z0) && (rn_lz <= rn_z1))
+                            {
+                                rn_leaf_y = rn_h + rn_trunk_h;
+                                if (rn_leaf_y > rn_max_y) rn_max_y = rn_leaf_y;
+                            }
+                        }
+                        rn_dx = rn_dx + 1;
+                    }
+                    rn_dz = rn_dz + 1;
+                }
+
+                rn_dz = -1;
+                while (rn_dz <= 1)
+                {
+                    rn_dx = -1;
+                    while (rn_dx <= 1)
+                    {
+                        rn_lx = rn_tree_x + rn_dx;
+                        rn_lz = rn_tree_z + rn_dz;
+                        if ((rn_lx >= rn_x0) && (rn_lx <= rn_x1) && (rn_lz >= rn_z0) && (rn_lz <= rn_z1))
+                        {
+                            rn_leaf_y = rn_h + rn_trunk_h + 1;
+                            if (rn_leaf_y > rn_max_y) rn_max_y = rn_leaf_y;
+                        }
+                        rn_dx = rn_dx + 1;
+                    }
+                    rn_dz = rn_dz + 1;
+                }
+            }
+            rn_tree_x = rn_tree_x + 1;
+        }
+        rn_tree_z = rn_tree_z + 1;
+    }
+
+    if (rn_max_y < 0) return -1;
+    if (rn_max_y > 63) rn_max_y = 63;
+    return rn_max_y / 8;
+}
+
+int getNaturalMaxSectionForRenderChunk(int cx, int cz)
+{
+    if (cx < 0) return -1;
+    if (cz < 0) return -1;
+    if (cx > 15) return -1;
+    if (cz > 15) return -1;
+
+    rn_idx = (cz * 16) + cx;
+    if (render_chunk_natural_max_section[rn_idx] < -1)
+    {
+        render_chunk_natural_max_section[rn_idx] = naturalMaxSectionForRenderChunk(cx, cz);
+    }
+    return render_chunk_natural_max_section[rn_idx];
+}
+
+void rebuildNaturalRenderSectionLimits()
+{
+    /* v53: keep natural height limits lazy. The old loading path computed the
+       generator max Y for all 256 cached render chunks before the first frame,
+       and each calculation scans terrain and tree overlap. On real hardware
+       that became a huge part of the five-minute load. */
+    rn_idx = 0;
+    while (rn_idx < 256)
+    {
+        render_chunk_natural_max_section[rn_idx] = -2;
+        rn_idx = rn_idx + 1;
+    }
+}
+
+int renderFaceSlot(uint face)
+{
+    if (face == (uint)1) return 0;
+    if (face == (uint)2) return 1;
+    if (face == (uint)4) return 2;
+    if (face == (uint)8) return 3;
+    if (face == (uint)16) return 4;
+    return 5;
+}
+
+int addRenderMesh(int x0, int y0, int z0, int x1, int y1, int z1, uint face, uint id)
+{
+    if (render_free_mesh_head >= 0)
+    {
+        render_mesh_slot = render_free_mesh_head;
+        render_free_mesh_head = render_mesh_next[render_mesh_slot];
+    }
+    else
+    {
+        if (render_mesh_count >= 24576)
+        {
+            if (render_dead_mesh_count > 0) compactRenderMeshCache();
+            if (render_mesh_count >= 24576)
+            {
+                render_mesh_build_failed = 1;
+                render_mesh_allocation_failures = render_mesh_allocation_failures + 1;
+                return 0;
+            }
+        }
+        render_mesh_slot = render_mesh_count;
+        render_mesh_count = render_mesh_count + 1;
+    }
+
+    // v24 packs one merged rectangle into two words to avoid a large struct array.
+    render_mesh_p0[render_mesh_slot] =
+        ((uint)x0) |
+        ((uint)z0 << 7) |
+        ((uint)y0 << 14) |
+        ((face & (uint)63) << 20) |
+        ((id & (uint)15) << 26);
+
+    render_mesh_p1[render_mesh_slot] =
+        ((uint)x1) |
+        ((uint)z1 << 7) |
+        ((uint)y1 << 14) |
+        ((uint)gm_chunk_id << 20);
+
+    render_face_slot = (gm_chunk_id * 6) + renderFaceSlot(face);
+    render_mesh_next[render_mesh_slot] = render_chunk_face_head[render_face_slot];
+    render_chunk_face_head[render_face_slot] = render_mesh_slot;
+    render_chunk_face_mask[gm_chunk_id] = render_chunk_face_mask[gm_chunk_id] | (1 << renderFaceSlot(face));
+    render_chunk_has_fast_faces[gm_chunk_id] = 1;
+    return 1;
+}
+
+
+int setupEditMeshPatchForAbs(int wx, int y, int wz)
+{
+    if (render_cache_valid == 0) return 0;
+    if (y < 0) return 0;
+    if (y >= 64) return 0;
+
+    rc_col_x = wx - render_cache_origin_x;
+    rc_col_z = wz - render_cache_origin_z;
+    if (rc_col_x < 0) return 0;
+    if (rc_col_z < 0) return 0;
+    if (rc_col_x >= render_cache_width) return 0;
+    if (rc_col_z >= render_cache_width) return 0;
+
+    gm_chunk_x = rc_col_x / 8;
+    gm_chunk_z = rc_col_z / 8;
+    gm_section = y / 8;
+    if (gm_chunk_x < 0) return 0;
+    if (gm_chunk_x > 15) return 0;
+    if (gm_chunk_z < 0) return 0;
+    if (gm_chunk_z > 15) return 0;
+    if (gm_section < 0) return 0;
+    if (gm_section > 7) return 0;
+
+    gm_chunk_id = (gm_section * 256) + (gm_chunk_z * 16) + gm_chunk_x;
+    gm_chunk_x0 = gm_chunk_x * 8;
+    gm_chunk_z0 = gm_chunk_z * 8;
+    gm_chunk_x1 = gm_chunk_x0 + 7;
+    gm_chunk_z1 = gm_chunk_z0 + 7;
+    gm_section_y0 = gm_section * 8;
+    gm_section_y1 = gm_section_y0 + 7;
+
+    edit_patch_cell_x = rc_col_x;
+    edit_patch_cell_y = y;
+    edit_patch_cell_z = rc_col_z;
+    return 1;
+}
+
+void markRenderChunkHasEditForAbs(int wx, int y, int wz, uint b)
+{
+    if (b == (uint)0) return;
+    if (setupEditMeshPatchForAbs(wx, y, wz) == 0) return;
+    render_chunk_has_edit[gm_chunk_id] = 1;
+    if (blockRegistryRenderClass(b) == TC_BLOCK_RENDER_CUSTOM_MODEL) render_chunk_has_custom_model[gm_chunk_id] = 1;
+    if (render_chunk_max_y[gm_chunk_id] < y) render_chunk_max_y[gm_chunk_id] = y;
+}
+
+int editMeshContainsCellFace(uint face)
+{
+    if (face == (uint)1)
+    {
+        if (gm_y0 != edit_patch_cell_y) return 0;
+        if (edit_patch_cell_x < gm_x0) return 0;
+        if (edit_patch_cell_x > gm_x1) return 0;
+        if (edit_patch_cell_z < gm_z0) return 0;
+        if (edit_patch_cell_z > gm_z1) return 0;
+        return 1;
+    }
+    if (face == (uint)2)
+    {
+        if (gm_y0 != edit_patch_cell_y) return 0;
+        if (edit_patch_cell_x < gm_x0) return 0;
+        if (edit_patch_cell_x > gm_x1) return 0;
+        if (edit_patch_cell_z < gm_z0) return 0;
+        if (edit_patch_cell_z > gm_z1) return 0;
+        return 1;
+    }
+    if (face == (uint)4)
+    {
+        if (gm_z0 != edit_patch_cell_z) return 0;
+        if (edit_patch_cell_x < gm_x0) return 0;
+        if (edit_patch_cell_x > gm_x1) return 0;
+        if (edit_patch_cell_y < gm_y0) return 0;
+        if (edit_patch_cell_y > gm_y1) return 0;
+        return 1;
+    }
+    if (face == (uint)8)
+    {
+        if (gm_z0 != edit_patch_cell_z) return 0;
+        if (edit_patch_cell_x < gm_x0) return 0;
+        if (edit_patch_cell_x > gm_x1) return 0;
+        if (edit_patch_cell_y < gm_y0) return 0;
+        if (edit_patch_cell_y > gm_y1) return 0;
+        return 1;
+    }
+    if (face == (uint)16)
+    {
+        if (gm_x0 != edit_patch_cell_x) return 0;
+        if (edit_patch_cell_z < gm_z0) return 0;
+        if (edit_patch_cell_z > gm_z1) return 0;
+        if (edit_patch_cell_y < gm_y0) return 0;
+        if (edit_patch_cell_y > gm_y1) return 0;
+        return 1;
+    }
+    if (face == (uint)32)
+    {
+        if (gm_x0 != edit_patch_cell_x) return 0;
+        if (edit_patch_cell_z < gm_z0) return 0;
+        if (edit_patch_cell_z > gm_z1) return 0;
+        if (edit_patch_cell_y < gm_y0) return 0;
+        if (edit_patch_cell_y > gm_y1) return 0;
+        return 1;
+    }
+    return 0;
+}
+
+void splitRemovedEditMeshFace(uint face)
+{
+    /* The caller unlinks the original merged rectangle before splitting it.
+       Recycle the slot immediately so edits cannot accumulate tombstones and
+       force a large synchronous compaction when the global pool fills. */
+    render_mesh_p0[edit_patch_mesh_i] = (uint)0;
+    render_mesh_next[edit_patch_mesh_i] = render_free_mesh_head;
+    render_free_mesh_head = edit_patch_mesh_i;
+
+    if ((face == (uint)1) || (face == (uint)2))
+    {
+        if (gm_x0 <= (edit_patch_cell_x - 1)) addRenderMesh(gm_x0, gm_y0, gm_z0, edit_patch_cell_x - 1, gm_y1, gm_z1, face, (uint)edit_patch_block_id);
+        if ((edit_patch_cell_x + 1) <= gm_x1) addRenderMesh(edit_patch_cell_x + 1, gm_y0, gm_z0, gm_x1, gm_y1, gm_z1, face, (uint)edit_patch_block_id);
+        if (gm_z0 <= (edit_patch_cell_z - 1)) addRenderMesh(edit_patch_cell_x, gm_y0, gm_z0, edit_patch_cell_x, gm_y1, edit_patch_cell_z - 1, face, (uint)edit_patch_block_id);
+        if ((edit_patch_cell_z + 1) <= gm_z1) addRenderMesh(edit_patch_cell_x, gm_y0, edit_patch_cell_z + 1, edit_patch_cell_x, gm_y1, gm_z1, face, (uint)edit_patch_block_id);
+        return;
+    }
+
+    if ((face == (uint)4) || (face == (uint)8))
+    {
+        if (gm_x0 <= (edit_patch_cell_x - 1)) addRenderMesh(gm_x0, gm_y0, gm_z0, edit_patch_cell_x - 1, gm_y1, gm_z1, face, (uint)edit_patch_block_id);
+        if ((edit_patch_cell_x + 1) <= gm_x1) addRenderMesh(edit_patch_cell_x + 1, gm_y0, gm_z0, gm_x1, gm_y1, gm_z1, face, (uint)edit_patch_block_id);
+        if (gm_y0 <= (edit_patch_cell_y - 1)) addRenderMesh(edit_patch_cell_x, gm_y0, gm_z0, edit_patch_cell_x, edit_patch_cell_y - 1, gm_z1, face, (uint)edit_patch_block_id);
+        if ((edit_patch_cell_y + 1) <= gm_y1) addRenderMesh(edit_patch_cell_x, edit_patch_cell_y + 1, gm_z0, edit_patch_cell_x, gm_y1, gm_z1, face, (uint)edit_patch_block_id);
+        return;
+    }
+
+    if ((face == (uint)16) || (face == (uint)32))
+    {
+        if (gm_z0 <= (edit_patch_cell_z - 1)) addRenderMesh(gm_x0, gm_y0, gm_z0, gm_x1, gm_y1, edit_patch_cell_z - 1, face, (uint)edit_patch_block_id);
+        if ((edit_patch_cell_z + 1) <= gm_z1) addRenderMesh(gm_x0, gm_y0, edit_patch_cell_z + 1, gm_x1, gm_y1, gm_z1, face, (uint)edit_patch_block_id);
+        if (gm_y0 <= (edit_patch_cell_y - 1)) addRenderMesh(gm_x0, gm_y0, edit_patch_cell_z, gm_x1, edit_patch_cell_y - 1, edit_patch_cell_z, face, (uint)edit_patch_block_id);
+        if ((edit_patch_cell_y + 1) <= gm_y1) addRenderMesh(gm_x0, edit_patch_cell_y + 1, edit_patch_cell_z, gm_x1, gm_y1, edit_patch_cell_z, face, (uint)edit_patch_block_id);
+    }
+}
+
+void removeRenderFaceAtAbs(int wx, int y, int wz, uint face)
+{
+    if (setupEditMeshPatchForAbs(wx, y, wz) == 0) return;
+    if (render_chunk_built[gm_chunk_id] == 0) return;
+
+    edit_patch_face_slot = (gm_chunk_id * 6) + renderFaceSlot(face);
+    edit_patch_mesh_i = render_chunk_face_head[edit_patch_face_slot];
+    edit_patch_prev_i = -1;
+    while (edit_patch_mesh_i >= 0)
+    {
+        edit_patch_next_i = render_mesh_next[edit_patch_mesh_i];
+        gm_p0 = render_mesh_p0[edit_patch_mesh_i];
+        gm_face_bit = (gm_p0 >> 20) & (uint)63;
+        if (gm_face_bit == face)
+        {
+            gm_p1 = render_mesh_p1[edit_patch_mesh_i];
+            gm_x0 = (int)(gm_p0 & (uint)127);
+            gm_z0 = (int)((gm_p0 >> 7) & (uint)127);
+            gm_y0 = (int)((gm_p0 >> 14) & (uint)63);
+            edit_patch_block_id = (int)((gm_p0 >> 26) & (uint)15);
+            gm_x1 = (int)(gm_p1 & (uint)127);
+            gm_z1 = (int)((gm_p1 >> 7) & (uint)127);
+            gm_y1 = (int)((gm_p1 >> 14) & (uint)63);
+            if (editMeshContainsCellFace(face) != 0)
+            {
+                if (edit_patch_prev_i < 0) render_chunk_face_head[edit_patch_face_slot] = edit_patch_next_i;
+                else render_mesh_next[edit_patch_prev_i] = edit_patch_next_i;
+                splitRemovedEditMeshFace(face);
+                return;
+            }
+        }
+        edit_patch_prev_i = edit_patch_mesh_i;
+        edit_patch_mesh_i = edit_patch_next_i;
+    }
+}
+
+void addRenderFaceAtAbs(int wx, int y, int wz, uint face, uint b)
+{
+    if (b == (uint)0) return;
+    if (blockRegistryRenderClass(b) == TC_BLOCK_RENDER_CUSTOM_MODEL) return;
+    if (setupEditMeshPatchForAbs(wx, y, wz) == 0) return;
+
+    if (render_chunk_built[gm_chunk_id] == 0)
+    {
+        /* Do not fake-build an unbuilt natural chunk just because a neighbor
+           edit exposed one face at its edge; that would prevent the normal
+           near-first builder from ever creating the rest of that chunk. The
+           exception is an edit-only section, such as a block placed above the
+           natural terrain height, where the direct face mesh is the whole
+           visible content for now. */
+        if (render_chunk_has_edit[gm_chunk_id] == 0) return;
+        render_chunk_built[gm_chunk_id] = 1;
+        render_chunk_fast_edit[gm_chunk_id] = 1;
+        render_chunk_max_y[gm_chunk_id] = y;
+    }
+    if (render_chunk_max_y[gm_chunk_id] < y) render_chunk_max_y[gm_chunk_id] = y;
+
+    addRenderMesh(edit_patch_cell_x, y, edit_patch_cell_z, edit_patch_cell_x, y, edit_patch_cell_z, face, b);
+}
+
+void queueBackgroundGreedyRemesh(int cx, int cz, int section)
+{
+    if (render_bg_greedy_enabled == 0) return;
+    if (cx < 0) return;
+    if (cz < 0) return;
+    if (section < 0) return;
+    if (cx > 15) return;
+    if (cz > 15) return;
+    if (section > 7) return;
+
+    gm_chunk_id = (section * 256) + (cz * 16) + cx;
+    if (render_bg_greedy_dirty[gm_chunk_id] != 0) return;
+    if (render_bg_greedy_count >= 512) return;
+
+    render_bg_greedy_x[render_bg_greedy_count] = cx;
+    render_bg_greedy_z[render_bg_greedy_count] = cz;
+    render_bg_greedy_s[render_bg_greedy_count] = section;
+    render_bg_greedy_count = render_bg_greedy_count + 1;
+    render_bg_greedy_dirty[gm_chunk_id] = 1;
+}
+
+void removeQueuedBackgroundGreedyAt(int idx)
+{
+    render_bg_greedy_count = render_bg_greedy_count - 1;
+    if (idx < render_bg_greedy_count)
+    {
+        render_bg_greedy_x[idx] = render_bg_greedy_x[render_bg_greedy_count];
+        render_bg_greedy_z[idx] = render_bg_greedy_z[render_bg_greedy_count];
+        render_bg_greedy_s[idx] = render_bg_greedy_s[render_bg_greedy_count];
+    }
+}
+
+void queueBackgroundGreedyRemeshForAbs(int wx, int y, int wz)
+{
+    if (render_cache_valid == 0) return;
+    if (y < 0) return;
+    if (y >= 64) return;
+
+    rc_col_x = wx - render_cache_origin_x;
+    rc_col_z = wz - render_cache_origin_z;
+    if (rc_col_x < 0) return;
+    if (rc_col_z < 0) return;
+    if (rc_col_x >= render_cache_width) return;
+    if (rc_col_z >= render_cache_width) return;
+
+    gm_chunk_cx0 = rc_col_x / 8;
+    gm_chunk_cz0 = rc_col_z / 8;
+
+    gm_y0 = y / 8;
+    gm_y1 = gm_y0;
+    if ((y & 7) == 0) gm_y0 = gm_y0 - 1;
+    if ((y & 7) == 7) gm_y1 = gm_y1 + 1;
+    if (gm_y0 < 0) gm_y0 = 0;
+    if (gm_y1 > 7) gm_y1 = 7;
+
+    gm_section = gm_y0;
+    while (gm_section <= gm_y1)
+    {
+        queueBackgroundGreedyRemesh(gm_chunk_cx0, gm_chunk_cz0, gm_section);
+
+        if ((rc_col_x & 7) == 0) queueBackgroundGreedyRemesh(gm_chunk_cx0 - 1, gm_chunk_cz0, gm_section);
+        if ((rc_col_x & 7) == 7) queueBackgroundGreedyRemesh(gm_chunk_cx0 + 1, gm_chunk_cz0, gm_section);
+        if ((rc_col_z & 7) == 0) queueBackgroundGreedyRemesh(gm_chunk_cx0, gm_chunk_cz0 - 1, gm_section);
+        if ((rc_col_z & 7) == 7) queueBackgroundGreedyRemesh(gm_chunk_cx0, gm_chunk_cz0 + 1, gm_section);
+
+        gm_section = gm_section + 1;
+    }
+}
+
+void patchRenderCacheEdit(int wx, int y, int wz, uint b);
+
+void patchEditedBlockMeshDirect(int wx, int y, int wz, uint old_b, uint new_b)
+{
+    render_mesh_build_failed = 0;
+    render_last_edit_ms = millis();
+    render_remesh_wait = 0;
+    markRenderChunkHasEditForAbs(wx, y, wz, new_b);
+
+    if (render_cache_valid == 0) return;
+    queueBackgroundGreedyRemeshForAbs(wx, y, wz);
+
+    if (old_b != (uint)0)
+    {
+        removeRenderFaceAtAbs(wx, y, wz, (uint)1);
+        removeRenderFaceAtAbs(wx, y, wz, (uint)2);
+        removeRenderFaceAtAbs(wx, y, wz, (uint)4);
+        removeRenderFaceAtAbs(wx, y, wz, (uint)8);
+        removeRenderFaceAtAbs(wx, y, wz, (uint)16);
+        removeRenderFaceAtAbs(wx, y, wz, (uint)32);
+    }
+
+    if (new_b != (uint)0)
+    {
+        if (blockRegistryOccludesCube(new_b) != 0)
+        {
+            if (blockAtAbs(wx, y + 1, wz) != (uint)0) removeRenderFaceAtAbs(wx, y + 1, wz, (uint)2);
+            if (blockAtAbs(wx, y - 1, wz) != (uint)0) removeRenderFaceAtAbs(wx, y - 1, wz, (uint)1);
+            if (blockAtAbs(wx, y, wz - 1) != (uint)0) removeRenderFaceAtAbs(wx, y, wz - 1, (uint)8);
+            if (blockAtAbs(wx, y, wz + 1) != (uint)0) removeRenderFaceAtAbs(wx, y, wz + 1, (uint)4);
+            if (blockAtAbs(wx - 1, y, wz) != (uint)0) removeRenderFaceAtAbs(wx - 1, y, wz, (uint)32);
+            if (blockAtAbs(wx + 1, y, wz) != (uint)0) removeRenderFaceAtAbs(wx + 1, y, wz, (uint)16);
+        }
+
+        if (blockRegistryRenderClass(new_b) != TC_BLOCK_RENDER_CUSTOM_MODEL)
+        {
+            if (blockRegistryOccludesCube(blockAtAbs(wx, y + 1, wz)) == 0) addRenderFaceAtAbs(wx, y, wz, (uint)1, new_b);
+            if (blockRegistryOccludesCube(blockAtAbs(wx, y - 1, wz)) == 0) addRenderFaceAtAbs(wx, y, wz, (uint)2, new_b);
+            if (blockRegistryOccludesCube(blockAtAbs(wx, y, wz - 1)) == 0) addRenderFaceAtAbs(wx, y, wz, (uint)4, new_b);
+            if (blockRegistryOccludesCube(blockAtAbs(wx, y, wz + 1)) == 0) addRenderFaceAtAbs(wx, y, wz, (uint)8, new_b);
+            if (blockRegistryOccludesCube(blockAtAbs(wx - 1, y, wz)) == 0) addRenderFaceAtAbs(wx, y, wz, (uint)16, new_b);
+            if (blockRegistryOccludesCube(blockAtAbs(wx + 1, y, wz)) == 0) addRenderFaceAtAbs(wx, y, wz, (uint)32, new_b);
+        }
+        if (render_mesh_build_failed != 0) patchRenderCacheEdit(wx, y, wz, new_b);
+        return;
+    }
+
+    if (blockRegistryOccludesCube(old_b) != 0)
+    {
+        if (blockAtAbs(wx, y + 1, wz) != (uint)0) addRenderFaceAtAbs(wx, y + 1, wz, (uint)2, blockAtAbs(wx, y + 1, wz));
+        if (blockAtAbs(wx, y - 1, wz) != (uint)0) addRenderFaceAtAbs(wx, y - 1, wz, (uint)1, blockAtAbs(wx, y - 1, wz));
+        if (blockAtAbs(wx, y, wz - 1) != (uint)0) addRenderFaceAtAbs(wx, y, wz - 1, (uint)8, blockAtAbs(wx, y, wz - 1));
+        if (blockAtAbs(wx, y, wz + 1) != (uint)0) addRenderFaceAtAbs(wx, y, wz + 1, (uint)4, blockAtAbs(wx, y, wz + 1));
+        if (blockAtAbs(wx - 1, y, wz) != (uint)0) addRenderFaceAtAbs(wx - 1, y, wz, (uint)32, blockAtAbs(wx - 1, y, wz));
+        if (blockAtAbs(wx + 1, y, wz) != (uint)0) addRenderFaceAtAbs(wx + 1, y, wz, (uint)16, blockAtAbs(wx + 1, y, wz));
+    }
+    if (render_mesh_build_failed != 0) patchRenderCacheEdit(wx, y, wz, new_b);
+}
+
+void selectRenderMeshTextures(uint b)
+{
+    selectRenderMeshTexturesFromRuntime(b);
+}
+
+void initRenderMeshTextureTables()
+{
+    initRenderMeshTextureTablesFromRuntime();
+}
+
+void setupGreedyChunkBounds(int cx, int cz, int section)
+{
+    gm_chunk_x = cx;
+    gm_chunk_z = cz;
+    gm_section = section;
+    gm_section_y0 = section * 8;
+    gm_section_y1 = gm_section_y0 + 7;
+    gm_chunk_id = (section * 256) + (cz * 16) + cx;
+    gm_chunk_x0 = cx * 8;
+    gm_chunk_z0 = cz * 8;
+    gm_chunk_x1 = gm_chunk_x0 + 7;
+    gm_chunk_z1 = gm_chunk_z0 + 7;
+
+    if (gm_chunk_x0 >= render_cache_width) gm_chunk_x1 = -1;
+    if (gm_chunk_z0 >= render_cache_width) gm_chunk_z1 = -1;
+    if (gm_chunk_x1 >= render_cache_width) gm_chunk_x1 = render_cache_width - 1;
+    if (gm_chunk_z1 >= render_cache_width) gm_chunk_z1 = render_cache_width - 1;
+}
+
+void compactRenderMeshCache()
+{
+    // v24: local chunk rebuilds leave dead mesh entries behind; compact occasionally.
+    // Rebuild per-chunk heads too, so frame rendering skips hidden cache chunks.
+    clearRenderChunkHeads();
+    render_free_mesh_head = -1;
+    gm_scan_x = 0;
+    gm_mesh_i = 0;
+    while (gm_mesh_i < render_mesh_count)
+    {
+        gm_p0 = render_mesh_p0[gm_mesh_i];
+        gm_face_bit = (gm_p0 >> 20) & (uint)63;
+        if (gm_face_bit != (uint)0)
+        {
+            if (gm_scan_x != gm_mesh_i)
+            {
+                render_mesh_p0[gm_scan_x] = render_mesh_p0[gm_mesh_i];
+                render_mesh_p1[gm_scan_x] = render_mesh_p1[gm_mesh_i];
+            }
+            gm_p1 = render_mesh_p1[gm_scan_x];
+            gm_chunk_id = (int)((gm_p1 >> 20) & (uint)4095);
+            render_face_slot = (gm_chunk_id * 6) + renderFaceSlot(gm_face_bit);
+            render_mesh_next[gm_scan_x] = render_chunk_face_head[render_face_slot];
+            render_chunk_face_head[render_face_slot] = gm_scan_x;
+            render_chunk_face_mask[gm_chunk_id] = render_chunk_face_mask[gm_chunk_id] | (1 << renderFaceSlot(gm_face_bit));
+            render_chunk_has_fast_faces[gm_chunk_id] = 1;
+            gm_scan_x = gm_scan_x + 1;
+        }
+        gm_mesh_i = gm_mesh_i + 1;
+    }
+    render_mesh_count = gm_scan_x;
+    render_dead_mesh_count = 0;
+    render_mesh_compact_needed = 0;
+}
+
+void clearRenderMeshesForChunk()
+{
+    render_face_slot = gm_chunk_id * 6;
+    render_chunk_face_mask[gm_chunk_id] = 0;
+    render_chunk_has_fast_faces[gm_chunk_id] = 0;
+    while (render_face_slot < ((gm_chunk_id * 6) + 6))
+    {
+        gm_mesh_i = render_chunk_face_head[render_face_slot];
+        while (gm_mesh_i >= 0)
+        {
+            gm_next_mesh_i = render_mesh_next[gm_mesh_i];
+            render_mesh_p0[gm_mesh_i] = (uint)0;
+            render_mesh_next[gm_mesh_i] = render_free_mesh_head;
+            render_free_mesh_head = gm_mesh_i;
+            gm_mesh_i = gm_next_mesh_i;
+        }
+        render_chunk_face_head[render_face_slot] = -1;
+        render_face_slot = render_face_slot + 1;
+    }
+}
+
+void buildRenderSectionScratch()
+{
+    clearCustomBlocksForChunk(gm_chunk_id);
+    render_chunk_max_y[gm_chunk_id] = -1;
+    render_chunk_has_custom_model[gm_chunk_id] = 0;
+    render_chunk_has_fast_faces[gm_chunk_id] = 0;
+    render_chunk_face_mask[gm_chunk_id] = 0;
+
+    rc_z = 0;
+    while (rc_z < 8)
+    {
+        rc_x = 0;
+        while (rc_x < 8)
+        {
+            rc_wx = render_cache_origin_x + gm_chunk_x0 + rc_x;
+            rc_wz = render_cache_origin_z + gm_chunk_z0 + rc_z;
+            rc_word = (uint)0;
+            rc_y = 0;
+            while (rc_y < 8)
+            {
+                rc_block = baseBlockAtAbs(rc_wx, gm_section_y0 + rc_y, rc_wz);
+                if (rc_block != (uint)0)
+                {
+                    rc_shift = rc_y << 2;
+                    rc_word = rc_word | ((rc_block & (uint)15) << rc_shift);
+                }
+                rc_y = rc_y + 1;
+            }
+            rc_idx = (rc_z * 8) + rc_x;
+            render_section_block[rc_idx] = rc_word;
+            render_section_face_low[rc_idx] = (uint)0;
+            render_section_face_high[rc_idx] = (uint)0;
+            rc_x = rc_x + 1;
+        }
+        rc_z = rc_z + 1;
+    }
+
+    /* Apply only edits linked to this render chunk/section. The old code
+       scanned all 512 possible edits for every rebuilt section, which made
+       block edits increasingly expensive as the world accumulated changes. */
+    edit_i = render_chunk_edit_head[gm_chunk_id];
+    while (edit_i >= 0)
+    {
+        gen_edit_lx = edit_x[edit_i] - (render_cache_origin_x + gm_chunk_x0);
+        gen_edit_lz = edit_z[edit_i] - (render_cache_origin_z + gm_chunk_z0);
+        if ((gen_edit_lx >= 0) && (gen_edit_lx < 8) && (gen_edit_lz >= 0) && (gen_edit_lz < 8))
+        {
+            if ((edit_y[edit_i] >= gm_section_y0) && (edit_y[edit_i] <= gm_section_y1))
+            {
+                rc_idx = (gen_edit_lz * 8) + gen_edit_lx;
+                rc_shift = (edit_y[edit_i] - gm_section_y0) << 2;
+                rc_mask = ~((uint)15 << rc_shift);
+                rc_word = render_section_block[rc_idx] & rc_mask;
+                rc_word = rc_word | ((edit_block[edit_i] & (uint)15) << rc_shift);
+                render_section_block[rc_idx] = rc_word;
+            }
+        }
+        edit_i = edit_next_in_render_chunk[edit_i];
+    }
+
+    rc_z = 0;
+    while (rc_z < 8)
+    {
+        rc_x = 0;
+        while (rc_x < 8)
+        {
+            rc_idx = (rc_z * 8) + rc_x;
+            rc_word = render_section_block[rc_idx];
+            if (rc_word != (uint)0)
+            {
+                rc_y = 0;
+                rc_shift = 0;
+                while (rc_y < 8)
+                {
+                    db_id = (rc_word >> rc_shift) & (uint)15;
+                    if (db_id != (uint)0)
+                    {
+                        if ((gm_section_y0 + rc_y) > render_chunk_max_y[gm_chunk_id]) render_chunk_max_y[gm_chunk_id] = gm_section_y0 + rc_y;
+                        if (blockRegistryRenderClass(db_id) != TC_BLOCK_RENDER_CUSTOM_MODEL)
+                        {
+                            rc_face_bits = (uint)0;
+                            if (renderBlockOccludesCubeAtCache(gm_chunk_x0 + rc_x, gm_section_y0 + rc_y + 1, gm_chunk_z0 + rc_z) == 0) rc_face_bits = rc_face_bits | (uint)1;
+                            if (renderBlockOccludesCubeAtCache(gm_chunk_x0 + rc_x, gm_section_y0 + rc_y - 1, gm_chunk_z0 + rc_z) == 0) rc_face_bits = rc_face_bits | (uint)2;
+                            if (renderBlockOccludesCubeAtCache(gm_chunk_x0 + rc_x, gm_section_y0 + rc_y, gm_chunk_z0 + rc_z - 1) == 0) rc_face_bits = rc_face_bits | (uint)4;
+                            if (renderBlockOccludesCubeAtCache(gm_chunk_x0 + rc_x, gm_section_y0 + rc_y, gm_chunk_z0 + rc_z + 1) == 0) rc_face_bits = rc_face_bits | (uint)8;
+                            if (renderBlockOccludesCubeAtCache(gm_chunk_x0 + rc_x - 1, gm_section_y0 + rc_y, gm_chunk_z0 + rc_z) == 0) rc_face_bits = rc_face_bits | (uint)16;
+                            if (renderBlockOccludesCubeAtCache(gm_chunk_x0 + rc_x + 1, gm_section_y0 + rc_y, gm_chunk_z0 + rc_z) == 0) rc_face_bits = rc_face_bits | (uint)32;
+
+                            if (rc_face_bits != (uint)0)
+                            {
+                                if (rc_y < 4)
+                                {
+                                    rc_face_shift = rc_y << 3;
+                                    render_section_face_low[rc_idx] = render_section_face_low[rc_idx] | (rc_face_bits << rc_face_shift);
+                                }
+                                else
+                                {
+                                    rc_face_shift = (rc_y - 4) << 3;
+                                    render_section_face_high[rc_idx] = render_section_face_high[rc_idx] | (rc_face_bits << rc_face_shift);
+                                }
+                            }
+                        }
+                        else
+                        {
+                            addCustomBlockForCurrentChunk(render_cache_origin_x + gm_chunk_x0 + rc_x, gm_section_y0 + rc_y, render_cache_origin_z + gm_chunk_z0 + rc_z, db_id);
+                        }
+                    }
+                    rc_y = rc_y + 1;
+                    rc_shift = rc_shift + 4;
+                }
+            }
+            rc_x = rc_x + 1;
+        }
+        rc_z = rc_z + 1;
+    }
+}
+
+void buildGreedyMeshChunk()
+{
+    if (gm_chunk_x1 < gm_chunk_x0) return;
+    if (gm_chunk_z1 < gm_chunk_z0) return;
+    buildRenderSectionScratch();
+    if (render_chunk_max_y[gm_chunk_id] < 0) return;
+
+    // v36 top/bottom pass: merge horizontal exposed caps inside one 8x8x8 section.
+    gm_pass = 0;
+    while (gm_pass < 2)
+    {
+        if (gm_pass == 0) gm_face_bit = (uint)1;
+        else gm_face_bit = (uint)2;
+
+        gm_y = gm_section_y0;
+        while (gm_y <= gm_section_y1)
+        {
+            gm_z = gm_chunk_z0;
+            while (gm_z <= gm_chunk_z1)
+            {
+                gm_x = gm_chunk_x0;
+                while (gm_x <= gm_chunk_x1)
+                {
+                    gm_block_id = renderBlockAtCache(gm_x, gm_y, gm_z);
+                    if (gm_block_id != (uint)0)
+                    {
+                        if (greedyFaceMatches(gm_x, gm_y, gm_z, gm_face_bit, gm_block_id) != 0)
+                        {
+                            gm_x0 = gm_x;
+                            gm_y0 = gm_y;
+                            gm_z0 = gm_z;
+                            gm_x1 = gm_x;
+                            gm_y1 = gm_y;
+                            gm_z1 = gm_z;
+
+                            gm_scan_x = gm_x1 + 1;
+                            while (gm_scan_x <= gm_chunk_x1)
+                            {
+                                if (greedyFaceMatches(gm_scan_x, gm_y, gm_z, gm_face_bit, gm_block_id) == 0) gm_scan_x = gm_chunk_x1 + 1;
+                                else
+                                {
+                                    gm_x1 = gm_scan_x;
+                                    gm_scan_x = gm_scan_x + 1;
+                                }
+                            }
+
+                            gm_can_extend = 1;
+                            while (gm_can_extend != 0)
+                            {
+                                gm_scan_z = gm_z1 + 1;
+                                if (gm_scan_z > gm_chunk_z1) gm_can_extend = 0;
+                                else
+                                {
+                                    gm_scan_x = gm_x0;
+                                    while (gm_scan_x <= gm_x1)
+                                    {
+                                        if (greedyFaceMatches(gm_scan_x, gm_y, gm_scan_z, gm_face_bit, gm_block_id) == 0) gm_can_extend = 0;
+                                        gm_scan_x = gm_scan_x + 1;
+                                    }
+                                    if (gm_can_extend != 0) gm_z1 = gm_scan_z;
+                                }
+                            }
+
+                            gm_scan_z = gm_z0;
+                            while (gm_scan_z <= gm_z1)
+                            {
+                                gm_scan_x = gm_x0;
+                                while (gm_scan_x <= gm_x1)
+                                {
+                                    clearRenderFaceBitAt(gm_scan_x, gm_y, gm_scan_z, gm_face_bit);
+                                    gm_scan_x = gm_scan_x + 1;
+                                }
+                                gm_scan_z = gm_scan_z + 1;
+                            }
+
+                            addRenderMesh(gm_x0, gm_y0, gm_z0, gm_x1, gm_y1, gm_z1, gm_face_bit, gm_block_id);
+                        }
+                    }
+                    gm_x = gm_x + 1;
+                }
+                gm_z = gm_z + 1;
+            }
+            gm_y = gm_y + 1;
+        }
+
+        gm_pass = gm_pass + 1;
+    }
+
+    // v36 north/south pass: merge vertical walls across X/Y inside the section.
+    gm_pass = 0;
+    while (gm_pass < 2)
+    {
+        if (gm_pass == 0) gm_face_bit = (uint)4;
+        else gm_face_bit = (uint)8;
+
+        gm_z = gm_chunk_z0;
+        while (gm_z <= gm_chunk_z1)
+        {
+            gm_y = gm_section_y0;
+            while (gm_y <= gm_section_y1)
+            {
+                gm_x = gm_chunk_x0;
+                while (gm_x <= gm_chunk_x1)
+                {
+                    gm_block_id = renderBlockAtCache(gm_x, gm_y, gm_z);
+                    if (gm_block_id != (uint)0)
+                    {
+                        if (greedyFaceMatches(gm_x, gm_y, gm_z, gm_face_bit, gm_block_id) != 0)
+                        {
+                            gm_x0 = gm_x;
+                            gm_y0 = gm_y;
+                            gm_z0 = gm_z;
+                            gm_x1 = gm_x;
+                            gm_y1 = gm_y;
+                            gm_z1 = gm_z;
+
+                            gm_scan_x = gm_x1 + 1;
+                            while (gm_scan_x <= gm_chunk_x1)
+                            {
+                                if (greedyFaceMatches(gm_scan_x, gm_y, gm_z, gm_face_bit, gm_block_id) == 0) gm_scan_x = gm_chunk_x1 + 1;
+                                else
+                                {
+                                    gm_x1 = gm_scan_x;
+                                    gm_scan_x = gm_scan_x + 1;
+                                }
+                            }
+
+                            gm_can_extend = 1;
+                            while (gm_can_extend != 0)
+                            {
+                                gm_scan_y = gm_y1 + 1;
+                                if (gm_scan_y > gm_section_y1) gm_can_extend = 0;
+                                else
+                                {
+                                    gm_scan_x = gm_x0;
+                                    while (gm_scan_x <= gm_x1)
+                                    {
+                                        if (greedyFaceMatches(gm_scan_x, gm_scan_y, gm_z, gm_face_bit, gm_block_id) == 0) gm_can_extend = 0;
+                                        gm_scan_x = gm_scan_x + 1;
+                                    }
+                                    if (gm_can_extend != 0) gm_y1 = gm_scan_y;
+                                }
+                            }
+
+                            gm_scan_y = gm_y0;
+                            while (gm_scan_y <= gm_y1)
+                            {
+                                gm_scan_x = gm_x0;
+                                while (gm_scan_x <= gm_x1)
+                                {
+                                    clearRenderFaceBitAt(gm_scan_x, gm_scan_y, gm_z, gm_face_bit);
+                                    gm_scan_x = gm_scan_x + 1;
+                                }
+                                gm_scan_y = gm_scan_y + 1;
+                            }
+
+                            addRenderMesh(gm_x0, gm_y0, gm_z0, gm_x1, gm_y1, gm_z1, gm_face_bit, gm_block_id);
+                        }
+                    }
+                    gm_x = gm_x + 1;
+                }
+                gm_y = gm_y + 1;
+            }
+            gm_z = gm_z + 1;
+        }
+
+        gm_pass = gm_pass + 1;
+    }
+
+    // v36 west/east pass: merge vertical walls across Z/Y inside the section.
+    gm_pass = 0;
+    while (gm_pass < 2)
+    {
+        if (gm_pass == 0) gm_face_bit = (uint)16;
+        else gm_face_bit = (uint)32;
+
+        gm_x = gm_chunk_x0;
+        while (gm_x <= gm_chunk_x1)
+        {
+            gm_y = gm_section_y0;
+            while (gm_y <= gm_section_y1)
+            {
+                gm_z = gm_chunk_z0;
+                while (gm_z <= gm_chunk_z1)
+                {
+                    gm_block_id = renderBlockAtCache(gm_x, gm_y, gm_z);
+                    if (gm_block_id != (uint)0)
+                    {
+                        if (greedyFaceMatches(gm_x, gm_y, gm_z, gm_face_bit, gm_block_id) != 0)
+                        {
+                            gm_x0 = gm_x;
+                            gm_y0 = gm_y;
+                            gm_z0 = gm_z;
+                            gm_x1 = gm_x;
+                            gm_y1 = gm_y;
+                            gm_z1 = gm_z;
+
+                            gm_scan_z = gm_z1 + 1;
+                            while (gm_scan_z <= gm_chunk_z1)
+                            {
+                                if (greedyFaceMatches(gm_x, gm_y, gm_scan_z, gm_face_bit, gm_block_id) == 0) gm_scan_z = gm_chunk_z1 + 1;
+                                else
+                                {
+                                    gm_z1 = gm_scan_z;
+                                    gm_scan_z = gm_scan_z + 1;
+                                }
+                            }
+
+                            gm_can_extend = 1;
+                            while (gm_can_extend != 0)
+                            {
+                                gm_scan_y = gm_y1 + 1;
+                                if (gm_scan_y > gm_section_y1) gm_can_extend = 0;
+                                else
+                                {
+                                    gm_scan_z = gm_z0;
+                                    while (gm_scan_z <= gm_z1)
+                                    {
+                                        if (greedyFaceMatches(gm_x, gm_scan_y, gm_scan_z, gm_face_bit, gm_block_id) == 0) gm_can_extend = 0;
+                                        gm_scan_z = gm_scan_z + 1;
+                                    }
+                                    if (gm_can_extend != 0) gm_y1 = gm_scan_y;
+                                }
+                            }
+
+                            gm_scan_y = gm_y0;
+                            while (gm_scan_y <= gm_y1)
+                            {
+                                gm_scan_z = gm_z0;
+                                while (gm_scan_z <= gm_z1)
+                                {
+                                    clearRenderFaceBitAt(gm_x, gm_scan_y, gm_scan_z, gm_face_bit);
+                                    gm_scan_z = gm_scan_z + 1;
+                                }
+                                gm_scan_y = gm_scan_y + 1;
+                            }
+
+                            addRenderMesh(gm_x0, gm_y0, gm_z0, gm_x1, gm_y1, gm_z1, gm_face_bit, gm_block_id);
+                        }
+                    }
+                    gm_z = gm_z + 1;
+                }
+                gm_y = gm_y + 1;
+            }
+            gm_x = gm_x + 1;
+        }
+
+        gm_pass = gm_pass + 1;
+    }
+}
+
+void buildSimpleMeshChunk()
+{
+    /* v25 edit path: when a block changes, rebuild the touched section with a
+       straight face pass. This avoids the much heavier greedy merge searches
+       during gameplay edits; untouched natural chunks still use greedy meshes. */
+    if (gm_chunk_x1 < gm_chunk_x0) return;
+    if (gm_chunk_z1 < gm_chunk_z0) return;
+    buildRenderSectionScratch();
+    if (render_chunk_max_y[gm_chunk_id] < 0) return;
+
+    gm_z = gm_chunk_z0;
+    while (gm_z <= gm_chunk_z1)
+    {
+        gm_x = gm_chunk_x0;
+        while (gm_x <= gm_chunk_x1)
+        {
+            gm_y = gm_section_y0;
+            while (gm_y <= gm_section_y1)
+            {
+                gm_block_id = renderBlockAtCache(gm_x, gm_y, gm_z);
+                if (gm_block_id != (uint)0)
+                {
+                    if (blockRegistryRenderClass(gm_block_id) != TC_BLOCK_RENDER_CUSTOM_MODEL)
+                    {
+                        rc_face_bits = renderFaceBitsAt(gm_x, gm_y, gm_z);
+                        if ((rc_face_bits & (uint)1) != (uint)0) addRenderMesh(gm_x, gm_y, gm_z, gm_x, gm_y, gm_z, (uint)1, gm_block_id);
+                        if ((rc_face_bits & (uint)2) != (uint)0) addRenderMesh(gm_x, gm_y, gm_z, gm_x, gm_y, gm_z, (uint)2, gm_block_id);
+                        if ((rc_face_bits & (uint)4) != (uint)0) addRenderMesh(gm_x, gm_y, gm_z, gm_x, gm_y, gm_z, (uint)4, gm_block_id);
+                        if ((rc_face_bits & (uint)8) != (uint)0) addRenderMesh(gm_x, gm_y, gm_z, gm_x, gm_y, gm_z, (uint)8, gm_block_id);
+                        if ((rc_face_bits & (uint)16) != (uint)0) addRenderMesh(gm_x, gm_y, gm_z, gm_x, gm_y, gm_z, (uint)16, gm_block_id);
+                        if ((rc_face_bits & (uint)32) != (uint)0) addRenderMesh(gm_x, gm_y, gm_z, gm_x, gm_y, gm_z, (uint)32, gm_block_id);
+                    }
+                }
+                gm_y = gm_y + 1;
+            }
+            gm_x = gm_x + 1;
+        }
+        gm_z = gm_z + 1;
+    }
+}
+
+void rebuildRenderChunkAt(int cx, int cz, int section)
+{
+    setupGreedyChunkBounds(cx, cz, section);
+    if (gm_chunk_x1 < gm_chunk_x0) return;
+    if (gm_chunk_z1 < gm_chunk_z0) return;
+
+    render_mesh_build_failed = 0;
+    clearRenderMeshesForChunk();
+    buildGreedyMeshChunk();
+    if (render_mesh_build_failed != 0)
+    {
+        clearRenderMeshesForChunk();
+        render_chunk_built[gm_chunk_id] = 0;
+        render_mesh_incomplete_builds = render_mesh_incomplete_builds + 1;
+        return;
+    }
+    render_chunk_built[gm_chunk_id] = 1;
+    render_chunk_fast_edit[gm_chunk_id] = 0;
+}
+
+void rebuildRenderChunkAtFastEdit(int cx, int cz, int section)
+{
+    setupGreedyChunkBounds(cx, cz, section);
+    if (gm_chunk_x1 < gm_chunk_x0) return;
+    if (gm_chunk_z1 < gm_chunk_z0) return;
+
+    render_mesh_build_failed = 0;
+    clearRenderMeshesForChunk();
+    /* v53: this is the latency-critical block-edit path. A full greedy remesh
+       of an 8x8x8 section can stall the VM for a whole visible frame. The
+       straight face pass is much cheaper and still removes/places the edited
+       block correctly. */
+    buildSimpleMeshChunk();
+    if (render_mesh_build_failed != 0)
+    {
+        clearRenderMeshesForChunk();
+        render_chunk_built[gm_chunk_id] = 0;
+        render_mesh_incomplete_builds = render_mesh_incomplete_builds + 1;
+        return;
+    }
+    render_chunk_built[gm_chunk_id] = 1;
+    render_chunk_fast_edit[gm_chunk_id] = 1;
+}
+
+void updateRenderChunkHeight(int cx, int cz, int section)
+{
+    setupGreedyChunkBounds(cx, cz, section);
+    if (gm_chunk_x1 < gm_chunk_x0) return;
+    if (gm_chunk_z1 < gm_chunk_z0) return;
+
+    render_chunk_max_y[gm_chunk_id] = -1;
+    rc_z = gm_chunk_z0;
+    while (rc_z <= gm_chunk_z1)
+    {
+        rc_x = gm_chunk_x0;
+        while (rc_x <= gm_chunk_x1)
+        {
+            rc_y = gm_section_y1;
+            while (rc_y >= gm_section_y0)
+            {
+                rc_block = blockAtAbs(render_cache_origin_x + rc_x, rc_y, render_cache_origin_z + rc_z);
+                if (rc_block != (uint)0)
+                {
+                    if (rc_y > render_chunk_max_y[gm_chunk_id]) render_chunk_max_y[gm_chunk_id] = rc_y;
+                    rc_y = gm_section_y0 - 1;
+                }
+                else
+                {
+                    rc_y = rc_y - 1;
+                }
+            }
+            rc_x = rc_x + 1;
+        }
+        rc_z = rc_z + 1;
+    }
+}
+
+void buildRenderChunkHeights()
+{
+    clearRenderChunkBuiltFlags();
+}
+
+void buildGreedyMeshCache()
+{
+    render_mesh_count = 0;
+    render_free_mesh_head = -1;
+    clearRenderChunkHeads();
+    clearRenderChunkBuiltFlags();
+}
+
+void rebuildRenderEditSectionFlags()
+{
+    render_chunk_i = 0;
+    while (render_chunk_i < 2048)
+    {
+        render_chunk_edit_head[render_chunk_i] = -1;
+        render_chunk_i = render_chunk_i + 1;
+    }
+
+    edit_i = 0;
+    while (edit_i < edit_count)
+    {
+        edit_next_in_render_chunk[edit_i] = -1;
+        if ((edit_y[edit_i] >= 0) && (edit_y[edit_i] < 64))
+        {
+            rc_col_x = edit_x[edit_i] - render_cache_origin_x;
+            rc_col_z = edit_z[edit_i] - render_cache_origin_z;
+            if ((rc_col_x >= 0) && (rc_col_z >= 0))
+            {
+                if ((rc_col_x < render_cache_width) && (rc_col_z < render_cache_width))
+                {
+                    gm_chunk_x = rc_col_x / 8;
+                    gm_chunk_z = rc_col_z / 8;
+                    gm_section = edit_y[edit_i] / 8;
+                    if ((gm_chunk_x >= 0) && (gm_chunk_x <= 15) && (gm_chunk_z >= 0) && (gm_chunk_z <= 15))
+                    {
+                        gm_chunk_id = (gm_section * 256) + (gm_chunk_z * 16) + gm_chunk_x;
+                        edit_next_in_render_chunk[edit_i] = render_chunk_edit_head[gm_chunk_id];
+                        render_chunk_edit_head[gm_chunk_id] = edit_i;
+                        if (edit_block[edit_i] != (uint)0) render_chunk_has_edit[gm_chunk_id] = 1;
+                    }
+                }
+            }
+        }
+        edit_i = edit_i + 1;
+    }
+}
+
+void queueRenderChunkRemesh(int cx, int cz, int section)
+{
+    if (cx < 0) return;
+    if (cz < 0) return;
+    if (section < 0) return;
+    if (cx > 15) return;
+    if (cz > 15) return;
+    if (section > 7) return;
+
+    gm_chunk_id = (section * 256) + (cz * 16) + cx;
+    if (render_chunk_dirty[gm_chunk_id] != 0) return;
+    if (render_dirty_chunk_count >= 1024) return;
+
+    render_dirty_chunk_x[render_dirty_chunk_count] = cx;
+    render_dirty_chunk_z[render_dirty_chunk_count] = cz;
+    render_dirty_chunk_s[render_dirty_chunk_count] = section;
+    render_dirty_chunk_count = render_dirty_chunk_count + 1;
+
+    render_chunk_dirty[gm_chunk_id] = 1;
+}
+
+void removeQueuedRenderRemeshAt(int idx)
+{
+    render_dirty_chunk_count = render_dirty_chunk_count - 1;
+    if (idx < render_dirty_chunk_count)
+    {
+        render_dirty_chunk_x[idx] = render_dirty_chunk_x[render_dirty_chunk_count];
+        render_dirty_chunk_z[idx] = render_dirty_chunk_z[render_dirty_chunk_count];
+        render_dirty_chunk_s[idx] = render_dirty_chunk_s[render_dirty_chunk_count];
+    }
+}
+
+void processQueuedRenderRemesh()
+{
+    if (render_cache_valid == 0) return;
+    if (render_dirty_chunk_count <= 0) return;
+
+    /* v53: edit remeshes use the cheap fast-edit path, so they no longer need
+       to be delayed by almost a tenth of a second. Keeping this check allows
+       the delay to be raised for debugging without touching the scheduler. */
+    if (render_last_edit_ms != (uint)0)
+    {
+        if ((millis() - render_last_edit_ms) < (uint)render_edit_remesh_delay_ms) return;
+    }
+
+    if (render_remesh_wait > 0)
+    {
+        render_remesh_wait = render_remesh_wait - 1;
+        return;
+    }
+
+    render_dirty_pick = -1;
+    render_dirty_scan = 0;
+    /* Do not walk a huge dirty queue in one frame. renderWorld queues chunks
+       near-first, so the first entries are normally the ones that matter; this
+       prevents backlog scanning from becoming its own edit-time spike. */
+    render_dirty_exists = render_dirty_chunk_count;
+    if (render_dirty_exists > 48) render_dirty_exists = 48;
+    while (render_dirty_scan < render_dirty_exists)
+    {
+        gm_chunk_x = render_dirty_chunk_x[render_dirty_scan];
+        gm_chunk_z = render_dirty_chunk_z[render_dirty_scan];
+        gm_section = render_dirty_chunk_s[render_dirty_scan];
+        gm_chunk_id = (gm_section * 256) + (gm_chunk_z * 16) + gm_chunk_x;
+
+        if (render_chunk_dirty[gm_chunk_id] == 0)
+        {
+            removeQueuedRenderRemeshAt(render_dirty_scan);
+            if (render_dirty_exists > render_dirty_chunk_count) render_dirty_exists = render_dirty_chunk_count;
+        }
+        else
+        {
+            if ((gm_chunk_x >= gm_chunk_cx0) && (gm_chunk_x <= gm_chunk_cx1) && (gm_chunk_z >= gm_chunk_cz0) && (gm_chunk_z <= gm_chunk_cz1))
+            {
+                if (renderChunkMightBeVisible(gm_chunk_x, gm_chunk_z, gm_section) != 0)
+                {
+                    render_dirty_pick = render_dirty_scan;
+                    render_dirty_scan = render_dirty_chunk_count;
+                }
+            }
+            render_dirty_scan = render_dirty_scan + 1;
+        }
+    }
+
+    if (render_dirty_pick < 0)
+    {
+        if ((fps_value > 18) && (render_dirty_chunk_count > 0)) render_dirty_pick = 0;
+        else return;
+    }
+
+    gm_chunk_x = render_dirty_chunk_x[render_dirty_pick];
+    gm_chunk_z = render_dirty_chunk_z[render_dirty_pick];
+    gm_section = render_dirty_chunk_s[render_dirty_pick];
+    gm_chunk_id = (gm_section * 256) + (gm_chunk_z * 16) + gm_chunk_x;
+
+    /* Time-budget natural streaming, but always guarantee progress. A strict
+       FPS threshold created a feedback loop where missing chunks lowered FPS
+       and low FPS permanently prevented those chunks from being built. */
+    if (render_chunk_dirty_edit[gm_chunk_id] == 0)
+    {
+        render_stream_build_end_ms = millis();
+        if (render_stream_build_end_ms < render_stream_next_build_ms) return;
+        if ((fps_value > 0) && (fps_value < 20))
+        {
+            if (render_stream_last_build_ms != (uint)0)
+            {
+                if ((render_stream_build_end_ms - render_stream_last_build_ms) < (uint)render_stream_force_interval_ms) return;
+            }
+            render_stream_forced_build_count = render_stream_forced_build_count + 1;
+        }
+    }
+
+    removeQueuedRenderRemeshAt(render_dirty_pick);
+
+    if (render_chunk_dirty[gm_chunk_id] != 0)
+    {
+        render_chunk_dirty[gm_chunk_id] = 0;
+        render_stream_build_start_ms = millis();
+        if (render_chunk_dirty_edit[gm_chunk_id] != 0)
+        {
+            render_chunk_dirty_edit[gm_chunk_id] = 0;
+            rebuildRenderChunkAtFastEdit(gm_chunk_x, gm_chunk_z, gm_section);
+            /* Fast-edit remeshes are intentionally cheap. Still process at most
+               one queued section per frame so edge edits touching neighbor
+               chunks do not clump into one long stall. */
+            render_remesh_wait = 1;
+        }
+        else
+        {
+            rebuildRenderChunkAt(gm_chunk_x, gm_chunk_z, gm_section);
+            render_remesh_wait = 0;
+        }
+
+        render_stream_build_end_ms = millis();
+        render_stream_last_build_duration_ms = (int)(render_stream_build_end_ms - render_stream_build_start_ms);
+        render_stream_last_build_ms = render_stream_build_end_ms;
+        render_stream_build_count = render_stream_build_count + 1;
+
+        /* A section build cannot be interrupted, so repay work that exceeded
+           the nominal frame budget by spacing the next build in real time. */
+        render_remesh_delay = 1;
+        if (render_stream_last_build_duration_ms > render_stream_frame_budget_ms)
+            render_remesh_delay = render_stream_last_build_duration_ms * 2;
+        if ((fps_value > 0) && (fps_value < 20) && (render_remesh_delay < render_stream_force_interval_ms))
+            render_remesh_delay = render_stream_force_interval_ms;
+        if (render_remesh_delay > 250) render_remesh_delay = 250;
+        render_stream_next_build_ms = render_stream_build_end_ms + (uint)render_remesh_delay;
+    }
+}
+
+
+void processBackgroundGreedyRemesh()
+{
+    if (render_bg_greedy_enabled == 0) return;
+    if (render_cache_valid == 0) return;
+    if (render_bg_greedy_count <= 0) return;
+    if (millis() < render_bg_greedy_next_ms) return;
+
+    if (render_last_edit_ms != (uint)0)
+    {
+        if ((millis() - render_last_edit_ms) < (uint)render_bg_greedy_delay_ms) return;
+    }
+
+    if (render_dirty_chunk_count > 0) return;
+    if (render_remesh_wait > 0) return;
+    if ((fps_value > 0) && (fps_value < 24)) return;
+
+    render_bg_greedy_pick = -1;
+    render_bg_greedy_scan = 0;
+    render_dirty_exists = render_bg_greedy_count;
+    if (render_dirty_exists > 32) render_dirty_exists = 32;
+
+    while (render_bg_greedy_scan < render_dirty_exists)
+    {
+        gm_chunk_x = render_bg_greedy_x[render_bg_greedy_scan];
+        gm_chunk_z = render_bg_greedy_z[render_bg_greedy_scan];
+        gm_section = render_bg_greedy_s[render_bg_greedy_scan];
+        gm_chunk_id = (gm_section * 256) + (gm_chunk_z * 16) + gm_chunk_x;
+
+        if ((render_bg_greedy_dirty[gm_chunk_id] == 0) || (render_chunk_built[gm_chunk_id] == 0))
+        {
+            render_bg_greedy_dirty[gm_chunk_id] = 0;
+            removeQueuedBackgroundGreedyAt(render_bg_greedy_scan);
+            if (render_dirty_exists > render_bg_greedy_count) render_dirty_exists = render_bg_greedy_count;
+        }
+        else
+        {
+            if ((gm_chunk_x >= gm_chunk_cx0) && (gm_chunk_x <= gm_chunk_cx1) && (gm_chunk_z >= gm_chunk_cz0) && (gm_chunk_z <= gm_chunk_cz1))
+            {
+                if (renderChunkMightBeVisible(gm_chunk_x, gm_chunk_z, gm_section) != 0)
+                {
+                    render_bg_greedy_pick = render_bg_greedy_scan;
+                    render_bg_greedy_scan = render_bg_greedy_count;
+                }
+            }
+            render_bg_greedy_scan = render_bg_greedy_scan + 1;
+        }
+    }
+
+    if (render_bg_greedy_pick < 0) return;
+
+    gm_chunk_x = render_bg_greedy_x[render_bg_greedy_pick];
+    gm_chunk_z = render_bg_greedy_z[render_bg_greedy_pick];
+    gm_section = render_bg_greedy_s[render_bg_greedy_pick];
+    gm_chunk_id = (gm_section * 256) + (gm_chunk_z * 16) + gm_chunk_x;
+
+    render_bg_greedy_dirty[gm_chunk_id] = 0;
+    removeQueuedBackgroundGreedyAt(render_bg_greedy_pick);
+
+    if (render_chunk_built[gm_chunk_id] != 0)
+    {
+        rebuildRenderChunkAt(gm_chunk_x, gm_chunk_z, gm_section);
+        render_bg_greedy_next_ms = millis() + (uint)render_bg_greedy_interval_ms;
+        render_remesh_wait = 2;
+    }
+}
+
+void processRenderMeshCompaction()
+{
+    if (render_mesh_compact_enabled == 0) return;
+    if (render_mesh_compact_needed == 0) return;
+    if (render_cache_valid == 0) return;
+    if (render_dead_mesh_count <= 0)
+    {
+        render_mesh_compact_needed = 0;
+        return;
+    }
+
+    if (render_last_edit_ms != (uint)0)
+    {
+        if ((millis() - render_last_edit_ms) < (uint)render_bg_greedy_delay_ms) return;
+    }
+
+    if (render_dirty_chunk_count > 0) return;
+    if (render_bg_greedy_count > 0) return;
+    if ((fps_value > 0) && (fps_value < 24)) return;
+
+    compactRenderMeshCache();
+}
+
+void advanceRenderPrefetchCursor()
+{
+    render_prefetch_s = render_prefetch_s + 1;
+    if (render_prefetch_s >= 8)
+    {
+        render_prefetch_s = 0;
+        render_prefetch_x = render_prefetch_x + 1;
+        if (render_prefetch_x > render_prefetch_cx1)
+        {
+            render_prefetch_x = render_prefetch_cx0;
+            render_prefetch_z = render_prefetch_z + 1;
+        }
+    }
+}
+
+void processBackgroundRenderPrefetch()
+{
+    if (render_cache_valid == 0) return;
+    if (render_dirty_chunk_count > 0) return;
+    if (render_remesh_wait > 0) return;
+    if ((fps_value > 0) && (fps_value < 24)) return;
+    if (millis() < render_prefetch_next_ms) return;
+
+    if (render_prefetch_active == 0)
+    {
+        render_prefetch_cx0 = gm_chunk_cx0 - 1;
+        render_prefetch_cx1 = gm_chunk_cx1 + 1;
+        render_prefetch_cz0 = gm_chunk_cz0 - 1;
+        render_prefetch_cz1 = gm_chunk_cz1 + 1;
+        if (render_prefetch_cx0 < 0) render_prefetch_cx0 = 0;
+        if (render_prefetch_cz0 < 0) render_prefetch_cz0 = 0;
+        render_prefetch_radius = (render_cache_width - 1) / 8;
+        if (render_prefetch_radius > 15) render_prefetch_radius = 15;
+        if (render_prefetch_cx1 > render_prefetch_radius) render_prefetch_cx1 = render_prefetch_radius;
+        if (render_prefetch_cz1 > render_prefetch_radius) render_prefetch_cz1 = render_prefetch_radius;
+        render_prefetch_x = render_prefetch_cx0;
+        render_prefetch_z = render_prefetch_cz0;
+        render_prefetch_s = 0;
+        render_prefetch_active = 1;
+    }
+
+    render_prefetch_attempts = 0;
+    while ((render_prefetch_active != 0) && (render_prefetch_attempts < 32))
+    {
+        if (render_prefetch_z > render_prefetch_cz1)
+        {
+            render_prefetch_active = 0;
+        }
+        else
+        {
+            gm_chunk_id = (render_prefetch_s * 256) + (render_prefetch_z * 16) + render_prefetch_x;
+            rn_max_s = getNaturalMaxSectionForRenderChunk(render_prefetch_x, render_prefetch_z);
+            if ((render_prefetch_s <= rn_max_s) && (render_chunk_built[gm_chunk_id] == 0) && (render_chunk_dirty[gm_chunk_id] == 0))
+            {
+                queueRenderChunkRemesh(render_prefetch_x, render_prefetch_z, render_prefetch_s);
+                advanceRenderPrefetchCursor();
+                render_prefetch_next_ms = millis() + (uint)render_prefetch_interval_ms;
+                return;
+            }
+            advanceRenderPrefetchCursor();
+            render_prefetch_attempts = render_prefetch_attempts + 1;
+        }
+    }
+
+    render_prefetch_next_ms = millis() + (uint)render_prefetch_interval_ms;
+}
+
+
+void markRenderChunkDirtyForEdit(int cx, int cz, int section, int y, uint b)
+{
+    if (cx < 0) return;
+    if (cz < 0) return;
+    if (section < 0) return;
+    if (cx > 15) return;
+    if (cz > 15) return;
+    if (section > 7) return;
+
+    gm_chunk_id = (section * 256) + (cz * 16) + cx;
+    render_chunk_has_edit[gm_chunk_id] = 1;
+    if (b != (uint)0)
+    {
+        if (render_chunk_max_y[gm_chunk_id] < y) render_chunk_max_y[gm_chunk_id] = y;
+    }
+    render_chunk_dirty_edit[gm_chunk_id] = 1;
+    queueRenderChunkRemesh(cx, cz, section);
+}
+
+void patchRenderCacheEdit(int wx, int y, int wz, uint b)
+{
+    // v53: mark only chunks that share a face with the edited block.
+    // The old +/-1 x/z range also queued diagonal chunks, which produced
+    // unnecessary rebuilds and made edit spikes worse on hardware.
+    if (render_cache_valid == 0) return;
+    if (y < 0) return;
+    if (y >= 64) return;
+
+    render_last_edit_ms = millis();
+    render_remesh_wait = 0;
+
+    rc_col_x = wx - render_cache_origin_x;
+    rc_col_z = wz - render_cache_origin_z;
+    if (rc_col_x < 0) return;
+    if (rc_col_z < 0) return;
+    if (rc_col_x >= render_cache_width) return;
+    if (rc_col_z >= render_cache_width) return;
+
+    gm_chunk_cx0 = rc_col_x / 8;
+    gm_chunk_cz0 = rc_col_z / 8;
+
+    gm_y0 = y / 8;
+    gm_y1 = gm_y0;
+    if ((y & 7) == 0) gm_y0 = gm_y0 - 1;
+    if ((y & 7) == 7) gm_y1 = gm_y1 + 1;
+    if (gm_y0 < 0) gm_y0 = 0;
+    if (gm_y1 > 7) gm_y1 = 7;
+
+    gm_section = gm_y0;
+    while (gm_section <= gm_y1)
+    {
+        markRenderChunkDirtyForEdit(gm_chunk_cx0, gm_chunk_cz0, gm_section, y, b);
+
+        if ((rc_col_x & 7) == 0) markRenderChunkDirtyForEdit(gm_chunk_cx0 - 1, gm_chunk_cz0, gm_section, y, b);
+        if ((rc_col_x & 7) == 7) markRenderChunkDirtyForEdit(gm_chunk_cx0 + 1, gm_chunk_cz0, gm_section, y, b);
+        if ((rc_col_z & 7) == 0) markRenderChunkDirtyForEdit(gm_chunk_cx0, gm_chunk_cz0 - 1, gm_section, y, b);
+        if ((rc_col_z & 7) == 7) markRenderChunkDirtyForEdit(gm_chunk_cx0, gm_chunk_cz0 + 1, gm_section, y, b);
+
+        gm_section = gm_section + 1;
+    }
+}
+
+void clearNaturalColumnCache()
+{
+    render_column_cache_i = 0;
+    while (render_column_cache_i < 16384)
+    {
+        render_natural_column_info[render_column_cache_i] = render_natural_column_invalid;
+        render_column_cache_i = render_column_cache_i + 1;
+    }
+}
+
+void shiftRenderColumnCache(int new_center_x, int new_center_z, int new_radius)
+{
+    render_shift_old_origin_x = render_cache_origin_x;
+    render_shift_old_origin_z = render_cache_origin_z;
+    render_shift_old_width = render_cache_width;
+    render_shift_new_origin_x = new_center_x - new_radius;
+    render_shift_new_origin_z = new_center_z - new_radius;
+    render_shift_new_width = (new_radius * 2) + 1;
+
+    /* Preserve already-computed procedural columns in the overlapping area. */
+    render_column_cache_i = 0;
+    while (render_column_cache_i < 16384)
+    {
+        render_natural_column_shift[render_column_cache_i] = render_natural_column_invalid;
+        render_column_cache_i = render_column_cache_i + 1;
+    }
+    render_column_cache_z = 0;
+    while (render_column_cache_z < render_shift_old_width)
+    {
+        render_column_cache_x = 0;
+        while (render_column_cache_x < render_shift_old_width)
+        {
+            render_column_cache_i = (render_column_cache_z * 128) + render_column_cache_x;
+            render_column_info_word = render_natural_column_info[render_column_cache_i];
+            if (render_column_info_word != render_natural_column_invalid)
+            {
+                render_column_cache_new_x = render_shift_old_origin_x + render_column_cache_x - render_shift_new_origin_x;
+                render_column_cache_new_z = render_shift_old_origin_z + render_column_cache_z - render_shift_new_origin_z;
+                if ((render_column_cache_new_x >= 0) && (render_column_cache_new_x < render_shift_new_width))
+                {
+                    if ((render_column_cache_new_z >= 0) && (render_column_cache_new_z < render_shift_new_width))
+                    {
+                        render_natural_column_shift[(render_column_cache_new_z * 128) + render_column_cache_new_x] = render_column_info_word;
+                    }
+                }
+            }
+            render_column_cache_x = render_column_cache_x + 1;
+        }
+        render_column_cache_z = render_column_cache_z + 1;
+    }
+    render_column_cache_i = 0;
+    while (render_column_cache_i < 16384)
+    {
+        render_natural_column_info[render_column_cache_i] = render_natural_column_shift[render_column_cache_i];
+        render_column_cache_i = render_column_cache_i + 1;
+    }
+
+    render_chunk_i = 0;
+    while (render_chunk_i < 2048)
+    {
+        render_shift_chunk_built[render_chunk_i] = 0;
+        render_shift_chunk_max_y[render_chunk_i] = -2;
+        render_chunk_i = render_chunk_i + 1;
+    }
+    render_chunk_i = 0;
+    while (render_chunk_i < 256)
+    {
+        render_shift_natural_max_section[render_chunk_i] = -2;
+        render_chunk_i = render_chunk_i + 1;
+    }
+
+    /* Reindex retained built flags and height metadata. Chunks containing custom
+       models are deliberately rebuilt so their per-section object lists remain
+       exact after the move. */
+    render_shift_preserved_sections = 0;
+    gm_section = 0;
+    while (gm_section < 8)
+    {
+        gm_chunk_z = 0;
+        while (gm_chunk_z < 16)
+        {
+            gm_chunk_x = 0;
+            while (gm_chunk_x < 16)
+            {
+                render_shift_old_chunk_id = (gm_section * 256) + (gm_chunk_z * 16) + gm_chunk_x;
+                gm_x0 = render_shift_old_origin_x + gm_chunk_x * 8 - render_shift_new_origin_x;
+                gm_z0 = render_shift_old_origin_z + gm_chunk_z * 8 - render_shift_new_origin_z;
+                if ((gm_x0 >= 0) && (gm_z0 >= 0) && (gm_x0 < render_shift_new_width) && (gm_z0 < render_shift_new_width))
+                {
+                    render_shift_new_chunk_x = gm_x0 / 8;
+                    render_shift_new_chunk_z = gm_z0 / 8;
+                    if ((render_shift_new_chunk_x >= 0) && (render_shift_new_chunk_x < 16) && (render_shift_new_chunk_z >= 0) && (render_shift_new_chunk_z < 16))
+                    {
+                        render_shift_new_chunk_id = (gm_section * 256) + (render_shift_new_chunk_z * 16) + render_shift_new_chunk_x;
+                        if ((render_chunk_built[render_shift_old_chunk_id] != 0) && (render_chunk_has_custom_model[render_shift_old_chunk_id] == 0))
+                        {
+                            render_shift_chunk_built[render_shift_new_chunk_id] = 1;
+                            render_shift_chunk_max_y[render_shift_new_chunk_id] = render_chunk_max_y[render_shift_old_chunk_id];
+                            render_shift_preserved_sections = render_shift_preserved_sections + 1;
+                        }
+                    }
+                }
+                gm_chunk_x = gm_chunk_x + 1;
+            }
+            gm_chunk_z = gm_chunk_z + 1;
+        }
+        gm_section = gm_section + 1;
+    }
+
+    gm_chunk_z = 0;
+    while (gm_chunk_z < 16)
+    {
+        gm_chunk_x = 0;
+        while (gm_chunk_x < 16)
+        {
+            gm_x0 = render_shift_old_origin_x + gm_chunk_x * 8 - render_shift_new_origin_x;
+            gm_z0 = render_shift_old_origin_z + gm_chunk_z * 8 - render_shift_new_origin_z;
+            if ((gm_x0 >= 0) && (gm_z0 >= 0) && (gm_x0 < render_shift_new_width) && (gm_z0 < render_shift_new_width))
+            {
+                render_shift_new_chunk_x = gm_x0 / 8;
+                render_shift_new_chunk_z = gm_z0 / 8;
+                if ((render_shift_new_chunk_x >= 0) && (render_shift_new_chunk_x < 16) && (render_shift_new_chunk_z >= 0) && (render_shift_new_chunk_z < 16))
+                {
+                    render_shift_natural_max_section[(render_shift_new_chunk_z * 16) + render_shift_new_chunk_x] = render_chunk_natural_max_section[(gm_chunk_z * 16) + gm_chunk_x];
+                }
+            }
+            gm_chunk_x = gm_chunk_x + 1;
+        }
+        gm_chunk_z = gm_chunk_z + 1;
+    }
+
+    /* Compact and repack retained meshes into the new cache-local coordinate
+       system. Aligned eight-block origins guarantee each retained rectangle
+       remains in exactly one render chunk. */
+    render_shift_new_mesh_count = 0;
+    gm_mesh_i = 0;
+    while (gm_mesh_i < render_mesh_count)
+    {
+        gm_p0 = render_mesh_p0[gm_mesh_i];
+        gm_face_bit = (gm_p0 >> 20) & (uint)63;
+        if (gm_face_bit != (uint)0)
+        {
+            gm_p1 = render_mesh_p1[gm_mesh_i];
+            render_shift_old_chunk_id = (int)((gm_p1 >> 20) & (uint)4095);
+            if (render_chunk_has_custom_model[render_shift_old_chunk_id] == 0)
+            {
+                gm_x0 = (int)(gm_p0 & (uint)127) + render_shift_old_origin_x - render_shift_new_origin_x;
+                gm_z0 = (int)((gm_p0 >> 7) & (uint)127) + render_shift_old_origin_z - render_shift_new_origin_z;
+                gm_x1 = (int)(gm_p1 & (uint)127) + render_shift_old_origin_x - render_shift_new_origin_x;
+                gm_z1 = (int)((gm_p1 >> 7) & (uint)127) + render_shift_old_origin_z - render_shift_new_origin_z;
+                if ((gm_x0 >= 0) && (gm_z0 >= 0) && (gm_x1 < render_shift_new_width) && (gm_z1 < render_shift_new_width))
+                {
+                    gm_y0 = (int)((gm_p0 >> 14) & (uint)63);
+                    gm_y1 = (int)((gm_p1 >> 14) & (uint)63);
+                    gm_block_id = (gm_p0 >> 26) & (uint)15;
+                    gm_section = render_shift_old_chunk_id / 256;
+                    render_shift_new_chunk_x = gm_x0 / 8;
+                    render_shift_new_chunk_z = gm_z0 / 8;
+                    render_shift_new_chunk_id = (gm_section * 256) + (render_shift_new_chunk_z * 16) + render_shift_new_chunk_x;
+                    render_mesh_p0[render_shift_new_mesh_count] = ((uint)gm_x0) | ((uint)gm_z0 << 7) | ((uint)gm_y0 << 14) | ((gm_face_bit & (uint)63) << 20) | ((gm_block_id & (uint)15) << 26);
+                    render_mesh_p1[render_shift_new_mesh_count] = ((uint)gm_x1) | ((uint)gm_z1 << 7) | ((uint)gm_y1 << 14) | ((uint)render_shift_new_chunk_id << 20);
+                    render_shift_new_mesh_count = render_shift_new_mesh_count + 1;
+                }
+            }
+        }
+        gm_mesh_i = gm_mesh_i + 1;
+    }
+
+    render_cache_radius = new_radius;
+    render_cache_width = render_shift_new_width;
+    render_cache_origin_x = render_shift_new_origin_x;
+    render_cache_origin_z = render_shift_new_origin_z;
+    render_cache_center_x = new_center_x;
+    render_cache_center_z = new_center_z;
+    render_cache_chunks = render_chunks;
+
+    clearRenderChunkHeads();
+    clearRenderChunkBuiltFlags();
+    render_mesh_count = render_shift_new_mesh_count;
+    render_free_mesh_head = -1;
+    render_dead_mesh_count = 0;
+    render_mesh_compact_needed = 0;
+
+    render_chunk_i = 0;
+    while (render_chunk_i < 2048)
+    {
+        render_chunk_built[render_chunk_i] = render_shift_chunk_built[render_chunk_i];
+        render_chunk_max_y[render_chunk_i] = render_shift_chunk_max_y[render_chunk_i];
+        render_chunk_i = render_chunk_i + 1;
+    }
+    render_chunk_i = 0;
+    while (render_chunk_i < 256)
+    {
+        render_chunk_natural_max_section[render_chunk_i] = render_shift_natural_max_section[render_chunk_i];
+        render_chunk_i = render_chunk_i + 1;
+    }
+
+    gm_mesh_i = 0;
+    while (gm_mesh_i < render_mesh_count)
+    {
+        gm_p0 = render_mesh_p0[gm_mesh_i];
+        gm_p1 = render_mesh_p1[gm_mesh_i];
+        gm_face_bit = (gm_p0 >> 20) & (uint)63;
+        gm_chunk_id = (int)((gm_p1 >> 20) & (uint)4095);
+        render_face_slot = (gm_chunk_id * 6) + renderFaceSlot(gm_face_bit);
+        render_mesh_next[gm_mesh_i] = render_chunk_face_head[render_face_slot];
+        render_chunk_face_head[render_face_slot] = gm_mesh_i;
+        render_chunk_face_mask[gm_chunk_id] = render_chunk_face_mask[gm_chunk_id] | (1 << renderFaceSlot(gm_face_bit));
+        render_chunk_has_fast_faces[gm_chunk_id] = 1;
+        render_chunk_built[gm_chunk_id] = 1;
+        gm_mesh_i = gm_mesh_i + 1;
+    }
+
+    render_shift_preserved_meshes = render_mesh_count;
+    render_dirty_chunk_count = 0;
+    render_prefetch_active = 0;
+    render_prefetch_next_ms = 0;
+    rebuildRenderEditSectionFlags();
+    render_cache_shift_count = render_cache_shift_count + 1;
+}
+
+void buildRenderColumnCache()
+{
+    rc_abs_player_x = (float)world_origin_x + player_x;
+    rc_abs_player_z = (float)world_origin_z + player_z;
+    rc_center_floor_x = floorFloatToInt(rc_abs_player_x);
+    rc_center_floor_z = floorFloatToInt(rc_abs_player_z);
+    // v24: chunk centers are multiples of 16, matching active windows like -8..7.
+    rc_center_floor_x = floorFloatToInt(((float)rc_center_floor_x + 8.0f) * 0.0625f) * 16;
+    rc_center_floor_z = floorFloatToInt(((float)rc_center_floor_z + 8.0f) * 0.0625f) * 16;
+
+    // v24: Minecraft-style visible distance.
+    // render_chunks=1 is exactly the current 16x16 chunk centered on the player.
+    render_radius_blocks = (render_chunks * 16) - 8;
+    if (render_radius_blocks < 8) render_radius_blocks = 8;
+    if (render_radius_blocks > 40) render_radius_blocks = 40;
+
+    // v24: keep enough cached terrain that crossing one chunk boundary does
+    // not immediately discard every built mesh.
+    render_desired_cache_radius = render_radius_blocks + 32;
+    if (render_desired_cache_radius < 40) render_desired_cache_radius = 40;
+    if (render_desired_cache_radius > 63) render_desired_cache_radius = 63;
+    render_desired_cache_radius = (render_desired_cache_radius / 8) * 8;
+
+    render_cache_radius = render_desired_cache_radius;
+    render_cache_width = (render_cache_radius * 2) + 1;
+    render_cache_origin_x = rc_center_floor_x - render_cache_radius;
+    render_cache_origin_z = rc_center_floor_z - render_cache_radius;
+    render_cache_center_x = rc_center_floor_x;
+    render_cache_center_z = rc_center_floor_z;
+    render_cache_chunks = render_chunks;
+
+    clearNaturalColumnCache();
+    clearRenderChunkHeads();
+    clearRenderChunkBuiltFlags();
+    rebuildNaturalRenderSectionLimits();
+    render_mesh_count = 0;
+    render_free_mesh_head = -1;
+    render_dirty_chunk_count = 0;
+    render_prefetch_active = 0;
+    rebuildRenderEditSectionFlags();
+    render_cache_valid = 1;
+    render_cache_reset_count = render_cache_reset_count + 1;
+}
+
+void ensureRenderColumnCache()
+{
+    rc_abs_player_x = (float)world_origin_x + player_x;
+    rc_abs_player_z = (float)world_origin_z + player_z;
+    rc_center_floor_x = floorFloatToInt(rc_abs_player_x);
+    rc_center_floor_z = floorFloatToInt(rc_abs_player_z);
+    // v24: visible/cache centers move only when the player enters a new 16x16 chunk.
+    rc_center_floor_x = floorFloatToInt(((float)rc_center_floor_x + 8.0f) * 0.0625f) * 16;
+    rc_center_floor_z = floorFloatToInt(((float)rc_center_floor_z + 8.0f) * 0.0625f) * 16;
+
+    render_radius_blocks = (render_chunks * 16) - 8;
+    if (render_radius_blocks < 8) render_radius_blocks = 8;
+    if (render_radius_blocks > 40) render_radius_blocks = 40;
+
+    render_desired_cache_radius = render_radius_blocks + 32;
+    if (render_desired_cache_radius < 40) render_desired_cache_radius = 40;
+    if (render_desired_cache_radius > 63) render_desired_cache_radius = 63;
+    render_desired_cache_radius = (render_desired_cache_radius / 8) * 8;
+
+    if (render_cache_valid == 0)
+    {
+        buildRenderColumnCache();
+        return;
+    }
+    if (render_cache_chunks != render_chunks)
+    {
+        shiftRenderColumnCache(rc_center_floor_x, rc_center_floor_z, render_desired_cache_radius);
+        return;
+    }
+    if (render_cache_radius != render_desired_cache_radius)
+    {
+        shiftRenderColumnCache(rc_center_floor_x, rc_center_floor_z, render_desired_cache_radius);
+        return;
+    }
+    rc_cache_dx = rc_center_floor_x - render_cache_center_x;
+    rc_cache_dz = rc_center_floor_z - render_cache_center_z;
+    if (rc_cache_dx < 0) rc_cache_dx = 0 - rc_cache_dx;
+    if (rc_cache_dz < 0) rc_cache_dz = 0 - rc_cache_dz;
+
+    render_cache_shift_margin = render_cache_radius - render_radius_blocks;
+    if (render_cache_shift_margin < 4) render_cache_shift_margin = 4;
+
+    if (rc_cache_dx > render_cache_shift_margin)
+    {
+        shiftRenderColumnCache(rc_center_floor_x, rc_center_floor_z, render_desired_cache_radius);
+        return;
+    }
+    if (rc_cache_dz > render_cache_shift_margin)
+    {
+        shiftRenderColumnCache(rc_center_floor_x, rc_center_floor_z, render_desired_cache_radius);
+        return;
+    }
+}
+
+int renderChunkSectionHasVisibleEdit(int cx, int cz, int section)
+{
+    int x0;
+    int x1;
+    int z0;
+    int z1;
+    int y0;
+    int y1;
+
+    x0 = render_cache_origin_x + cx * 8;
+    x1 = x0 + 7;
+    z0 = render_cache_origin_z + cz * 8;
+    z1 = z0 + 7;
+    y0 = section * 8;
+    y1 = y0 + 7;
+
+    edit_i = 0;
+    while (edit_i < edit_count)
+    {
+        if (edit_block[edit_i] != (uint)0)
+        {
+            if ((edit_x[edit_i] >= x0) && (edit_x[edit_i] <= x1))
+            {
+                if ((edit_z[edit_i] >= z0) && (edit_z[edit_i] <= z1))
+                {
+                    if ((edit_y[edit_i] >= y0) && (edit_y[edit_i] <= y1)) return 1;
+                }
+            }
+        }
+        edit_i = edit_i + 1;
+    }
+    return 0;
+}
+
+int renderChunkMightBeVisible(int cx, int cz, int section)
+{
+    gm_chunk_id = (section * 256) + (cz * 16) + cx;
+    if (render_chunk_max_y[gm_chunk_id] == -1) return 0;
+    if (render_chunk_max_y[gm_chunk_id] == -2)
+    {
+        /* Unknown sections must be considered buildable/possibly visible.
+           The 64-high conversion broke rendering when higher sections were
+           rejected before their mesh was ever generated. */
+    }
+
+    gm_center_x = (float)(render_cache_origin_x + cx * 8 + 4 - world_origin_x);
+    gm_center_y = (float)(section * 8 + 4);
+    gm_center_z = (float)(render_cache_origin_z + cz * 8 + 4 - world_origin_z);
+
+    gm_center_x = gm_center_x - gm_cam_block_x;
+    gm_center_y = gm_center_y - gm_cam_block_y;
+    gm_center_z = gm_center_z - gm_cam_block_z;
+
+    gm_forward = gm_center_x * view_x + gm_center_y * view_y + gm_center_z * view_z;
+
+    if (gm_forward < (0.0f - gm_extent_forward)) return 0;
+
+    gm_side = gm_center_x * cam_right_x + gm_center_z * cam_right_z;
+    gm_side_abs = gm_side;
+    if (gm_side_abs < 0.0f) gm_side_abs = 0.0f - gm_side_abs;
+
+    gm_up = gm_center_x * cam_up_x + gm_center_y * cam_up_y + gm_center_z * cam_up_z;
+    gm_up_abs = gm_up;
+    if (gm_up_abs < 0.0f) gm_up_abs = 0.0f - gm_up_abs;
+
+    gm_fov_margin = gm_forward * render_fov_scale + gm_extent_side + 0.75f;
+    if (gm_fov_margin < gm_extent_side) gm_fov_margin = gm_extent_side;
+    if (gm_side_abs > gm_fov_margin) return 0;
+
+    gm_fov_margin = gm_forward * render_fov_y_scale + gm_extent_up + 0.75f;
+    if (gm_fov_margin < gm_extent_up) gm_fov_margin = gm_extent_up;
+    if (gm_up_abs > gm_fov_margin) return 0;
+
+    return 1;
+}
+
+int renderMeshFaceVisible()
+{
+    if (gm_face_bit == (uint)1) { if (gm_cam_block_y <= gm_fy1) return 0; }
+    else if (gm_face_bit == (uint)2) { if (gm_cam_block_y >= gm_fy0) return 0; }
+    else if (gm_face_bit == (uint)4) { if (gm_cam_block_z >= gm_fz0) return 0; }
+    else if (gm_face_bit == (uint)8) { if (gm_cam_block_z <= gm_fz1) return 0; }
+    else if (gm_face_bit == (uint)16) { if (gm_cam_block_x >= gm_fx0) return 0; }
+    else if (gm_face_bit == (uint)32) { if (gm_cam_block_x <= gm_fx1) return 0; }
+    return 1;
+}
+
+int terrainFaceSlotMayBeVisible(int cx, int cz, int section, int slot)
+{
+    gm_fx0 = (float)(render_cache_origin_x + cx * 8 - world_origin_x);
+    gm_fx1 = gm_fx0 + 8.0f;
+    gm_fz0 = (float)(render_cache_origin_z + cz * 8 - world_origin_z);
+    gm_fz1 = gm_fz0 + 8.0f;
+    gm_fy0 = (float)(section * 8);
+    gm_fy1 = gm_fy0 + 8.0f;
+
+    /* Conservative whole-bucket backface rejection. If the camera is inside
+       the section slab on that axis, keep both directions because some faces
+       can still be visible. */
+    if (slot == 0) { if (gm_cam_block_y < gm_fy0) return 0; return 1; }
+    if (slot == 1) { if (gm_cam_block_y > gm_fy1) return 0; return 1; }
+    if (slot == 2) { if (gm_cam_block_z > gm_fz1) return 0; return 1; }
+    if (slot == 3) { if (gm_cam_block_z < gm_fz0) return 0; return 1; }
+    if (slot == 4) { if (gm_cam_block_x > gm_fx1) return 0; return 1; }
+    if (slot == 5) { if (gm_cam_block_x < gm_fx0) return 0; return 1; }
+    return 1;
+}
+
+int renderMeshMightBeVisible()
+{
+    /* v53 performance: chunk/section visibility already did the expensive
+       forward/side/up frustum test. Repeating it for every merged quad became
+       very expensive after the 64-high renderer fix. Keep only the cheap
+       circular distance test here; the VM renderer still clips correctly. */
+    gm_half_x = (gm_fx1 - gm_fx0) * 0.5f;
+    gm_half_z = (gm_fz1 - gm_fz0) * 0.5f;
+
+    g_dx = ((gm_fx0 + gm_fx1) * 0.5f) - player_x;
+    g_dz = ((gm_fz0 + gm_fz1) * 0.5f) - player_z;
+    g_mesh_extent = gm_half_x + gm_half_z + 2.0f;
+    g_max_side = (float)render_radius_blocks + g_mesh_extent;
+    g_d2 = g_dx * g_dx + g_dz * g_dz;
+    if (g_d2 > (g_max_side * g_max_side)) return 0;
+
+    return 1;
+}
+
+int customBlockModelOnScreen(float bx, float by, float bz, float radius)
+{
+    obj_radius = radius;
+    obj_dx = bx - player_x;
+    obj_dy = by - player_y;
+    obj_dz = bz - player_z;
+
+    g_d2 = obj_dx * obj_dx + obj_dz * obj_dz;
+    if (g_d2 > render_custom_block_distance_sq) return 0;
+
+    obj_forward = obj_dx * view_x + obj_dy * view_y + obj_dz * view_z;
+    if (obj_forward < (0.0f - obj_radius)) return 0;
+
+    obj_side = obj_dx * cam_right_x + obj_dz * cam_right_z;
+    obj_side_abs = obj_side;
+    if (obj_side_abs < 0.0f) obj_side_abs = 0.0f - obj_side_abs;
+
+    obj_up = obj_dx * cam_up_x + obj_dy * cam_up_y + obj_dz * cam_up_z;
+    obj_up_abs = obj_up;
+    if (obj_up_abs < 0.0f) obj_up_abs = 0.0f - obj_up_abs;
+
+    obj_margin = obj_forward * render_fov_scale + obj_radius;
+    if (obj_margin < obj_radius) obj_margin = obj_radius;
+    if (obj_side_abs > obj_margin) return 0;
+
+    obj_margin = obj_forward * render_fov_y_scale + obj_radius;
+    if (obj_margin < obj_radius) obj_margin = obj_radius;
+    if (obj_up_abs > obj_margin) return 0;
+
+    return 1;
+}
+
+void transformBlockModelVertex()
+{
+    item_mesh_tx = (block_model_origin_x + item_mesh_lx * block_model_unit) * block_world_size;
+    item_mesh_ty = (block_model_origin_y + item_mesh_ly * block_model_unit) * block_world_size;
+    item_mesh_tz = (block_model_origin_z + item_mesh_lz * block_model_unit) * block_world_size;
+}
+
+void drawCustomBlockModelAt(int wx, int y, int wz, uint b)
+{
+    block_model_draw_id = (int)b;
+    if (block_model_draw_id < 0) return;
+    if (block_model_draw_id >= TC_MAX_BLOCK_MODELS) return;
+    if (blockModelDefs[block_model_draw_id].used == 0) return;
+
+    block_model_origin_x = (float)(wx - world_origin_x);
+    block_model_origin_y = (float)y;
+    block_model_origin_z = (float)(wz - world_origin_z);
+    block_model_unit = 0.0625f;
+
+    block_model_draw_face = blockModelDefs[block_model_draw_id].first_face;
+    block_model_draw_face_end = block_model_draw_face + blockModelDefs[block_model_draw_id].face_count;
+    while (block_model_draw_face < block_model_draw_face_end)
+    {
+        item_mesh_draw_tex = blockModelFaces[block_model_draw_face].texture_id;
+        item_mesh_draw_tex_ptr = textureRegistryPtr(item_mesh_draw_tex);
+
+        item_mesh_lx = (float)blockModelFaces[block_model_draw_face].x0;
+        item_mesh_ly = (float)blockModelFaces[block_model_draw_face].y0;
+        item_mesh_lz = (float)blockModelFaces[block_model_draw_face].z0;
+        transformBlockModelVertex();
+        item_mesh_x0 = item_mesh_tx;
+        item_mesh_y0 = item_mesh_ty;
+        item_mesh_z0 = item_mesh_tz;
+
+        item_mesh_lx = (float)blockModelFaces[block_model_draw_face].x1;
+        item_mesh_ly = (float)blockModelFaces[block_model_draw_face].y1;
+        item_mesh_lz = (float)blockModelFaces[block_model_draw_face].z1;
+        transformBlockModelVertex();
+        item_mesh_x1 = item_mesh_tx;
+        item_mesh_y1 = item_mesh_ty;
+        item_mesh_z1 = item_mesh_tz;
+
+        item_mesh_lx = (float)blockModelFaces[block_model_draw_face].x2;
+        item_mesh_ly = (float)blockModelFaces[block_model_draw_face].y2;
+        item_mesh_lz = (float)blockModelFaces[block_model_draw_face].z2;
+        transformBlockModelVertex();
+        item_mesh_x2 = item_mesh_tx;
+        item_mesh_y2 = item_mesh_ty;
+        item_mesh_z2 = item_mesh_tz;
+
+        item_mesh_lx = (float)blockModelFaces[block_model_draw_face].x3;
+        item_mesh_ly = (float)blockModelFaces[block_model_draw_face].y3;
+        item_mesh_lz = (float)blockModelFaces[block_model_draw_face].z3;
+        transformBlockModelVertex();
+        item_mesh_x3 = item_mesh_tx;
+        item_mesh_y3 = item_mesh_ty;
+        item_mesh_z3 = item_mesh_tz;
+
+        item_mesh_u0 = (float)blockModelFaces[block_model_draw_face].u0;
+        item_mesh_v0 = (float)blockModelFaces[block_model_draw_face].v0;
+        item_mesh_u1 = (float)blockModelFaces[block_model_draw_face].u1;
+        item_mesh_v1 = (float)blockModelFaces[block_model_draw_face].v1;
+
+        item_mesh_face_flags = blockModelFaces[block_model_draw_face].flags;
+        item_mesh_vm_flags = 0;
+        if ((item_mesh_face_flags & 1) == 0)
+        {
+            if ((item_mesh_face_flags & 2) != 0) item_mesh_vm_flags = 256;
+            else if ((item_mesh_face_flags & 4) != 0) item_mesh_vm_flags = 512;
+        }
+
+        fillQuad3DTexZ(
+            item_mesh_x0, item_mesh_y0, item_mesh_z0, item_mesh_u0, item_mesh_v1,
+            item_mesh_x1, item_mesh_y1, item_mesh_z1, item_mesh_u1, item_mesh_v1,
+            item_mesh_x2, item_mesh_y2, item_mesh_z2, item_mesh_u1, item_mesh_v0,
+            item_mesh_x3, item_mesh_y3, item_mesh_z3, item_mesh_u0, item_mesh_v0,
+            item_mesh_draw_tex_ptr, 16, 16, item_mesh_vm_flags, &cam[0]
+        );
+
+        block_model_draw_face = block_model_draw_face + 1;
+    }
+}
+
+void drawCustomBlockModelsForChunkSection(int cx, int cz, int section)
+{
+    int draw_chunk_id;
+    uint draw_block;
+
+    if (asset_cache_loaded_block_models <= 0) return;
+    if (render_custom_block_frame_budget <= 0) return;
+
+    draw_chunk_id = (section * 256) + (cz * 16) + cx;
+    if (render_chunk_has_custom_model[draw_chunk_id] == 0) return;
+
+    render_custom_block_slot = render_custom_block_head[draw_chunk_id];
+    while (render_custom_block_slot >= 0)
+    {
+        if (render_custom_block_frame_budget <= 0) return;
+
+        block_model_world_x = render_custom_block_x[render_custom_block_slot];
+        block_model_world_y = render_custom_block_y[render_custom_block_slot];
+        block_model_world_z = render_custom_block_z[render_custom_block_slot];
+        draw_block = render_custom_block_id[render_custom_block_slot];
+
+        if (customBlockModelOnScreen((float)(block_model_world_x - world_origin_x) + 0.5f, (float)block_model_world_y + 0.5f, (float)(block_model_world_z - world_origin_z) + 0.5f, 1.2f) != 0)
+        {
+            drawCustomBlockModelAt(block_model_world_x, block_model_world_y, block_model_world_z, draw_block);
+            render_custom_block_frame_budget = render_custom_block_frame_budget - 1;
+        }
+
+        render_custom_block_slot = render_custom_block_next[render_custom_block_slot];
+    }
+}
+
+
+void renderWorld()
+{
+    ensureRenderColumnCache();
+
+    render_frame_stamp = render_frame_stamp + 1;
+    if (render_frame_stamp > 1000000000)
+    {
+        render_frame_stamp = 1;
+        render_chunk_i = 0;
+        while (render_chunk_i < 2048)
+        {
+            render_chunk_visible_stamp[render_chunk_i] = 0;
+            render_chunk_i = render_chunk_i + 1;
+        }
+        render_chunk_i = 0;
+        while (render_chunk_i < 256)
+        {
+            render_xz_visible_stamp[render_chunk_i] = 0;
+            render_chunk_i = render_chunk_i + 1;
+        }
+    }
+
+    render_radius_blocks = (render_chunks * 16) - 8;
+    if (render_radius_blocks < 8) render_radius_blocks = 8;
+    if (render_radius_blocks > 40) render_radius_blocks = 40;
+    render_distance_sq = (float)render_radius_blocks * (float)render_radius_blocks + 16.0f;
+    render_custom_block_distance_sq = render_distance_sq;
+    if (render_custom_block_distance_sq > 400.0f) render_custom_block_distance_sq = 400.0f;
+    render_custom_block_frame_budget = 128;
+    render_missing_queue_budget = 3;
+    render_visible_required_count = 0;
+    render_visible_built_count = 0;
+    render_visible_missing_count = 0;
+
+    rc_abs_player_x = (float)world_origin_x + player_x;
+    rc_abs_player_z = (float)world_origin_z + player_z;
+    render_visible_center_x = floorFloatToInt(((float)floorFloatToInt(rc_abs_player_x) + 8.0f) * 0.0625f) * 16;
+    render_visible_center_z = floorFloatToInt(((float)floorFloatToInt(rc_abs_player_z) + 8.0f) * 0.0625f) * 16;
+    render_visible_min_x = render_visible_center_x - render_radius_blocks;
+    render_visible_max_x = render_visible_center_x + render_radius_blocks;
+    render_visible_min_z = render_visible_center_z - render_radius_blocks;
+    render_visible_max_z = render_visible_center_z + render_radius_blocks;
+
+    gm_x0 = render_visible_min_x - render_cache_origin_x;
+    gm_x1 = render_visible_max_x - 1 - render_cache_origin_x;
+    gm_z0 = render_visible_min_z - render_cache_origin_z;
+    gm_z1 = render_visible_max_z - 1 - render_cache_origin_z;
+    if (gm_x0 < 0) gm_x0 = 0;
+    if (gm_z0 < 0) gm_z0 = 0;
+    if (gm_x1 >= render_cache_width) gm_x1 = render_cache_width - 1;
+    if (gm_z1 >= render_cache_width) gm_z1 = render_cache_width - 1;
+    if (gm_x1 < gm_x0) return;
+    if (gm_z1 < gm_z0) return;
+
+    gm_chunk_cx0 = gm_x0 / 8;
+    gm_chunk_cx1 = gm_x1 / 8;
+    gm_chunk_cz0 = gm_z0 / 8;
+    gm_chunk_cz1 = gm_z1 / 8;
+    if (gm_chunk_cx1 > 15) gm_chunk_cx1 = 15;
+    if (gm_chunk_cz1 > 15) gm_chunk_cz1 = 15;
+
+    gm_cam_block_x = cam_px / block_world_size;
+    gm_cam_block_y = cam_py / block_world_size;
+    gm_cam_block_z = cam_pz / block_world_size;
+    render_mesh_native_config[0] = (float)(render_cache_origin_x - world_origin_x);
+    render_mesh_native_config[1] = (float)(render_cache_origin_z - world_origin_z);
+    render_mesh_native_config[2] = block_world_size;
+    render_mesh_native_config[3] = gm_cam_block_x;
+    render_mesh_native_config[4] = gm_cam_block_y;
+    render_mesh_native_config[5] = gm_cam_block_z;
+
+    /* Every render section is an 8x8x8 box. Cache its projected half-extents
+       once per frame instead of rebuilding the same values for every section. */
+    gm_extent_forward = view_x;
+    if (gm_extent_forward < 0.0f) gm_extent_forward = 0.0f - gm_extent_forward;
+    gm_extent_forward = gm_extent_forward * 4.0f;
+    g_fy = view_y;
+    if (g_fy < 0.0f) g_fy = 0.0f - g_fy;
+    gm_extent_forward = gm_extent_forward + g_fy * 4.0f;
+    g_fz = view_z;
+    if (g_fz < 0.0f) g_fz = 0.0f - g_fz;
+    gm_extent_forward = gm_extent_forward + g_fz * 4.0f + 1.0f;
+
+    gm_extent_side = cam_right_x;
+    if (gm_extent_side < 0.0f) gm_extent_side = 0.0f - gm_extent_side;
+    gm_extent_side = gm_extent_side * 4.0f;
+    g_fx = cam_right_z;
+    if (g_fx < 0.0f) g_fx = 0.0f - g_fx;
+    gm_extent_side = gm_extent_side + g_fx * 4.0f + 2.0f;
+
+    gm_extent_up = cam_up_x;
+    if (gm_extent_up < 0.0f) gm_extent_up = 0.0f - gm_extent_up;
+    gm_extent_up = gm_extent_up * 4.0f;
+    g_fy = cam_up_y;
+    if (g_fy < 0.0f) g_fy = 0.0f - g_fy;
+    gm_extent_up = gm_extent_up + g_fy * 4.0f;
+    g_fz = cam_up_z;
+    if (g_fz < 0.0f) g_fz = 0.0f - g_fz;
+    gm_extent_up = gm_extent_up + g_fz * 4.0f + 2.0f;
+
+    render_cached_tex_block = (uint)999;
+
+    gm_player_chunk_x = (floorFloatToInt(rc_abs_player_x) - render_cache_origin_x) / 8;
+    gm_player_chunk_z = (floorFloatToInt(rc_abs_player_z) - render_cache_origin_z) / 8;
+    if (gm_player_chunk_x < gm_chunk_cx0) gm_player_chunk_x = gm_chunk_cx0;
+    if (gm_player_chunk_x > gm_chunk_cx1) gm_player_chunk_x = gm_chunk_cx1;
+    if (gm_player_chunk_z < gm_chunk_cz0) gm_player_chunk_z = gm_chunk_cz0;
+    if (gm_player_chunk_z > gm_chunk_cz1) gm_player_chunk_z = gm_chunk_cz1;
+
+    gm_max_radius = gm_player_chunk_x - gm_chunk_cx0;
+    gm_dx = gm_chunk_cx1 - gm_player_chunk_x;
+    if (gm_dx > gm_max_radius) gm_max_radius = gm_dx;
+    gm_dz = gm_player_chunk_z - gm_chunk_cz0;
+    if (gm_dz > gm_max_radius) gm_max_radius = gm_dz;
+    gm_dz = gm_chunk_cz1 - gm_player_chunk_z;
+    if (gm_dz > gm_max_radius) gm_max_radius = gm_dz;
+
+    // v24: render chunk rings near-to-far. Closer surfaces populate z first,
+    // so hidden far pixels fail before texture sampling.
+    gm_radius = 0;
+    while (gm_radius <= gm_max_radius)
+    {
+        gm_dz = 0 - gm_radius;
+        while (gm_dz <= gm_radius)
+        {
+            gm_dx = 0 - gm_radius;
+            while (gm_dx <= gm_radius)
+            {
+                if ((gm_dx == (0 - gm_radius)) || (gm_dx == gm_radius) || (gm_dz == (0 - gm_radius)) || (gm_dz == gm_radius))
+                {
+                    gm_chunk_x = gm_player_chunk_x + gm_dx;
+                    gm_chunk_z = gm_player_chunk_z + gm_dz;
+                    if ((gm_chunk_x >= gm_chunk_cx0) && (gm_chunk_x <= gm_chunk_cx1) && (gm_chunk_z >= gm_chunk_cz0) && (gm_chunk_z <= gm_chunk_cz1))
+                    {
+                        rn_max_s = getNaturalMaxSectionForRenderChunk(gm_chunk_x, gm_chunk_z);
+                        gm_section = 0;
+                        while (gm_section < 8)
+                        {
+                            gm_chunk_id = (gm_section * 256) + (gm_chunk_z * 16) + gm_chunk_x;
+
+                            /* Render natural sections up to the per-chunk generated max Y.
+                               v53 computes that max lazily per visible x/z
+                               chunk, so startup no longer scans all 256 cached
+                               chunks before play begins.
+                               Edited sections above natural terrain remain
+                               buildable through render_chunk_has_edit[]. */
+                        if ((gm_section <= rn_max_s) || (render_chunk_has_edit[gm_chunk_id] != 0))
+                        {
+                        if (renderChunkMightBeVisible(gm_chunk_x, gm_chunk_z, gm_section) != 0)
+                        {
+                            render_visible_required_count = render_visible_required_count + 1;
+                            if (render_chunk_built[gm_chunk_id] == 0)
+                            {
+                                render_visible_missing_count = render_visible_missing_count + 1;
+                                if ((render_chunk_dirty[gm_chunk_id] == 0) && (render_missing_queue_budget > 0))
+                                {
+                                    queueRenderChunkRemesh(gm_chunk_x, gm_chunk_z, gm_section);
+                                    render_missing_queue_budget = render_missing_queue_budget - 1;
+                                }
+                            }
+                            else if (render_chunk_built[gm_chunk_id] == 1)
+                            {
+                            render_visible_built_count = render_visible_built_count + 1;
+                            render_chunk_visible_stamp[gm_chunk_id] = render_frame_stamp;
+                            render_xz_visible_stamp[(gm_chunk_z * 16) + gm_chunk_x] = render_frame_stamp;
+                            gm_chunk_center_x = (float)(render_cache_origin_x + gm_chunk_x * 8 + 4 - world_origin_x);
+                            gm_chunk_center_z = (float)(render_cache_origin_z + gm_chunk_z * 8 + 4 - world_origin_z);
+
+                            if (render_chunk_has_fast_faces[gm_chunk_id] != 0)
+                            {
+                            gm_pass = 0;
+                            while (gm_pass < 6)
+                            {
+                                if (gm_pass == 0)
+                                {
+                                    if (gm_cam_block_y >= 4.0f) render_face_slot = 0;
+                                    else render_face_slot = 1;
+                                }
+                                else if (gm_pass == 1)
+                                {
+                                    if (gm_cam_block_y >= 4.0f) render_face_slot = 1;
+                                    else render_face_slot = 0;
+                                }
+                                else if (gm_pass == 2)
+                                {
+                                    if (gm_cam_block_z < gm_chunk_center_z) render_face_slot = 2;
+                                    else render_face_slot = 3;
+                                }
+                                else if (gm_pass == 3)
+                                {
+                                    if (gm_cam_block_z < gm_chunk_center_z) render_face_slot = 3;
+                                    else render_face_slot = 2;
+                                }
+                                else if (gm_pass == 4)
+                                {
+                                    if (gm_cam_block_x < gm_chunk_center_x) render_face_slot = 4;
+                                    else render_face_slot = 5;
+                                }
+                                else
+                                {
+                                    if (gm_cam_block_x < gm_chunk_center_x) render_face_slot = 5;
+                                    else render_face_slot = 4;
+                                }
+
+                                if ((render_chunk_face_mask[gm_chunk_id] & (1 << render_face_slot)) != 0)
+                                {
+                                    if (terrainFaceSlotMayBeVisible(gm_chunk_x, gm_chunk_z, gm_section, render_face_slot) != 0)
+                                    {
+                                        fillPackedTerrainMeshList(
+                                            render_chunk_face_head[(gm_chunk_id * 6) + render_face_slot],
+                                            &render_mesh_p0[0], &render_mesh_p1[0], &render_mesh_next[0],
+                                            24576, &render_mesh_native_config[0],
+                                            &render_mesh_top_tex_by_block[0],
+                                            &render_mesh_bottom_tex_by_block[0],
+                                            &render_mesh_side_tex_by_block[0],
+                                            &cam[0]
+                                            );
+                                    }
+                                }
+                                gm_pass = gm_pass + 1;
+                            }
+                            }
+                            drawCustomBlockModelsForChunkSection(gm_chunk_x, gm_chunk_z, gm_section);
+                            }
+                        }
+                        }
+                        gm_section = gm_section + 1;
+                        }
+                    }
+                }
+                gm_dx = gm_dx + 1;
+            }
+            gm_dz = gm_dz + 1;
+        }
+        gm_radius = gm_radius + 1;
+    }
+}
+
+void drawCrosshair()
+{
+    drawLine(156, 120, 164, 120, (uint)255);
+    drawLine(160, 116, 160, 124, (uint)255);
+}
+

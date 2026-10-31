@@ -1,0 +1,193 @@
+/* Runtime reader for tools/mc10_asset_pack.py output. */
+
+#define MC_ASSET_HEADER_BYTES 32
+#define MC_ASSET_RECORD_BYTES 40
+#define MC_ASSET_KIND_IMAGE 1
+#define MC_ASSET_FLAG_MASK 1
+#define MC_ASSET_MAX_PIXEL_BYTES 76800
+#define MC_ASSET_MAX_MASK_BYTES 9600
+
+char mc_asset_path[19] = {'/', 'M', 'C', '1', '0', '/', 'a', 's', 's', 'e', 't', 's', '.', 'm', 'c', '1', '0', 0, 0};
+char mc_asset_header[MC_ASSET_HEADER_BYTES];
+char mc_asset_record[MC_ASSET_RECORD_BYTES];
+uint mc_asset_pixels[19200];
+uint mc_asset_mask[2400];
+uint mc_asset_record_count = 0;
+uint mc_asset_directory_offset = 0;
+uint mc_asset_payload_offset = 0;
+uint mc_asset_source_crc32 = 0;
+uint mc_asset_loaded_width = 0;
+uint mc_asset_loaded_height = 0;
+uint mc_asset_loaded_flags = 0;
+uint mc_asset_loaded_mask_bytes = 0;
+int mc_asset_pack_ready = 0;
+
+uint mc_asset_read_u32(char *data, int offset)
+{
+    return ((uint)data[offset] & 255) |
+           (((uint)data[offset + 1] & 255) << 8) |
+           (((uint)data[offset + 2] & 255) << 16) |
+           (((uint)data[offset + 3] & 255) << 24);
+}
+
+uint mc_asset_name_hash(char *name)
+{
+    uint hash = 0x811c9dc5;
+    int i = 0;
+    while (name[i] != 0)
+    {
+        hash = hash ^ ((uint)name[i] & 255);
+        hash = hash * 0x01000193;
+        i = i + 1;
+    }
+    return hash;
+}
+
+int mc_asset_open(void)
+{
+    int count;
+    uint file_size;
+    mc_asset_pack_ready = 0;
+    if (!narm_storage_mount(NARM_STORAGE_SD)) return 0;
+    if (narm_file_size(&mc_asset_path[0], NARM_STORAGE_SD, &file_size) < 0) return 0;
+    if (file_size < MC_ASSET_HEADER_BYTES) return 0;
+    count = narm_file_read(&mc_asset_path[0], &mc_asset_header[0], 0,
+                           MC_ASSET_HEADER_BYTES, NARM_STORAGE_SD);
+    if (count != MC_ASSET_HEADER_BYTES) return 0;
+    if (mc_asset_header[0] != 'M' || mc_asset_header[1] != 'C' ||
+        mc_asset_header[2] != 'A' || mc_asset_header[3] != '1') return 0;
+    if (mc_asset_read_u32(&mc_asset_header[0], 4) != 1) return 0;
+    mc_asset_record_count = mc_asset_read_u32(&mc_asset_header[0], 8);
+    if (mc_asset_record_count == 0 || mc_asset_record_count > 4096) return 0;
+    if (mc_asset_read_u32(&mc_asset_header[0], 12) != MC_ASSET_RECORD_BYTES) return 0;
+    mc_asset_directory_offset = mc_asset_read_u32(&mc_asset_header[0], 16);
+    mc_asset_payload_offset = mc_asset_read_u32(&mc_asset_header[0], 20);
+    mc_asset_source_crc32 = mc_asset_read_u32(&mc_asset_header[0], 24);
+    if (mc_asset_directory_offset < MC_ASSET_HEADER_BYTES) return 0;
+    if (mc_asset_payload_offset > file_size) return 0;
+    if (mc_asset_directory_offset + mc_asset_record_count * MC_ASSET_RECORD_BYTES > file_size) return 0;
+    mc_asset_pack_ready = 1;
+    return 1;
+}
+
+int mc_asset_find(char *name)
+{
+    uint wanted;
+    uint index;
+    uint offset;
+    int count;
+    if (!mc_asset_pack_ready && !mc_asset_open()) return 0;
+    wanted = mc_asset_name_hash(name);
+    index = 0;
+    while (index < mc_asset_record_count)
+    {
+        offset = mc_asset_directory_offset + index * MC_ASSET_RECORD_BYTES;
+        count = narm_file_read(&mc_asset_path[0], &mc_asset_record[0], offset,
+                               MC_ASSET_RECORD_BYTES, NARM_STORAGE_SD);
+        if (count != MC_ASSET_RECORD_BYTES) return 0;
+        if (mc_asset_read_u32(&mc_asset_record[0], 0) == wanted) return 1;
+        index = index + 1;
+    }
+    return 0;
+}
+
+int mc_asset_load_image(char *name)
+{
+    uint kind;
+    uint data_offset;
+    uint data_bytes;
+    uint mask_offset;
+    uint mask_bytes;
+    int count;
+    if (!mc_asset_find(name)) return 0;
+    kind = mc_asset_read_u32(&mc_asset_record[0], 4);
+    if (kind != MC_ASSET_KIND_IMAGE) return 0;
+    mc_asset_loaded_width = mc_asset_read_u32(&mc_asset_record[0], 8);
+    mc_asset_loaded_height = mc_asset_read_u32(&mc_asset_record[0], 12);
+    mc_asset_loaded_flags = mc_asset_read_u32(&mc_asset_record[0], 16);
+    data_offset = mc_asset_read_u32(&mc_asset_record[0], 20);
+    data_bytes = mc_asset_read_u32(&mc_asset_record[0], 24);
+    mask_offset = mc_asset_read_u32(&mc_asset_record[0], 28);
+    mask_bytes = mc_asset_read_u32(&mc_asset_record[0], 32);
+    if (mc_asset_loaded_width == 0 || mc_asset_loaded_height == 0) return 0;
+    if (data_bytes > MC_ASSET_MAX_PIXEL_BYTES) return 0;
+    if (mask_bytes > MC_ASSET_MAX_MASK_BYTES) return 0;
+    count = narm_file_read(&mc_asset_path[0], &mc_asset_pixels[0], data_offset,
+                           data_bytes, NARM_STORAGE_SD);
+    if (count != (int)data_bytes) return 0;
+    mc_asset_loaded_mask_bytes = 0;
+    if (mask_bytes != 0)
+    {
+        count = narm_file_read(&mc_asset_path[0], &mc_asset_mask[0], mask_offset,
+                               mask_bytes, NARM_STORAGE_SD);
+        if (count != (int)mask_bytes) return 0;
+        mc_asset_loaded_mask_bytes = mask_bytes;
+    }
+    return 1;
+}
+
+int mc_asset_read_payload(char *name, void *buffer, uint capacity,
+                          uint *size_out)
+{
+    uint data_offset;
+    uint data_bytes;
+    int count;
+    if (!mc_asset_find(name)) return 0;
+    data_offset = mc_asset_read_u32(&mc_asset_record[0], 20);
+    data_bytes = mc_asset_read_u32(&mc_asset_record[0], 24);
+    if (data_bytes > capacity) return 0;
+    count = narm_file_read(&mc_asset_path[0], buffer, data_offset,
+                           data_bytes, NARM_STORAGE_SD);
+    if (count != (int)data_bytes) return 0;
+    *size_out = data_bytes;
+    return 1;
+}
+
+int mc_asset_read_mask(char *name, void *buffer, uint capacity,
+                       uint *size_out)
+{
+    uint mask_offset;
+    uint mask_bytes;
+    int count;
+    if (!mc_asset_find(name)) return 0;
+    mask_offset = mc_asset_read_u32(&mc_asset_record[0], 28);
+    mask_bytes = mc_asset_read_u32(&mc_asset_record[0], 32);
+    if (mask_bytes == 0 || mask_bytes > capacity) return 0;
+    count = narm_file_read(&mc_asset_path[0], buffer, mask_offset,
+                           mask_bytes, NARM_STORAGE_SD);
+    if (count != (int)mask_bytes) return 0;
+    *size_out = mask_bytes;
+    return 1;
+}
+
+void mc_asset_draw_loaded(int x, int y)
+{
+    if ((mc_asset_loaded_flags & MC_ASSET_FLAG_MASK) &&
+        mc_asset_loaded_mask_bytes != 0)
+        narm_half_blit_masked(x, y, (int)mc_asset_loaded_width,
+                              (int)mc_asset_loaded_height,
+                              &mc_asset_pixels[0], &mc_asset_mask[0]);
+    else
+        narm_half_blit(x, y, (int)mc_asset_loaded_width,
+                       (int)mc_asset_loaded_height, &mc_asset_pixels[0]);
+}
+
+int mc_asset_self_test(void)
+{
+    if (!mc_asset_open()) return 0;
+    if (!mc_asset_find("terrain.png")) return 0;
+    if (mc_asset_read_u32(&mc_asset_record[0], 8) != 256) return 0;
+    if (mc_asset_read_u32(&mc_asset_record[0], 12) != 256) return 0;
+    if (!mc_asset_find("misc/grasscolor.png")) return 0;
+    if (mc_asset_read_u32(&mc_asset_record[0], 8) != 256) return 0;
+    if (mc_asset_read_u32(&mc_asset_record[0], 12) != 256) return 0;
+    if (!mc_asset_find("title/mclogo.png")) return 0;
+    if (!mc_asset_find("mc10/title/logo_310x44")) return 0;
+    if (!mc_asset_find("mc10/font/default_metrics")) return 0;
+    if (!mc_asset_find("mc10/menu/labels")) return 0;
+    if (!mc_asset_find("mc10/menu/splashes")) return 0;
+    if (!mc_asset_find("mc10/menu/button_200x20_hover")) return 0;
+    if (!mc_asset_find("mc10/menu/button_98x20_hover")) return 0;
+    return 1;
+}
+

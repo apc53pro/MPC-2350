@@ -1,0 +1,685 @@
+/*
+ * Minecraft 1.0 SaveConverterMcRegion, WorldInfo, GuiSelectWorld,
+ * GuiWorldSlot, and GuiSlot reproduction for NARM.
+ *
+ * Storage is adapted to /MC10/saves on the SD card. The device has no mouse
+ * service, so the main-menu virtual pointer is reused and Enter is button 0.
+ * The date formatter is the en_US SimpleDateFormat shape in fixed UTC-03:00,
+ * because NARM exposes no locale/time-zone service.
+ */
+
+#define MC_WORLD_MAX 32
+#define MC_WORLD_FOLDER_CAP 64
+#define MC_WORLD_NAME_CAP 80
+#define MC_WORLD_PATH_CAP 192
+#define MC_WORLD_LABEL_BYTES 256
+#define MC_WORLD_BG_WORDS 64
+#define MC_WORLD_SAVE_VERSION 19132
+#define MC_WORLD_LIST_TOP 32
+#define MC_WORLD_LIST_BOTTOM 176
+#define MC_WORLD_SLOT_HEIGHT 36
+
+struct MCWorldInfo {
+    char folder[MC_WORLD_FOLDER_CAP];
+    char level_name[MC_WORLD_NAME_CAP];
+    uint random_seed_lo;
+    uint random_seed_hi;
+    int game_type;
+    int map_features;
+    int spawn_x;
+    int spawn_y;
+    int spawn_z;
+    uint world_time_lo;
+    uint world_time_hi;
+    uint last_played_lo;
+    uint last_played_hi;
+    uint size_on_disk_lo;
+    uint size_on_disk_hi;
+    int save_version;
+    int rain_time;
+    int raining;
+    int thunder_time;
+    int thundering;
+    int hardcore;
+    int dimension;
+    int needs_conversion;
+};
+
+/* Implemented after this screen because it consumes MCWorldInfo. */
+void mc_world_bootstrap_wait(struct MCWorldInfo *world);
+
+struct MCWorldInfo mc_world_list[MC_WORLD_MAX];
+struct MCWorldInfo *mc_world_loaded;
+struct MCMenuButton mc_world_buttons[5];
+uint mc_world_background[MC_WORLD_BG_WORDS];
+char mc_world_labels[MC_WORLD_LABEL_BYTES];
+char mc_world_path[MC_WORLD_PATH_CAP];
+char mc_world_line[160];
+char mc_world_date[32];
+char mc_world_dir_name[MC_WORLD_FOLDER_CAP];
+int mc_world_count;
+int mc_world_selected;
+int mc_world_scroll;
+int mc_world_ready;
+uint mc_world_last_click;
+
+char *mc_world_label_title;
+char *mc_world_label_world;
+char *mc_world_label_conversion;
+char *mc_world_label_survival;
+char *mc_world_label_creative;
+char *mc_world_label_hardcore;
+char *mc_world_label_select;
+char *mc_world_label_rename;
+char *mc_world_label_delete;
+char *mc_world_label_create;
+char *mc_world_label_cancel;
+
+int mc_world_strlen(char *text)
+{
+    int length = 0;
+    while (text[length] != 0) length = length + 1;
+    return length;
+}
+
+void mc_world_copy(char *out, int capacity, char *text)
+{
+    int i = 0;
+    if (capacity <= 0) return;
+    while (i + 1 < capacity && text[i] != 0)
+    {
+        out[i] = text[i];
+        i = i + 1;
+    }
+    out[i] = 0;
+}
+
+void mc_world_append(char *out, int capacity, char *text)
+{
+    int i = mc_world_strlen(out);
+    int j = 0;
+    while (i + 1 < capacity && text[j] != 0) out[i++] = text[j++];
+    out[i] = 0;
+}
+
+void mc_world_append_char(char *out, int capacity, char value)
+{
+    int i = mc_world_strlen(out);
+    if (i + 1 < capacity) { out[i] = value; out[i + 1] = 0; }
+}
+
+void mc_world_append_uint(char *out, int capacity, uint value)
+{
+    char digits[11];
+    int count = 0;
+    if (value == 0) { mc_world_append_char(out, capacity, '0'); return; }
+    while (value != 0 && count < 10)
+    {
+        digits[count++] = (char)('0' + value % 10);
+        value = value / 10;
+    }
+    while (count > 0) mc_world_append_char(out, capacity, digits[--count]);
+}
+
+void mc_world_append_int(char *out, int capacity, int value)
+{
+    uint magnitude;
+    if (value < 0)
+    {
+        mc_world_append_char(out, capacity, '-');
+        magnitude = (uint)(-(value + 1)) + 1;
+    }
+    else magnitude = (uint)value;
+    mc_world_append_uint(out, capacity, magnitude);
+}
+
+void mc_world_append_hex8(char *out, int capacity, uint value)
+{
+    char *hex = "0123456789abcdef";
+    int shift = 28;
+    while (shift >= 0)
+    {
+        mc_world_append_char(out, capacity, hex[(value >> shift) & 15]);
+        shift = shift - 4;
+    }
+}
+
+int mc_world_string_compare(char *a, char *b)
+{
+    int i = 0;
+    while (a[i] != 0 && b[i] != 0 && a[i] == b[i]) i = i + 1;
+    return ((uint)a[i] & 255) - ((uint)b[i] & 255);
+}
+
+void mc_world_path_begin(char *folder)
+{
+    mc_world_copy(mc_world_path, MC_WORLD_PATH_CAP, "/MC10/saves/");
+    mc_world_append(mc_world_path, MC_WORLD_PATH_CAP, folder);
+}
+
+int mc_world_load_path(char *folder, char *leaf, int *root_out)
+{
+    mc_world_path_begin(folder);
+    mc_world_append(mc_world_path, MC_WORLD_PATH_CAP, "/");
+    mc_world_append(mc_world_path, MC_WORLD_PATH_CAP, leaf);
+    mc_nbt_reset();
+    return mc_nbt_load_gzip_file(mc_world_path, NARM_STORAGE_SD, root_out);
+}
+
+int mc_world_get_int_default(int data, char *key, int fallback)
+{
+    int value = fallback;
+    int result = mc_nbt_get_int(data, key, &value);
+    return result == 1 ? value : fallback;
+}
+
+int mc_world_get_bool_default(int data, char *key, int fallback)
+{
+    int value = fallback;
+    int result = mc_nbt_get_boolean(data, key, &value);
+    return result == 1 ? value : fallback;
+}
+
+void mc_world_get_long_default(int data, char *key, uint *hi, uint *lo)
+{
+    if (mc_nbt_get_long_bits(data, key, hi, lo) != 1) { *hi = 0; *lo = 0; }
+}
+
+int mc_world_read_info(char *folder, struct MCWorldInfo *world)
+{
+    int root;
+    int data;
+    int player;
+    int result = mc_world_load_path(folder, "level.dat", &root);
+    if (result >= 0)
+    {
+        data = mc_nbt_compound_find(root, "Data");
+        if (data >= 0 && mc_nbt_tags[data].type != MC_NBT_COMPOUND)
+            result = MC_NBT_ERR_TYPE;
+    }
+    if (result < 0)
+    {
+        result = mc_world_load_path(folder, "level.dat_old", &root);
+        if (result >= 0)
+        {
+            data = mc_nbt_compound_find(root, "Data");
+            if (data >= 0 && mc_nbt_tags[data].type != MC_NBT_COMPOUND)
+                result = MC_NBT_ERR_TYPE;
+        }
+    }
+    if (result < 0) return 0;
+    data = mc_nbt_compound_find(root, "Data");
+
+    mc_world_copy(world->folder, MC_WORLD_FOLDER_CAP, folder);
+    if (mc_nbt_get_string_ascii(data, "LevelName", world->level_name,
+                                MC_WORLD_NAME_CAP) != 1)
+        world->level_name[0] = 0;
+    if (world->level_name[0] == 0)
+        mc_world_copy(world->level_name, MC_WORLD_NAME_CAP, folder);
+    mc_world_get_long_default(data, "RandomSeed", &world->random_seed_hi,
+                              &world->random_seed_lo);
+    world->game_type = mc_world_get_int_default(data, "GameType", 0);
+    world->map_features = mc_nbt_compound_has_key(data, "MapFeatures") ?
+        mc_world_get_bool_default(data, "MapFeatures", 0) : 1;
+    world->spawn_x = mc_world_get_int_default(data, "SpawnX", 0);
+    world->spawn_y = mc_world_get_int_default(data, "SpawnY", 0);
+    world->spawn_z = mc_world_get_int_default(data, "SpawnZ", 0);
+    mc_world_get_long_default(data, "Time", &world->world_time_hi,
+                              &world->world_time_lo);
+    mc_world_get_long_default(data, "LastPlayed", &world->last_played_hi,
+                              &world->last_played_lo);
+    mc_world_get_long_default(data, "SizeOnDisk", &world->size_on_disk_hi,
+                              &world->size_on_disk_lo);
+    world->save_version = mc_world_get_int_default(data, "version", 0);
+    world->rain_time = mc_world_get_int_default(data, "rainTime", 0);
+    world->raining = mc_world_get_bool_default(data, "raining", 0);
+    world->thunder_time = mc_world_get_int_default(data, "thunderTime", 0);
+    world->thundering = mc_world_get_bool_default(data, "thundering", 0);
+    world->hardcore = mc_world_get_bool_default(data, "hardcore", 0);
+    world->dimension = 0;
+    player = mc_nbt_compound_find(data, "Player");
+    if (player >= 0 && mc_nbt_tags[player].type == MC_NBT_COMPOUND)
+        world->dimension = mc_world_get_int_default(player, "Dimension", 0);
+    world->needs_conversion = world->save_version != MC_WORLD_SAVE_VERSION;
+    return 1;
+}
+
+int mc_world_u64_greater(uint ahi, uint alo, uint bhi, uint blo)
+{
+    if (ahi != bhi) return (int)ahi > (int)bhi;
+    return alo > blo;
+}
+
+int mc_world_should_precede(struct MCWorldInfo *a, struct MCWorldInfo *b)
+{
+    if (a->last_played_hi != b->last_played_hi ||
+        a->last_played_lo != b->last_played_lo)
+        return mc_world_u64_greater(a->last_played_hi, a->last_played_lo,
+                                    b->last_played_hi, b->last_played_lo);
+    return mc_world_string_compare(a->folder, b->folder) < 0;
+}
+
+void mc_world_sort(void)
+{
+    int i;
+    int j;
+    int k;
+    char temporary_char;
+    uint temporary_uint;
+    int temporary_int;
+    struct MCWorldInfo *a;
+    struct MCWorldInfo *b;
+    for (i = 0; i < mc_world_count; i = i + 1)
+    {
+        for (j = i + 1; j < mc_world_count; j = j + 1)
+        {
+            a = &mc_world_list[i];
+            b = &mc_world_list[j];
+            if (!mc_world_should_precede(b, a)) continue;
+            for (k = 0; k < MC_WORLD_FOLDER_CAP; k = k + 1)
+            { temporary_char = a->folder[k]; a->folder[k] = b->folder[k]; b->folder[k] = temporary_char; }
+            for (k = 0; k < MC_WORLD_NAME_CAP; k = k + 1)
+            { temporary_char = a->level_name[k]; a->level_name[k] = b->level_name[k]; b->level_name[k] = temporary_char; }
+#define MC_WORLD_SWAP_UINT(field) temporary_uint = a->field; a->field = b->field; b->field = temporary_uint
+#define MC_WORLD_SWAP_INT(field) temporary_int = a->field; a->field = b->field; b->field = temporary_int
+            MC_WORLD_SWAP_UINT(random_seed_lo);
+            MC_WORLD_SWAP_UINT(random_seed_hi);
+            MC_WORLD_SWAP_INT(game_type);
+            MC_WORLD_SWAP_INT(map_features);
+            MC_WORLD_SWAP_INT(spawn_x);
+            MC_WORLD_SWAP_INT(spawn_y);
+            MC_WORLD_SWAP_INT(spawn_z);
+            MC_WORLD_SWAP_UINT(world_time_lo);
+            MC_WORLD_SWAP_UINT(world_time_hi);
+            MC_WORLD_SWAP_UINT(last_played_lo);
+            MC_WORLD_SWAP_UINT(last_played_hi);
+            MC_WORLD_SWAP_UINT(size_on_disk_lo);
+            MC_WORLD_SWAP_UINT(size_on_disk_hi);
+            MC_WORLD_SWAP_INT(save_version);
+            MC_WORLD_SWAP_INT(rain_time);
+            MC_WORLD_SWAP_INT(raining);
+            MC_WORLD_SWAP_INT(thunder_time);
+            MC_WORLD_SWAP_INT(thundering);
+            MC_WORLD_SWAP_INT(hardcore);
+            MC_WORLD_SWAP_INT(dimension);
+            MC_WORLD_SWAP_INT(needs_conversion);
+        }
+    }
+}
+
+int mc_world_scan(void)
+{
+    uint index = 0;
+    uint length;
+    uint type;
+    int result;
+    mc_world_count = 0;
+    mc_world_selected = -1;
+    mc_world_scroll = 0;
+    narm_storage_mount(NARM_STORAGE_SD);
+    narm_dir_make("/MC10", NARM_STORAGE_SD);
+    narm_dir_make("/MC10/saves", NARM_STORAGE_SD);
+    while (index < 512 && mc_world_count < MC_WORLD_MAX)
+    {
+        result = narm_dir_entry("/MC10/saves", index, mc_world_dir_name,
+                                MC_WORLD_FOLDER_CAP, &length, &type,
+                                NARM_STORAGE_SD);
+        if (result <= 0) break;
+        if (type == NARM_DIRECTORY_ENTRY &&
+            mc_world_read_info(mc_world_dir_name,
+                               &mc_world_list[mc_world_count]))
+            mc_world_count = mc_world_count + 1;
+        index = index + 1;
+    }
+    mc_world_sort();
+    return mc_world_count;
+}
+
+void mc_world_bind_labels(void)
+{
+    int offset = 0;
+    mc_world_label_title = &mc_world_labels[offset]; while (mc_world_labels[offset++] != 0) {}
+    mc_world_label_world = &mc_world_labels[offset]; while (mc_world_labels[offset++] != 0) {}
+    mc_world_label_conversion = &mc_world_labels[offset]; while (mc_world_labels[offset++] != 0) {}
+    mc_world_label_survival = &mc_world_labels[offset]; while (mc_world_labels[offset++] != 0) {}
+    mc_world_label_creative = &mc_world_labels[offset]; while (mc_world_labels[offset++] != 0) {}
+    mc_world_label_hardcore = &mc_world_labels[offset]; while (mc_world_labels[offset++] != 0) {}
+    mc_world_label_select = &mc_world_labels[offset]; while (mc_world_labels[offset++] != 0) {}
+    mc_world_label_rename = &mc_world_labels[offset]; while (mc_world_labels[offset++] != 0) {}
+    mc_world_label_delete = &mc_world_labels[offset]; while (mc_world_labels[offset++] != 0) {}
+    mc_world_label_create = &mc_world_labels[offset]; while (mc_world_labels[offset++] != 0) {}
+    mc_world_label_cancel = &mc_world_labels[offset];
+}
+
+void mc_world_set_button(int index, int id, int x, int y, int width,
+                         char *label, int enabled)
+{
+    mc_world_buttons[index].id = id;
+    mc_world_buttons[index].x_position = x;
+    mc_world_buttons[index].y_position = y;
+    mc_world_buttons[index].width = width;
+    mc_world_buttons[index].height = 20;
+    mc_world_buttons[index].enabled = enabled;
+    mc_world_buttons[index].draw_button = 1;
+    mc_world_buttons[index].display_string = label;
+}
+
+void mc_world_init_buttons(void)
+{
+    mc_world_set_button(0, 1, 6, 188, 150, mc_world_label_select, 0);
+    mc_world_set_button(1, 6, 6, 212, 70, mc_world_label_rename, 0);
+    mc_world_set_button(2, 2, 86, 212, 70, mc_world_label_delete, 0);
+    mc_world_set_button(3, 3, 164, 188, 150, mc_world_label_create, 1);
+    mc_world_set_button(4, 0, 164, 212, 150, mc_world_label_cancel, 1);
+}
+
+int mc_world_init(void)
+{
+    uint bytes;
+    mc_world_ready = 0;
+    if (!mc_asset_read_payload("gui/background.png", mc_world_background,
+                               256, &bytes) || bytes != 256) return 0;
+    if (!mc_asset_read_payload("mc10/select_world/labels", mc_world_labels,
+                               MC_WORLD_LABEL_BYTES, &bytes)) return 0;
+    mc_world_bind_labels();
+    mc_world_init_buttons();
+    mc_world_scan();
+    mc_world_ready = 1;
+    return 1;
+}
+
+void mc_world_draw_tiled_background(void)
+{
+    int y;
+    int x;
+    for (y = 0; y < MC_SCREEN_HEIGHT; y = y + 16)
+        for (x = 0; x < MC_SCREEN_WIDTH; x = x + 16)
+            narm_half_blit(x, y, 16, 16, mc_world_background);
+}
+
+void mc_world_div_u64_small(uint hi, uint lo, uint divisor,
+                            uint *qhi, uint *qlo, uint *remainder)
+{
+    uint rh = 0;
+    uint rl = 0;
+    uint oh = 0;
+    uint ol = 0;
+    int bit;
+    for (bit = 63; bit >= 0; bit = bit - 1)
+    {
+        rh = (rl >> 31);
+        rl = rl << 1;
+        if (bit >= 32) rl = rl | ((hi >> (bit - 32)) & 1);
+        else rl = rl | ((lo >> bit) & 1);
+        if (rh != 0 || rl >= divisor)
+        {
+            rl = rl - divisor;
+            rh = 0;
+            if (bit >= 32) oh = oh | ((uint)1 << (bit - 32));
+            else ol = ol | ((uint)1 << bit);
+        }
+    }
+    *qhi = oh; *qlo = ol; *remainder = rl;
+}
+
+int mc_world_is_leap(int year)
+{
+    return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+}
+
+void mc_world_format_last_played(struct MCWorldInfo *world)
+{
+    uint seconds_hi;
+    uint seconds;
+    uint remainder;
+    uint days;
+    uint day_seconds;
+    int year = 1970;
+    int month = 1;
+    int day;
+    int hour;
+    int minute;
+    int hour12;
+    int month_days;
+    char *suffix;
+    mc_world_div_u64_small(world->last_played_hi, world->last_played_lo,
+                           1000, &seconds_hi, &seconds, &remainder);
+    if (seconds_hi != 0) { mc_world_copy(mc_world_date, 32, "unknown"); return; }
+    if (seconds >= 10800) seconds = seconds - 10800;
+    days = seconds / 86400;
+    day_seconds = seconds % 86400;
+    while (days >= (uint)(mc_world_is_leap(year) ? 366 : 365))
+    {
+        days = days - (uint)(mc_world_is_leap(year) ? 366 : 365);
+        year = year + 1;
+    }
+    for (;;)
+    {
+        if (month == 2) month_days = mc_world_is_leap(year) ? 29 : 28;
+        else if (month == 4 || month == 6 || month == 9 || month == 11) month_days = 30;
+        else month_days = 31;
+        if (days < (uint)month_days) break;
+        days = days - (uint)month_days;
+        month = month + 1;
+    }
+    day = (int)days + 1;
+    hour = (int)(day_seconds / 3600);
+    minute = (int)((day_seconds % 3600) / 60);
+    suffix = hour < 12 ? "AM" : "PM";
+    hour12 = hour % 12; if (hour12 == 0) hour12 = 12;
+    mc_world_date[0] = 0;
+    mc_world_append_uint(mc_world_date, 32, (uint)month);
+    mc_world_append_char(mc_world_date, 32, '/');
+    mc_world_append_uint(mc_world_date, 32, (uint)day);
+    mc_world_append_char(mc_world_date, 32, '/');
+    if (year % 100 < 10) mc_world_append_char(mc_world_date, 32, '0');
+    mc_world_append_uint(mc_world_date, 32, (uint)(year % 100));
+    mc_world_append_char(mc_world_date, 32, ' ');
+    mc_world_append_uint(mc_world_date, 32, (uint)hour12);
+    mc_world_append_char(mc_world_date, 32, ':');
+    if (minute < 10) mc_world_append_char(mc_world_date, 32, '0');
+    mc_world_append_uint(mc_world_date, 32, (uint)minute);
+    mc_world_append_char(mc_world_date, 32, ' ');
+    mc_world_append(mc_world_date, 32, suffix);
+}
+
+int mc_world_max_scroll(void)
+{
+    int maximum = mc_world_count * MC_WORLD_SLOT_HEIGHT -
+                  (MC_WORLD_LIST_BOTTOM - MC_WORLD_LIST_TOP - 4);
+    return maximum > 0 ? maximum : 0;
+}
+
+void mc_world_clamp_scroll(void)
+{
+    int maximum = mc_world_max_scroll();
+    if (mc_world_scroll < 0) mc_world_scroll = 0;
+    if (mc_world_scroll > maximum) mc_world_scroll = maximum;
+}
+
+void mc_world_draw_list(void)
+{
+    int i;
+    int y;
+    int x = MC_SCREEN_WIDTH / 2 - 92 - 16;
+    int row_height = MC_WORLD_SLOT_HEIGHT - 4;
+    int max_scroll = mc_world_max_scroll();
+    int thumb;
+    int thumb_y;
+    struct MCWorldInfo *world;
+    for (i = 0; i < mc_world_count; i = i + 1)
+    {
+        y = MC_WORLD_LIST_TOP + 4 - mc_world_scroll + i * MC_WORLD_SLOT_HEIGHT;
+        if (y <= MC_WORLD_LIST_BOTTOM && y + row_height >= MC_WORLD_LIST_TOP)
+        {
+            world = &mc_world_list[i];
+            if (i == mc_world_selected)
+            {
+                narm_half_fill_rect(50, y - 2, 270, y + row_height + 2,
+                                    mc_menu_text_color(0x808080));
+                narm_half_fill_rect(51, y - 1, 269, y + row_height + 1,
+                                    MC_COLOR_BLACK);
+            }
+            mc_menu_draw_string(world->level_name, x + 2, y + 1, 0xffffff);
+            mc_world_format_last_played(world);
+            mc_world_line[0] = 0;
+            mc_world_append(mc_world_line, 160, world->folder);
+            mc_world_append(mc_world_line, 160, " (");
+            mc_world_append(mc_world_line, 160, mc_world_date);
+            mc_world_append(mc_world_line, 160, ")");
+            mc_menu_draw_string(mc_world_line, x + 2, y + 12, 0x808080);
+            if (world->hardcore)
+                mc_menu_draw_string(mc_world_label_hardcore, x + 2, y + 22, 0xff5555);
+            else if (world->needs_conversion)
+                mc_menu_draw_string(mc_world_label_conversion, x + 2, y + 22, 0x808080);
+            else if (world->game_type == 0)
+                mc_menu_draw_string(mc_world_label_survival, x + 2, y + 22, 0x808080);
+            else
+                mc_menu_draw_string(mc_world_label_creative, x + 2, y + 22, 0x808080);
+        }
+    }
+    if (max_scroll > 0)
+    {
+        thumb = (MC_WORLD_LIST_BOTTOM - MC_WORLD_LIST_TOP) *
+                (MC_WORLD_LIST_BOTTOM - MC_WORLD_LIST_TOP) /
+                (mc_world_count * MC_WORLD_SLOT_HEIGHT);
+        if (thumb < 32) thumb = 32;
+        if (thumb > MC_WORLD_LIST_BOTTOM - MC_WORLD_LIST_TOP - 8)
+            thumb = MC_WORLD_LIST_BOTTOM - MC_WORLD_LIST_TOP - 8;
+        thumb_y = mc_world_scroll *
+                  (MC_WORLD_LIST_BOTTOM - MC_WORLD_LIST_TOP - thumb) /
+                  max_scroll + MC_WORLD_LIST_TOP;
+        narm_half_fill_rect(284, MC_WORLD_LIST_TOP, 290, MC_WORLD_LIST_BOTTOM,
+                            MC_COLOR_BLACK);
+        narm_half_fill_rect(284, thumb_y, 290, thumb_y + thumb,
+                            mc_menu_text_color(0x808080));
+        narm_half_fill_rect(284, thumb_y, 289, thumb_y + thumb - 1,
+                            mc_menu_text_color(0xc0c0c0));
+    }
+}
+
+void mc_world_draw(void)
+{
+    int i;
+    mc_world_draw_tiled_background();
+    narm_half_fill_rect(0, 0, MC_SCREEN_WIDTH, MC_WORLD_LIST_TOP, MC_COLOR_DARK);
+    narm_half_fill_rect(0, MC_WORLD_LIST_BOTTOM, MC_SCREEN_WIDTH,
+                        MC_SCREEN_HEIGHT, MC_COLOR_DARK);
+    mc_world_draw_list();
+    mc_menu_draw_centered_string(mc_world_label_title, MC_SCREEN_WIDTH / 2,
+                                 20, 0xffffff);
+    for (i = 0; i < 5; i = i + 1) mc_menu_draw_button(&mc_world_buttons[i]);
+    mc_menu_draw_pointer();
+    narm_half_present();
+}
+
+int mc_world_button_pressed(void)
+{
+    int i;
+    for (i = 0; i < 5; i = i + 1)
+        if (mc_world_buttons[i].enabled &&
+            mc_menu_button_hovered(&mc_world_buttons[i]))
+            return mc_world_buttons[i].id;
+    return -1;
+}
+
+int mc_world_row_at_pointer(void)
+{
+    int relative;
+    int row;
+    if (mc_menu_pointer_x < 50 || mc_menu_pointer_x > 270 ||
+        mc_menu_pointer_y < MC_WORLD_LIST_TOP ||
+        mc_menu_pointer_y > MC_WORLD_LIST_BOTTOM) return -1;
+    relative = mc_menu_pointer_y - MC_WORLD_LIST_TOP + mc_world_scroll - 4;
+    row = relative / MC_WORLD_SLOT_HEIGHT;
+    return relative >= 0 && row >= 0 && row < mc_world_count ? row : -1;
+}
+
+void mc_world_select_row(int row)
+{
+    int valid = row >= 0 && row < mc_world_count;
+    if (!valid) return;
+    mc_world_selected = row;
+    mc_world_buttons[0].enabled = 1;
+    mc_world_buttons[1].enabled = 1;
+    mc_world_buttons[2].enabled = 1;
+}
+
+void mc_world_loaded_wait(void)
+{
+    mc_world_bootstrap_wait(mc_world_loaded);
+}
+
+void mc_world_placeholder(char *message)
+{
+    mc_ui_draw_status(message);
+    mc_wait_for_return();
+}
+
+void mc_select_world_run(void)
+{
+    unsigned key, action, mods, character;
+    int event;
+    int dirty = 1;
+    int row;
+    int button;
+    uint now;
+    if (!mc_world_init())
+    {
+        mc_world_placeholder("SELECT WORLD INIT FAIL");
+        return;
+    }
+    for (;;)
+    {
+        now = narm_millis();
+        if (mc_menu_update_pointer_held(now)) dirty = 1;
+        while (narm_next_key_event(&key, &action, &mods, &character) > 0)
+        {
+            if (action != NARM_KEY_ACTION_PRESS &&
+                action != NARM_KEY_ACTION_REPEAT) continue;
+            if (key == NARM_KEY_ESCAPE && action == NARM_KEY_ACTION_PRESS) return;
+            if (key == NARM_KEY_ENTER && action == NARM_KEY_ACTION_PRESS)
+            {
+                row = mc_world_row_at_pointer();
+                if (row >= 0)
+                {
+                    now = narm_millis();
+                    if (row == mc_world_selected &&
+                        (uint)(now - mc_world_last_click) < 250)
+                    {
+                        mc_world_loaded = &mc_world_list[row];
+                        mc_world_loaded_wait();
+                    }
+                    mc_world_select_row(row);
+                    mc_world_last_click = now;
+                }
+                else if (mc_menu_pointer_x >= 284 && mc_menu_pointer_x <= 290 &&
+                         mc_menu_pointer_y >= MC_WORLD_LIST_TOP &&
+                         mc_menu_pointer_y <= MC_WORLD_LIST_BOTTOM)
+                {
+                    mc_world_scroll = mc_world_scroll +
+                        (mc_menu_pointer_y < 104 ? -24 : 24);
+                    mc_world_clamp_scroll();
+                }
+                else
+                {
+                    button = mc_world_button_pressed();
+                    if (button == 0) return;
+                    if (button == 1 && mc_world_selected >= 0)
+                    {
+                        mc_world_loaded = &mc_world_list[mc_world_selected];
+                        mc_world_loaded_wait();
+                    }
+                    else if (button == 3) mc_world_placeholder("CREATE WORLD PENDING");
+                    else if (button == 6) mc_world_placeholder("RENAME WORLD PENDING");
+                    else if (button == 2) mc_world_placeholder("DELETE WORLD PENDING");
+                }
+            }
+            dirty = 1;
+        }
+        event = narm_poll_system_event();
+        if (event == NARM_EVENT_CLOSE_REQUESTED) return;
+        if (dirty) { mc_world_draw(); dirty = 0; }
+        narm_sleep_ms(2);
+    }
+}

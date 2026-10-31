@@ -1,0 +1,27 @@
+{
+  "format_version": "1.21.80",
+  "minecraft:block": {
+    "description": { "identifier": "tinycraft:oak_wood" },
+    "components": {
+      "minecraft:destructible_by_mining": { "seconds_to_destroy": 3.0 },
+      "minecraft:collision_box": true,
+      "minecraft:selection_box": true,
+      "minecraft:loot": "loot_tables/blocks/oak_wood.json",
+      "minecraft:material_instances": {
+        "*": { "texture": "tinycraft:log_side", "render_method": "opaque" },
+        "up": { "texture": "tinycraft:log_top", "render_method": "opaque" },
+        "down": { "texture": "tinycraft:log_top", "render_method": "opaque" }
+      },
+      "tinycraft:runtime": {
+        "block_id": 4,
+        "render_class": "fast_cube",
+        "ui_color": 169,
+        "preferred_tool": "axe",
+        "preferred_break_seconds": 0.75,
+        "icon_texture": "log_side",
+        "name_label": "oak_wood",
+        "item": "tinycraft:oak_wood"
+      }
+    }
+  }
+}

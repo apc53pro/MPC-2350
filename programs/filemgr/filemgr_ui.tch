@@ -1,0 +1,749 @@
+/* FILEMGR640 UI. Coordinates are native 640x480, and all modes share the
+ * firmware VGA4 framebuffer. The player remains visible while browsing or
+ * inspecting files. A timer update repaints only its small card. */
+
+int fmNameAudio(char name[], int len)
+{
+    int p;
+    if (len < 4) return 0;
+    p = len - 4;
+    if (name[p] != '.') return 0;
+    if ((name[p + 1] == 'w' || name[p + 1] == 'W') &&
+        (name[p + 2] == 'a' || name[p + 2] == 'A') &&
+        (name[p + 3] == 'v' || name[p + 3] == 'V')) return 1;
+    return 0;
+}
+
+int fmNameImage(char name[], int len)
+{
+    int p;
+    int a;
+    int b;
+    int c;
+    if (len >= 5 && name[len - 5] == '.' &&
+        (name[len - 4] == 'j' || name[len - 4] == 'J') &&
+        (name[len - 3] == 'p' || name[len - 3] == 'P') &&
+        (name[len - 2] == 'e' || name[len - 2] == 'E') &&
+        (name[len - 1] == 'g' || name[len - 1] == 'G')) return 1;
+    if (len < 4) return 0;
+    p = len - 4;
+    if (name[p] != '.') return 0;
+    a = name[p + 1]; b = name[p + 2]; c = name[p + 3];
+    if (a >= 97 && a <= 122) a = a - 32;
+    if (b >= 97 && b <= 122) b = b - 32;
+    if (c >= 97 && c <= 122) c = c - 32;
+    if (a == 'B' && b == 'M' && c == 'P') return 1;
+    if (a == 'P' && (b == 'P' || b == 'G') && c == 'M') return 1;
+    if (a == 'P' && b == 'N' && c == 'G') return 1;
+    if (a == 'J' && b == 'P' && c == 'G') return 1;
+    if (a == 'G' && b == 'I' && c == 'F') return 1;
+    return 0;
+}
+
+int fmNameProgram(char name[], int len)
+{
+    int p;
+    int a;
+    int b;
+    int c;
+    int d;
+    if (len < 5) return 0;
+    p = len - 5;
+    if (name[p] != '.') return 0;
+    a = name[p + 1]; b = name[p + 2]; c = name[p + 3]; d = name[p + 4];
+    if (a >= 97 && a <= 122) a = a - 32;
+    if (b >= 97 && b <= 122) b = b - 32;
+    if (c >= 97 && c <= 122) c = c - 32;
+    if (d >= 97 && d <= 122) d = d - 32;
+    if (a == 'N' && b == 'A' && c == 'R' && d == 'M') return 1;
+    return 0;
+}
+
+/* Small vector icons preserve the same shape in normal and selected rows. */
+void fmIcon(int kind, int x, int y, uint color)
+{
+    if (kind == 1)
+    {
+        fmFillRect(x, y + 2, x + 4, y + 4, color);
+        fmFillRect(x, y + 4, x + 12, y + 10, color);
+        narm_line(x + 1, y + 5, x + 11, y + 5, (uint)1);
+    }
+    else if (kind == 2)
+    {
+        drawBox(x, y + 1, x + 12, y + 10, color, COL_PANEL);
+        narm_line(x + 3, y + 4, x + 5, y + 6, color);
+        narm_line(x + 5, y + 6, x + 3, y + 8, color);
+        narm_line(x + 7, y + 8, x + 10, y + 8, color);
+    }
+    else if (kind == 3)
+    {
+        fmFillRect(x + 4, y + 1, x + 5, y + 9, color);
+        fmFillRect(x + 10, y, x + 11, y + 7, color);
+        narm_line(x + 5, y + 1, x + 10, y, color);
+        fmFillRect(x + 1, y + 8, x + 5, y + 10, color);
+        fmFillRect(x + 7, y + 6, x + 11, y + 8, color);
+    }
+    else if (kind == 4)
+    {
+        drawBox(x, y + 1, x + 12, y + 10, color, COL_PANEL);
+        fmFillRect(x + 8, y + 3, x + 9, y + 4, color);
+        narm_line(x + 1, y + 9, x + 5, y + 5, color);
+        narm_line(x + 5, y + 5, x + 9, y + 9, color);
+        narm_line(x + 8, y + 8, x + 10, y + 6, color);
+    }
+    else
+    {
+        drawBox(x + 2, y, x + 10, y + 11, color, COL_PANEL);
+        narm_line(x + 4, y + 4, x + 8, y + 4, color);
+        narm_line(x + 4, y + 7, x + 8, y + 7, color);
+    }
+}
+
+void fmChip(char text[], int x, int y, int width, uint background, uint foreground)
+{
+    fmFillRect(x, y, x + width - 1, y + 17, background);
+    uiText(text, x + 7, y + 4, foreground);
+}
+
+void fmHeader(char subtitle[])
+{
+    fmFillRect(0, 0, 639, 37, (uint)2);
+    fmFillRect(12, 10, 17, 28, (uint)11);
+    fmFillRect(21, 10, 26, 15, (uint)11);
+    fmFillRect(21, 20, 26, 25, (uint)10);
+    drawText("FILEMGR", 96, 38, 11, 2, (uint)0);
+    uiText(subtitle, 142, 15, (uint)15);
+    if (activeStorage == (uint)0) fmChip("FLASH", 552, 10, 75, (uint)10, (uint)0);
+    else fmChip("SD CARD", 552, 10, 75, (uint)10, (uint)0);
+    narm_line(12, 37, 627, 37, (uint)10);
+}
+
+void drawPathBar()
+{
+    fmFillRect(12, 46, 627, 68, (uint)1);
+    uiText("PATH", 20, 52, (uint)15);
+    uiTextN(cwd, 96, 68, 70, 52, (uint)0);
+}
+
+void drawStatus()
+{
+    uint color;
+    char *message;
+    color = (uint)15;
+    message = "READY";
+    if (statusCode == 1) { message = "DIRECTORY OPENED"; color = (uint)9; }
+    else if (statusCode == 2) message = "YOU ARE AT THE ROOT DIRECTORY";
+    else if (statusCode == 3) { message = "DELETE? PRESS DELETE OR X AGAIN TO CONFIRM"; color = (uint)8; }
+    else if (statusCode == 4) { message = "ITEM DELETED"; color = (uint)9; }
+    else if (statusCode == 5) { message = "DELETE FAILED - FOLDER MUST BE EMPTY"; color = (uint)4; }
+    else if (statusCode == 6) { message = "FILE CREATED"; color = (uint)9; }
+    else if (statusCode == 7) { message = "COULD NOT CREATE FILE"; color = (uint)4; }
+    else if (statusCode == 8) { message = "FOLDER CREATED"; color = (uint)9; }
+    else if (statusCode == 9) { message = "COULD NOT CREATE FOLDER"; color = (uint)4; }
+    else if (statusCode == 10) message = "DIRECTORY REFRESHED";
+    else if (statusCode == 11) { message = "THAT ITEM IS NOT A DIRECTORY"; color = (uint)8; }
+    else if (statusCode == 12) { message = "STORAGE ERROR - CHECK DRIVE AND PRESS R"; color = (uint)4; }
+    else if (statusCode == 13) message = "ENTER A NAME, THEN PRESS ENTER TO SAVE";
+    else if (statusCode == 14) { message = "PLEASE ENTER A NAME"; color = (uint)8; }
+    else if (statusCode == 15) message = "CANCELLED";
+    else if (statusCode == 16) { message = "AN ITEM WITH THIS NAME ALREADY EXISTS"; color = (uint)8; }
+    else if (statusCode == 17) { message = "ITEM RENAMED"; color = (uint)9; }
+    else if (statusCode == 18) { message = "RENAME FAILED - ORIGINAL FILE PRESERVED"; color = (uint)4; }
+    else if (statusCode == 19) message = "COPYING TO THE NEW NAME...";
+    else if (statusCode == 20) { message = "PROGRAM LAUNCHED - ALT F2 RETURNS TO FILEMGR"; color = (uint)9; }
+    else if (statusCode == 21) message = "DRIVE CHANGED";
+    else if (statusCode == 22) { message = "THIS IMAGE FORMAT HAS NO PIXEL DECODER"; color = (uint)8; }
+    else if (statusCode == 23) { message = "AUDIO PLAYING - PLAYER CONTROLS BELOW"; color = (uint)9; }
+    else if (statusCode == 24) { message = "AUDIO FAILED - USE AN UNCOMPRESSED PCM WAV"; color = (uint)4; }
+    else if (statusCode == 25) { message = "WAV STREAMING REQUIRES THE SD CARD"; color = (uint)8; }
+    else if (statusCode == 26) message = "AUDIO STOPPED - SPACE RESTARTS THE TRACK";
+    else if (statusCode == 27) message = "AUDIO PAUSED - SPACE RESUMES PLAYBACK";
+    else if (statusCode == 28) { message = "PROGRAM LAUNCH FAILED - CHECK MEMORY AND FILE"; color = (uint)4; }
+    else if (statusCode == 29) message = "PLAYBACK FINISHED - SPACE REPLAYS THE TRACK";
+    /* Confirmation uses the top pixel too; clear the entire owned strip. */
+    fmFillRect(12, 439, 627, 453, COL_BG);
+    if (confirmDelete != 0) fmFillRect(12, 439, 627, 453, (uint)4);
+    uiText(message, 17, 442, color);
+    if (mode == 0 && scanActive != 0) uiText("READING", 569, 442, (uint)15);
+}
+
+void fmFooter(char first[], char second[])
+{
+    drawStatus();
+    drawText(first, 100, 16, 458, 1, (uint)15);
+    drawText(second, 100, 16, 470, 1, (uint)15);
+}
+
+void fmTime(uint frames, uint rate, int x, int y, uint color)
+{
+    uint seconds;
+    uint minutes;
+    uint hours;
+    char out[10];
+    int p;
+    if (rate == 0) rate = 1;
+    seconds = frames / rate;
+    minutes = seconds / (uint)60;
+    hours = minutes / (uint)60;
+    seconds = seconds % (uint)60;
+    minutes = minutes % (uint)60;
+    p = 0;
+    if (hours > 0)
+    {
+        if (hours >= (uint)10) { out[p] = (char)(48 + (int)((hours / (uint)10) % (uint)10)); p = p + 1; }
+        out[p] = (char)(48 + (int)(hours % (uint)10)); p = p + 1;
+        out[p] = ':'; p = p + 1;
+    }
+    out[p] = (char)(48 + (int)(minutes / (uint)10)); p = p + 1;
+    out[p] = (char)(48 + (int)(minutes % (uint)10)); p = p + 1;
+    out[p] = ':'; p = p + 1;
+    out[p] = (char)(48 + (int)(seconds / (uint)10)); p = p + 1;
+    out[p] = (char)(48 + (int)(seconds % (uint)10)); p = p + 1;
+    out[p] = 0;
+    drawText(out, p, x, y, 1, color);
+}
+
+void renderAudioPanel()
+{
+    int width;
+    uint unit;
+    uint color;
+    drawBox(12, 378, 627, 435, (uint)10, (uint)1);
+    color = (uint)11;
+    if (audioPlaying == 0) color = (uint)15;
+    fmFillRect(20, 386, 47, 413, (uint)2);
+    if (audioPlaying != 0)
+    {
+        fmFillRect(28, 393, 31, 406, color);
+        fmFillRect(36, 393, 39, 406, color);
+    }
+    else
+    {
+        narm_line(29, 392, 39, 400, color);
+        narm_line(39, 400, 29, 408, color);
+        narm_line(29, 392, 29, 408, color);
+    }
+    if (audioLoaded == 0)
+    {
+        uiText("AUDIO PLAYER", 58, 385, (uint)0);
+        uiText("SELECT A WAV FILE AND PRESS ENTER", 58, 404, (uint)15);
+        drawText("ONE VOICE  /  PLAYBACK CONTINUES WHILE YOU BROWSE", 96, 58, 423, 1, (uint)15);
+    }
+    else
+    {
+        uiTextN(audioName, 48, 55, 58, 385, (uint)0);
+        if (audioPlaying != 0) uiText("PLAYING", 554, 385, (uint)9);
+        else if (audioPaused != 0) uiText("PAUSED", 562, 385, (uint)8);
+        else if (audioStopped != 0 && audioTotalFrames > 0 && audioCurrentFrame >= audioTotalFrames)
+            uiText("FINISHED", 546, 385, (uint)15);
+        else uiText("STOPPED", 554, 385, (uint)15);
+        fmFillRect(58, 404, 499, 411, (uint)14);
+        width = 0;
+        if (audioTotalFrames > 0)
+        {
+            unit = audioTotalFrames / (uint)440;
+            if (unit > 0) width = (int)(audioCurrentFrame / unit);
+            else width = (int)(audioCurrentFrame * (uint)440 / audioTotalFrames);
+        }
+        if (width > 440) width = 440;
+        if (width < 0) width = 0;
+        if (width > 0) fmFillRect(58, 404, 58 + width, 411, color);
+        fmFillRect(58 + width, 402, 59 + width, 413, (uint)0);
+        fmTime(audioCurrentFrame, audioSampleRate, 514, 405, (uint)0);
+        drawText("/", 96, 561, 405, 1, (uint)15);
+        fmTime(audioTotalFrames, audioSampleRate, 573, 405, (uint)15);
+        if (mode == 2)
+            drawText("SAVE OR CANCEL THE NAME TO USE PLAYBACK CONTROLS", 96, 58, 423, 1, (uint)15);
+        else if (mode == 4)
+            drawText("SPACE PAUSE/PLAY   P STOP   HOME/END START/END   BACKSPACE FOR 10S SEEK", 96, 58, 423, 1, (uint)15);
+        else drawText("SPACE PAUSE/PLAY    P STOP    LEFT/RIGHT SEEK 10S    HOME/END START/END", 96, 58, 423, 1, (uint)15);
+    }
+    audioPanelDirty = 0;
+}
+
+void drawCachedName(int slot, int len, int maxChars, int x, int y, uint color)
+{
+    uiTextN(&cacheNames[slot * 48], len, maxChars, x, y, color);
+}
+
+void drawEntryRow(int row)
+{
+    int entryIndex;
+    int y;
+    int kind;
+    uint color;
+    if (row < 0 || row >= VISIBLE_ROWS) return;
+    if (cacheStatuses[row] == 0) return;
+    entryIndex = cacheStart + row;
+    y = LIST_Y + row * ROW_H;
+    if (entryIndex == selectedIndex)
+    {
+        fmFillRect(17, y - 1, 422, y + 11, (uint)2);
+        fmFillRect(17, y - 1, 19, y + 11, (uint)11);
+    }
+    kind = 0;
+    color = (uint)15;
+    if (cacheTypes[row] == 1) { kind = 1; color = (uint)8; }
+    else if (cachePrograms[row] != 0 || fmNameProgram(&cacheNames[row * 48], cacheLens[row]) != 0) { kind = 2; color = (uint)9; }
+    else if (fmNameAudio(&cacheNames[row * 48], cacheLens[row]) != 0) { kind = 3; color = (uint)11; }
+    else if (fmNameImage(&cacheNames[row * 48], cacheLens[row]) != 0) { kind = 4; color = (uint)13; }
+    fmIcon(kind, 24, y, color);
+    if (entryIndex == selectedIndex) color = (uint)0;
+    drawCachedName(row, cacheLens[row], 43, 43, y + 1, color);
+    if (cacheTypes[row] == 1) drawText(">", 96, 409, y + 2, 1, (uint)8);
+    if (cacheStatuses[row] == 2) drawText("...", 96, 399, y + 2, 1, (uint)8);
+}
+
+void drawEntryRowClean(int row)
+{
+    int y;
+    if (row < 0 || row >= VISIBLE_ROWS) return;
+    y = LIST_Y + row * ROW_H;
+    fmFillRect(17, y - 1, 422, y + 11, (uint)1);
+    drawEntryRow(row);
+}
+
+void drawFileList()
+{
+    int row;
+    int thumbY;
+    int thumbHeight;
+    drawBox(12, 78, 432, 367, (uint)10, (uint)1);
+    uiText("NAME", 24, 83, (uint)15);
+    uiUInt((uint)entryCount, 236, 83, (uint)15);
+    uiText("ITEMS", 276, 83, (uint)15);
+    drawText("ENTER OPEN", 96, 360, 85, 1, (uint)15);
+    narm_line(17, 94, 426, 94, (uint)14);
+    if (scanDone != 0 && entryCount <= 0)
+    {
+        fmIcon(1, 196, 190, (uint)14);
+        uiText("THIS FOLDER IS EMPTY", 140, 215, (uint)15);
+        drawText("F NEW FILE   D NEW FOLDER", 96, 146, 236, 1, (uint)15);
+    }
+    row = 0;
+    while (row < VISIBLE_ROWS) { drawEntryRow(row); row = row + 1; }
+    if (entryCount > VISIBLE_ROWS)
+    {
+        fmFillRect(426, 99, 429, 355, (uint)14);
+        thumbHeight = VISIBLE_ROWS * 256 / entryCount;
+        if (thumbHeight < 12) thumbHeight = 12;
+        thumbY = 99 + scrollIndex * (256 - thumbHeight) / (entryCount - VISIBLE_ROWS);
+        fmFillRect(426, thumbY, 429, thumbY + thumbHeight, (uint)15);
+    }
+}
+
+void drawPreviewLineSmall(int x, int y)
+{
+    char line[22];
+    int i;
+    int ch;
+    i = 0;
+    while (i < 21 && i < (int)previewLen)
+    {
+        ch = (int)previewBuf[i];
+        if (ch < 32 || ch > 126) ch = 46;
+        line[i] = (char)ch;
+        i = i + 1;
+    }
+    line[i] = 0;
+    uiText(line, x, y, (uint)15);
+}
+
+void drawSelectedInfo()
+{
+    int length;
+    int kind;
+    int row;
+    int position;
+    int count;
+    int boundary;
+    uint color;
+    uiText("DETAILS", 454, 85, (uint)15);
+    narm_line(450, 104, 619, 104, (uint)14);
+    if (entryCount <= 0)
+    {
+        uiText("NO SELECTION", 454, 121, (uint)15);
+        return;
+    }
+    if (selectedInfoValid == 0)
+    {
+        uiText("READING FILE INFO...", 454, 121, (uint)15);
+        return;
+    }
+    kind = 0; color = (uint)15;
+    length = strLenLimit(selectedDisplayName, 48);
+    if (selectedType == 1) { kind = 1; color = (uint)8; }
+    else if (selectedIsProgram != 0) { kind = 2; color = (uint)9; }
+    else if (fmNameAudio(selectedDisplayName, length) != 0) { kind = 3; color = (uint)11; }
+    else if (fmNameImage(selectedDisplayName, length) != 0) { kind = 4; color = (uint)13; }
+    fmIcon(kind, 454, 121, color);
+    if (kind == 1) uiText("FOLDER", 476, 122, color);
+    else if (kind == 2) uiText("NARM PROGRAM", 476, 122, color);
+    else if (kind == 3) uiText("WAV AUDIO", 476, 122, color);
+    else if (kind == 4) uiText("IMAGE", 476, 122, color);
+    else uiText("FILE", 476, 122, color);
+    row = 0;
+    position = 0;
+    while (position < length && row < 3)
+    {
+        count = length - position;
+        if (count > 21)
+        {
+            count = 21;
+            boundary = count - 1;
+            while (boundary > 6)
+            {
+                if (selectedDisplayName[position + boundary] == ' ')
+                {
+                    count = boundary;
+                    break;
+                }
+                boundary = boundary - 1;
+            }
+        }
+        uiTextN(&selectedDisplayName[position], count, count, 454, 150 + row * 15, (uint)0);
+        position = position + count;
+        while (position < length && selectedDisplayName[position] == ' ') position = position + 1;
+        row = row + 1;
+    }
+    if (selectedType != 1)
+    {
+        uiText("SIZE", 454, 206, (uint)15);
+        uiUInt(selectedSize, 454, 222, (uint)0);
+        uiText("BYTES", 454, 237, (uint)15);
+    }
+    narm_line(450, 259, 619, 259, (uint)14);
+    if (kind == 1) uiText("ENTER OPEN FOLDER", 454, 274, (uint)8);
+    else if (kind == 2)
+    {
+        uiText("ENTER LAUNCH", 454, 274, (uint)9);
+        drawText("FILEMGR STAYS OPEN", 96, 454, 293, 1, (uint)15);
+        drawText("ALT F2 SWITCHES APPS", 96, 454, 305, 1, (uint)15);
+    }
+    else if (kind == 3)
+    {
+        uiText("ENTER PLAY AUDIO", 454, 274, (uint)11);
+        drawText("PLAYER CONTROLS BELOW", 96, 454, 293, 1, (uint)15);
+    }
+    else if (kind == 4) uiText("ENTER VIEW IMAGE", 454, 274, (uint)13);
+    else
+    {
+        uiText("ENTER INSPECT FILE", 454, 274, (uint)15);
+        drawPreviewLineSmall(454, 297);
+    }
+    drawText("E RENAME   DELETE REMOVE", 96, 454, 345, 1, (uint)15);
+}
+
+void drawSelectedInfoClean()
+{
+    fmFillRect(443, 79, 626, 366, (uint)1);
+    drawSelectedInfo();
+}
+
+void renderBrowser()
+{
+    narm_clear(COL_BG);
+    fmHeader("FILES / PROGRAMS / AUDIO");
+    drawPathBar();
+    drawFileList();
+    drawBox(442, 78, 627, 367, (uint)10, (uint)1);
+    drawSelectedInfo();
+    renderAudioPanel();
+    fmFooter("UP/DOWN MOVE  ENTER OPEN/RUN/PLAY  BACKSPACE PARENT  TAB DRIVE  F FILE  D FOLDER  E RENAME",
+             "DELETE/X REMOVE  R REFRESH    ALT F2 SWITCH APP    ALT F3 RUN MODE    ALT F4 CLOSE");
+    narm_present();
+}
+
+void renderBrowserQuickMove()
+{
+    drawEntryRowClean(quickOldSlot);
+    if (quickNewSlot != quickOldSlot) drawEntryRowClean(quickNewSlot);
+    drawSelectedInfoClean();
+    renderAudioPanel();
+    drawStatus();
+    narm_present();
+}
+
+int hexChar(uint value)
+{
+    if (value < (uint)10) return 48 + (int)value;
+    return 55 + (int)value;
+}
+
+void drawHexByte(uint value, int x, int y, uint color)
+{
+    char hex[3];
+    hex[0] = (char)hexChar((value >> (uint)4) & (uint)15);
+    hex[1] = (char)hexChar(value & (uint)15);
+    hex[2] = 0;
+    uiText(hex, x, y, color);
+}
+
+void drawFileDump()
+{
+    int row;
+    int col;
+    int idx;
+    int ch;
+    drawBox(12, 104, 627, 367, (uint)10, (uint)1);
+    uiText("OFFSET", 24, 113, (uint)15);
+    uiText("HEX BYTES", 126, 113, (uint)15);
+    uiText("TEXT", 442, 113, (uint)15);
+    narm_line(20, 131, 619, 131, (uint)14);
+    if (previewLen == 0 && viewLoading == 0) uiText("EMPTY FILE", 264, 218, (uint)15);
+    row = 0;
+    while (row < 16)
+    {
+        if (row * 8 < (int)previewLen) uiUInt((uint)(viewOffset + row * 8), 24, 141 + row * 13, (uint)14);
+        col = 0;
+        while (col < 8)
+        {
+            idx = row * 8 + col;
+            if (idx < (int)previewLen)
+            {
+                ch = (int)viewBuf[idx] & 255;
+                drawHexByte((uint)ch, 126 + col * 36, 141 + row * 13, (uint)0);
+                if (ch < 32 || ch > 126) ch = 46;
+                drawGlyph(442 + col * 16, 142 + row * 13, 1, ch, (uint)15);
+            }
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+}
+
+void renderFileView()
+{
+    narm_clear(COL_BG);
+    fmHeader("FILE INSPECTOR");
+    drawPathBar();
+    uiTextN(fileViewName, 48, 48, 20, 81, (uint)0);
+    uiText("BYTES", 494, 81, (uint)15);
+    uiUInt(selectedSize, 542, 81, (uint)15);
+    drawFileDump();
+    renderAudioPanel();
+    fmFooter("UP/DOWN OR W/S PREVIOUS/NEXT PAGE    BACKSPACE RETURN TO FILES", "ALT F2 SWITCH APP    ALT F3 RUN MODE    ALT F4 CLOSE");
+    narm_present();
+}
+
+void drawImageFormatName(int x, int y, uint color)
+{
+    if (imageType == 1) uiText("PNG", x, y, color);
+    else if (imageType == 2) uiText("JPEG", x, y, color);
+    else if (imageType == 3) uiText("GIF", x, y, color);
+    else if (imageType == 4) uiText("BMP", x, y, color);
+    else if (imageType == 5) uiText("PPM", x, y, color);
+    else if (imageType == 6) uiText("PGM", x, y, color);
+}
+
+void drawImageOverlay()
+{
+    uint zoom;
+    fmHeader("IMAGE VIEWER");
+    fmFillRect(12, 46, 627, 68, (uint)1);
+    drawImageFormatName(20, 52, (uint)13);
+    uiUInt((uint)imageWidth, 86, 52, (uint)0);
+    uiText("X", 142, 52, (uint)15);
+    uiUInt((uint)imageHeight, 158, 52, (uint)0);
+    uiText("ZOOM", 489, 52, (uint)15);
+    zoom = (uint)imageScale * (uint)100 / (uint)256;
+    uiUInt(zoom, 537, 52, (uint)0);
+    uiText("%", 594, 52, (uint)15);
+    fmFillRect(0, 368, 639, 479, COL_BG);
+    renderAudioPanel();
+    fmFooter("W A S D PAN    I/K ZOOM IN/OUT    ENTER FIT IMAGE    BACKSPACE RETURN TO FILES", "ALT F2 SWITCH APP    ALT F3 RUN MODE    ALT F4 CLOSE");
+}
+
+void drawImagePlaceholder()
+{
+    drawBox(116, 131, 523, 303, (uint)10, (uint)1);
+    uiText("IMAGE PREVIEW UNAVAILABLE", 148, 162, (uint)0);
+    if (imageDrawError != 0) uiText("THE IMAGE COULD NOT BE READ", 148, 198, (uint)4);
+    else uiText("NO DECODER FOR THIS IMAGE FORMAT", 148, 198, (uint)8);
+    drawText("SUPPORTED: PNG, JPEG, BMP, PPM P6, PGM P5", 96, 148, 235, 1, (uint)15);
+    drawText("BACKSPACE RETURNS TO YOUR FILES", 96, 148, 264, 1, (uint)15);
+}
+
+void drawImageCacheStatus()
+{
+    int width;
+    drawBox(116, 131, 523, 303, (uint)10, (uint)1);
+    uiText("PREPARING IMAGE", 148, 162, (uint)0);
+    if (imageCacheError != 0)
+    {
+        if (imageCodecError == 2) drawText("UNSUPPORTED IMAGE VARIANT", 96, 148, 202, 1, (uint)4);
+        else if (imageCodecError == 3) drawText("IMAGE READ OR WRITE FAILED", 96, 148, 202, 1, (uint)4);
+        else if (imageCodecError == 4) drawText("IMAGE CHECKSUM FAILED", 96, 148, 202, 1, (uint)4);
+        else if (imageCodecError != 0) drawText("INVALID OR TRUNCATED IMAGE", 96, 148, 202, 1, (uint)4);
+        else uiText("IMAGE CACHE FAILED", 148, 202, (uint)4);
+        return;
+    }
+    drawText("BUILDING A ROW CACHE ON THE SELECTED DRIVE", 96, 148, 197, 1, (uint)15);
+    fmFillRect(148, 225, 491, 236, (uint)14);
+    width = 0;
+    if (imageHeight > 0) width = imageCacheBuildY * 344 / imageHeight;
+    if (width > 344) width = 344;
+    if (width > 0) fmFillRect(148, 225, 147 + width, 236, (uint)13);
+    drawText("BACKSPACE CANCELS", 96, 148, 265, 1, (uint)15);
+}
+
+void drawRenderableImage()
+{
+    int y;
+    int y1;
+    int sourceY;
+    int slot;
+    int pendingSlot;
+    int pendingY;
+    int pendingEnd;
+    if (imageCacheReady == 0) return;
+    updateImageLookupTables();
+    pendingSlot = -1;
+    pendingY = IMAGE_TOP;
+    pendingEnd = IMAGE_TOP - 1;
+    y = IMAGE_TOP;
+    while (y < IMAGE_TOP + IMAGE_HEIGHT)
+    {
+        sourceY = imageSrcYTable[y];
+        y1 = y;
+        while (y1 + 1 < IMAGE_TOP + IMAGE_HEIGHT && imageSrcYTable[y1 + 1] == sourceY) y1 = y1 + 1;
+        if (sourceY >= 0 && sourceY < imageHeight)
+        {
+            slot = 0;
+            if (pendingSlot == 0) slot = 1;
+            imageScreenRowValid[slot] = 0;
+            buildImageScreenRowInSlot(sourceY, slot);
+            if (pendingSlot >= 0 && sameImageScreenRows(pendingSlot, slot) != 0) pendingEnd = y1;
+            else
+            {
+                if (pendingSlot >= 0) drawCachedImageRowRuns(pendingSlot, pendingY, pendingEnd);
+                pendingSlot = slot;
+                pendingY = y;
+                pendingEnd = y1;
+            }
+        }
+        else
+        {
+            if (pendingSlot >= 0) drawCachedImageRowRuns(pendingSlot, pendingY, pendingEnd);
+            pendingSlot = -1;
+        }
+        y = y1 + 1;
+    }
+    if (pendingSlot >= 0) drawCachedImageRowRuns(pendingSlot, pendingY, pendingEnd);
+}
+
+void renderImageView()
+{
+    narm_clear((uint)1);
+    if (imageRenderable != 0)
+    {
+        if (imageDrawError != 0) drawImagePlaceholder();
+        else if (imageCacheReady != 0)
+        {
+            drawRenderableImage();
+            if (imageDrawError != 0) drawImagePlaceholder();
+        }
+        else drawImageCacheStatus();
+    }
+    else drawImagePlaceholder();
+    drawImageOverlay();
+    narm_present();
+}
+
+void fmEditField()
+{
+    int cursorX;
+    fmFillRect(81, 199, 558, 237, (uint)1);
+    uiTextN(editName, editLen, 47, 92, 213, (uint)0);
+    cursorX = 92 + editLen * 8;
+    if (cursorX > 545) cursorX = 545;
+    fmFillRect(cursorX, 225, cursorX + 6, 226, (uint)11);
+}
+
+void renderNameEdit()
+{
+    narm_clear(COL_BG);
+    fmHeader("NAME EDITOR");
+    drawPathBar();
+    drawBox(64, 116, 575, 334, (uint)10, (uint)1);
+    fmFillRect(65, 117, 574, 154, (uint)2);
+    if (createMode == 1) uiText("CREATE A NEW FILE", 82, 131, (uint)0);
+    else if (createMode == 2) uiText("CREATE A NEW FOLDER", 82, 131, (uint)0);
+    else uiText("RENAME SELECTED ITEM", 82, 131, (uint)0);
+    uiText("NAME", 82, 177, (uint)15);
+    drawBox(80, 198, 559, 238, (uint)11, (uint)1);
+    fmEditField();
+    fmChip("ENTER SAVE", 82, 261, 106, (uint)10, (uint)0);
+    drawText("BACKSPACE EDITS. EMPTY NAME + BACKSPACE CANCELS", 96, 82, 301, 1, (uint)15);
+    renderAudioPanel();
+    fmFooter("TYPE A NAME    ENTER SAVE    BACKSPACE DELETE A CHARACTER", "ALT F2 SWITCH APP    ALT F3 RUN MODE    ALT F4 CLOSE");
+    narm_present();
+}
+
+void renderNameEditQuick()
+{
+    fmEditField();
+    renderAudioPanel();
+    drawStatus();
+    narm_present();
+}
+
+void renderRenameProgress()
+{
+    uint unit;
+    int width;
+    narm_clear(COL_BG);
+    fmHeader("RENAMING FILE");
+    drawPathBar();
+    drawBox(64, 116, 575, 334, (uint)10, (uint)1);
+    uiText("COPYING TO THE NEW NAME", 82, 143, (uint)0);
+    uiTextN(editName, editLen, 47, 82, 177, (uint)11);
+    uiText("COPIED", 82, 211, (uint)15);
+    uiUInt((uint)renameOffset, 146, 211, (uint)0);
+    uiText("OF", 284, 211, (uint)15);
+    uiUInt(renameSize, 316, 211, (uint)0);
+    uiText("BYTES", 486, 211, (uint)15);
+    fmFillRect(82, 242, 557, 255, (uint)14);
+    width = 0;
+    if (renameSize > 0)
+    {
+        unit = renameSize / (uint)476;
+        if (unit > 0) width = (int)((uint)renameOffset / unit);
+        else width = (int)((uint)renameOffset * (uint)476 / renameSize);
+    }
+    if (width > 476) width = 476;
+    if (width > 0) fmFillRect(82, 242, 81 + width, 255, (uint)11);
+    drawText("THE ORIGINAL IS REMOVED ONLY AFTER THE COPY SUCCEEDS", 96, 82, 293, 1, (uint)15);
+    renderAudioPanel();
+    fmFooter("PLEASE WAIT WHILE THE FILE IS COPIED", "ALT F2 SWITCH APP    ALT F3 RUN MODE    ALT F4 CLOSE");
+    narm_present();
+}
+
+void render()
+{
+    if (dirty == 0)
+    {
+        if (audioPanelDirty != 0)
+        {
+            renderAudioPanel();
+            narm_present();
+        }
+        return;
+    }
+    if (mode == 0)
+    {
+        if (quickMoveDirty != 0) renderBrowserQuickMove();
+        else renderBrowser();
+    }
+    else if (mode == 1) renderFileView();
+    else if (mode == 3) renderRenameProgress();
+    else if (mode == 4) renderImageView();
+    else
+    {
+        if (nameEditQuickDirty != 0) renderNameEditQuick();
+        else renderNameEdit();
+    }
+    quickMoveDirty = 0;
+    nameEditQuickDirty = 0;
+    dirty = 0;
+}

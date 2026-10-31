@@ -1,0 +1,208 @@
+/* Integer IEEE-754 binary64 adapter. Player and AABB values are never narrowed
+ * to float. A tick-local register pool replaces expression temporaries. */
+#define MC_FP_COUNT 16384
+#define MC_FP_TEMP_START 256
+struct MCJDouble mc_fp_values[MC_FP_COUNT];
+int mc_fp_next=MC_FP_TEMP_START;
+int mc_fp_error;
+
+int mc_fp_bits(uint lo,uint hi)
+{
+    int slot=mc_fp_next;
+    if (slot>=MC_FP_COUNT) { mc_fp_error=1; return 16; }
+    mc_fp_next=slot+1; mc_fp_values[slot].lo=lo; mc_fp_values[slot].hi=hi;
+    return slot;
+}
+void mc_fp_store(int slot,int value)
+{ mc_fp_values[slot].lo=mc_fp_values[value].lo; mc_fp_values[slot].hi=mc_fp_values[value].hi; }
+int mc_fp_neg(int a)
+{ return mc_fp_bits(mc_fp_values[a].lo,mc_fp_values[a].hi^0x80000000); }
+int mc_fp_abs(int a)
+{ return mc_fp_bits(mc_fp_values[a].lo,mc_fp_values[a].hi&0x7fffffff); }
+int mc_fp_zero(int a)
+{ return (mc_fp_values[a].hi&0x7fffffff)==0 && mc_fp_values[a].lo==0; }
+int mc_fp_cmp(int a,int b)
+{
+    uint ah=mc_fp_values[a].hi,bh=mc_fp_values[b].hi;
+    uint al=mc_fp_values[a].lo,bl=mc_fp_values[b].lo;
+    int magnitude;
+    if (mc_fp_zero(a) && mc_fp_zero(b)) return 0;
+    if ((ah>>31)!=(bh>>31)) return (ah>>31)?-1:1;
+    magnitude=ah==bh?(al==bl?0:(al<bl?-1:1)):(ah<bh?-1:1);
+    return (ah>>31)?-magnitude:magnitude;
+}
+int mc_fp_eq(int a,int b) { return mc_fp_cmp(a,b)==0; }
+int mc_fp_lt(int a,int b) { return mc_fp_cmp(a,b)<0; }
+int mc_fp_gt(int a,int b) { return mc_fp_cmp(a,b)>0; }
+int mc_fp_le(int a,int b) { return mc_fp_cmp(a,b)<=0; }
+int mc_fp_ge(int a,int b) { return mc_fp_cmp(a,b)>=0; }
+
+void mc_fp_shr_jam(struct MCU64 *v,int n)
+{
+    uint lo=v->lo,hi=v->hi; uint sticky=0;
+    if (n<=0) return;
+    if (n<32) { sticky=(lo<<(32-n))!=0;v->lo=(lo>>n)|(hi<<(32-n));v->hi=hi>>n; }
+    else if (n==32) {sticky=lo!=0;v->lo=hi;v->hi=0;}
+    else if (n<64) {sticky=lo!=0 || (hi<<(64-n))!=0;v->lo=hi>>(n-32);v->hi=0;}
+    else {sticky=lo!=0 || hi!=0;v->lo=0;v->hi=0;}
+    if (sticky) v->lo=v->lo|1;
+}
+int mc_fp_mant(int a,struct MCU64 *v)
+{
+    int e=(int)((mc_fp_values[a].hi>>20)&2047)-1023;
+    v->lo=mc_fp_values[a].lo;v->hi=mc_fp_values[a].hi&0xfffff;
+    if (e!=-1023) v->hi=v->hi|0x100000;
+    else
+    {
+        e=-1022;
+        if (v->lo==0 && v->hi==0) return e;
+        while ((v->hi&0x100000)==0) { mc_u64_shift_left(v,v,1);e=e-1; }
+    }
+    return e;
+}
+int mc_fp_pack(uint sign,int e,struct MCU64 *v)
+{
+    uint rounding; uint carry;
+    if (v->lo==0 && v->hi==0) return mc_fp_bits(0,sign<<31);
+    while (v->hi>=0x1000000) {mc_fp_shr_jam(v,1);e=e+1;}
+    while (v->hi<0x800000) {mc_u64_shift_left(v,v,1);e=e-1;}
+    if (e < -1022) {mc_fp_shr_jam(v,-1022-e);e=-1022;}
+    rounding=v->lo&7;
+    v->lo=(v->lo>>3)|(v->hi<<29);v->hi=v->hi>>3;
+    if (rounding>4 || (rounding==4 && (v->lo&1)))
+    { carry=v->lo==0xffffffff;v->lo=v->lo+1;v->hi=v->hi+carry; }
+    if (v->hi>=0x200000) {v->lo=(v->lo>>1)|(v->hi<<31);v->hi=v->hi>>1;e=e+1;}
+    if (e>1023) return mc_fp_bits(0,(sign<<31)|0x7ff00000);
+    return mc_fp_bits(v->lo,(sign<<31)|(v->hi&0xfffff)|
+        ((uint)(e==-1022 && v->hi<0x100000?0:e+1023)<<20));
+}
+int mc_fp_add(int a,int b)
+{
+    struct MCU64 av;struct MCU64 bv;struct MCU64 result;
+    int ae,be;uint as=mc_fp_values[a].hi>>31,bs=mc_fp_values[b].hi>>31;
+    uint borrow;int swap;
+    if (mc_fp_zero(a)) return mc_fp_zero(b)?mc_fp_bits(0,(as&bs)<<31):b;
+    if (mc_fp_zero(b)) return a;
+    ae=mc_fp_mant(a,&av);be=mc_fp_mant(b,&bv);
+    if (ae<be || (ae==be && (av.hi<bv.hi || (av.hi==bv.hi && av.lo<bv.lo))))
+    {swap=a;a=b;b=swap;as=mc_fp_values[a].hi>>31;bs=mc_fp_values[b].hi>>31;ae=mc_fp_mant(a,&av);be=mc_fp_mant(b,&bv);}
+    mc_u64_shift_left(&av,&av,3);mc_u64_shift_left(&bv,&bv,3);
+    mc_fp_shr_jam(&bv,ae-be);
+    if (as==bs) mc_u64_add(&result,&av,&bv);
+    else {borrow=av.lo<bv.lo;result.lo=av.lo-bv.lo;result.hi=av.hi-bv.hi-borrow;}
+    if (result.lo==0 && result.hi==0) as=0;
+    return mc_fp_pack(as,ae,&result);
+}
+int mc_fp_sub(int a,int b) { return mc_fp_add(a,mc_fp_neg(b)); }
+int mc_fp_mul(int a,int b)
+{
+    struct MCU64 av;struct MCU64 bv;struct MCU64 sig;
+    uint words[4]={0,0,0,0};uint aa[2];uint bb[2];uint lo,hi,old,c;
+    int ae,be,i,j,k,shift,bit;
+    uint sign=(mc_fp_values[a].hi^mc_fp_values[b].hi)>>31;
+    if (mc_fp_zero(a)||mc_fp_zero(b)) return mc_fp_bits(0,sign<<31);
+    ae=mc_fp_mant(a,&av);be=mc_fp_mant(b,&bv);
+    aa[0]=av.lo;aa[1]=av.hi;bb[0]=bv.lo;bb[1]=bv.hi;
+    for(i=0;i<2;i=i+1) for(j=0;j<2;j=j+1)
+    {
+        k=i+j;mc_u32_multiply_full(aa[i],bb[j],&lo,&hi);
+        old=words[k];words[k]=old+lo;c=words[k]<old;k=k+1;
+        old=words[k];words[k]=old+hi;lo=words[k]<old;
+        old=words[k];words[k]=old+c;c=lo || words[k]<old;
+        k=k+1;
+        while(c && k<4) {old=words[k];words[k]=old+1;c=words[k]==0;k=k+1;}
+    }
+    shift=(words[3]&0x200)?50:49;
+    sig.lo=(words[1]>>(shift-32))|(words[2]<<(64-shift));
+    sig.hi=(words[2]>>(shift-32))|(words[3]<<(64-shift));
+    if (words[0]!=0 || (words[1]<<(64-shift))!=0) sig.lo=sig.lo|1;
+    return mc_fp_pack(sign,ae+be+(shift==50?1:0),&sig);
+}
+int mc_fp_div(int a,int b)
+{
+    struct MCU64 av;struct MCU64 bv;struct MCU64 q;uint borrow;int ae,be,i;
+    uint sign=(mc_fp_values[a].hi^mc_fp_values[b].hi)>>31;
+    if(mc_fp_zero(b)) {mc_fp_error=2;return mc_fp_bits(0,(sign<<31)|0x7ff00000);}
+    if(mc_fp_zero(a)) return mc_fp_bits(0,sign<<31);
+    ae=mc_fp_mant(a,&av);be=mc_fp_mant(b,&bv);
+    if(av.hi<bv.hi || (av.hi==bv.hi && av.lo<bv.lo)) {mc_u64_shift_left(&av,&av,1);ae=ae-1;}
+    q.lo=0;q.hi=0;
+    for(i=0;i<56;i=i+1)
+    {
+        mc_u64_shift_left(&q,&q,1);
+        if(av.hi>bv.hi || (av.hi==bv.hi && av.lo>=bv.lo))
+        {borrow=av.lo<bv.lo;av.lo=av.lo-bv.lo;av.hi=av.hi-bv.hi-borrow;q.lo=q.lo|1;}
+        mc_u64_shift_left(&av,&av,1);
+    }
+    if(av.lo!=0||av.hi!=0) q.lo=q.lo|1;
+    return mc_fp_pack(sign,ae-be,&q);
+}
+int mc_fp_sqrt(int a)
+{
+    struct MCU64 mant;struct MCU64 root;struct MCU64 rem;struct MCU64 trial;
+    int e=mc_fp_mant(a,&mant);int shift=58+(e&1);int i,src;uint bits,borrow;
+    if(mc_fp_zero(a)) return a;
+    if(mc_fp_values[a].hi>>31) {mc_fp_error=3;return 16;}
+    root.lo=0;root.hi=0;rem.lo=0;rem.hi=0;
+    for(i=55;i>=0;i=i-1)
+    {
+        src=i*2-shift;bits=0;
+        if(src>=0 && src<64) bits=(src>=32?mant.hi>>(src-32):((mant.lo>>src)|(src==0?0:mant.hi<<(32-src))))&3;
+        else if(src==-1) bits=(mant.lo&1)<<1;
+        mc_u64_shift_left(&rem,&rem,2);rem.lo=rem.lo|bits;
+        mc_u64_shift_left(&trial,&root,2);trial.lo=trial.lo|1;
+        mc_u64_shift_left(&root,&root,1);
+        if(rem.hi>trial.hi || (rem.hi==trial.hi && rem.lo>=trial.lo))
+        {borrow=rem.lo<trial.lo;rem.lo=rem.lo-trial.lo;rem.hi=rem.hi-trial.hi-borrow;root.lo=root.lo|1;}
+    }
+    if(rem.lo!=0||rem.hi!=0) root.lo=root.lo|1;
+    return mc_fp_pack(0,(e-(e&1))/2,&root);
+}
+int mc_fp_i32(int x)
+{
+    struct MCU64 v;uint sign=x<0;uint magnitude=sign?0-(uint)x:(uint)x;int e=0;
+    if(magnitude==0) return 16;
+    v.lo=magnitude;v.hi=0;
+    while(v.hi<0x800000) {mc_u64_shift_left(&v,&v,1);e=e-1;}
+    return mc_fp_pack(sign,e+55,&v);
+}
+int mc_fp_f32(float value)
+{
+    uint bits=*((uint *)&value);int e=(int)((bits>>23)&255)-127;
+    struct MCU64 v;
+    if((bits&0x7fffffff)==0) return mc_fp_bits(0,bits&0x80000000);
+    v.lo=bits&0x7fffff;v.hi=0;
+    if(e!=-127) v.lo=v.lo|0x800000;
+    else {e=-126;while(v.lo<0x800000){v.lo=v.lo<<1;e=e-1;}}
+    mc_u64_shift_left(&v,&v,32);
+    return mc_fp_pack(bits>>31,e,&v);
+}
+float mc_fp_to_f32(int a)
+{
+    struct MCU64 v;int e;uint bits,rounding;
+    if(mc_fp_zero(a)) {bits=mc_fp_values[a].hi&0x80000000;return *((float *)&bits);}
+    e=mc_fp_mant(a,&v);mc_u64_shift_left(&v,&v,3);mc_fp_shr_jam(&v,29);
+    if(e<-126) {mc_fp_shr_jam(&v,-126-e);e=-126;}
+    rounding=v.lo&7;bits=v.lo>>3;
+    if(rounding>4 || (rounding==4 && (bits&1))) bits=bits+1;
+    if(bits>=0x1000000) {bits=bits>>1;e=e+1;}
+    bits=(mc_fp_values[a].hi&0x80000000)|(bits&0x7fffff)|
+        ((uint)(e>127?255:(e==-126 && bits<0x800000?0:e+127))<<23);
+    return *((float *)&bits);
+}
+int mc_fp_floor(int a) { return mc_java_double_floor_i32(&mc_fp_values[a]); }
+int mc_fp_trunc(int a)
+{ int n=mc_fp_floor(a);return mc_fp_values[a].hi>>31 && !mc_fp_eq(a,mc_fp_i32(n))?n+1:n; }
+void mc_fp_reset(void) {mc_fp_next=MC_FP_TEMP_START;mc_fp_error=0;}
+void mc_fp_init(void)
+{int i;for(i=0;i<MC_FP_TEMP_START;i=i+1){mc_fp_values[i].lo=0;mc_fp_values[i].hi=0;}mc_fp_reset();}
+
+#define D0 16
+#define D1 mc_fp_i32(1)
+#define D05 mc_fp_bits(0,0x3fe00000)
+#define D005 mc_fp_bits(0x9999999a,0x3fa99999)
+#define D008 mc_fp_bits(0x47ae147b,0x3fb47ae1)
+#define D002 mc_fp_bits(0x47ae147b,0x3f947ae1)
+#define D001 mc_fp_bits(0x47ae147b,0x3f847ae1)
+#define D0001 mc_fp_bits(0xd2f1a9fc,0x3f50624d)
+#define D00001 mc_fp_bits(0xeb1c432d,0x3f1a36e2)

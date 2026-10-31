@@ -1,0 +1,18 @@
+{
+  "resource_pack_name": "tinycraft",
+  "texture_name": "atlas.terrain",
+  "texture_data": {
+    "tinycraft:grass_top": {
+      "textures": "textures/blocks/grass_top",
+      "tinycraft_texture_id": 1
+    },
+    "tinycraft:dirt": {
+      "textures": "textures/blocks/dirt",
+      "tinycraft_texture_id": 3
+    },
+    "tinycraft:cobblestone": {
+      "textures": "textures/blocks/cobblestone",
+      "tinycraft_texture_id": 20
+    }
+  }
+}

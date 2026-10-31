@@ -1,0 +1,3244 @@
+/*
+    FILEMGR 640 - NARM API 1.11
+    --------------------
+    Tiny-C SD card / internal-flash file manager for the RP2350/Pico NARM runtime.
+
+    Uses wrappers around the NARM storage-selecting file/directory services:
+        dirEntry(), dirMake(), dirDelete()
+        fileExists(), fileMake(), fileDelete(), fileSize()
+        fileRead(), fileWrite()
+        runProg()
+
+    Controls use normalized firmware keyboard events:
+        Up / Down    move selection (W / S are aliases)
+        Enter        open directory, launch NARM/image, play WAV, or view file
+        Backspace    leave file/image view or go to parent directory
+        D            create directory, with editable name
+        F            create file, with editable name
+        E            rename selected entry; files use copy-then-delete
+        X            delete selected file/directory, press twice to confirm
+        R            remount SD if selected, then refresh directory
+        T / Tab      toggle between SD card and flash storage
+        Space        pause/resume/restart the loaded audio track
+        P            stop the track, keeping it available to restart
+        Left/Right   seek backward/forward ten seconds (except image/name edit)
+        Home / End   jump to the start/end of the loaded audio track
+        Alt+F2       switch apps; launching a program keeps FILEMGR alive
+
+    File viewing is loaded incrementally after the frame is drawn so large or
+    slow SD reads do not prevent the viewer screen from appearing. Image files
+    are inspected by signature/header. Only formats with an actual pixel
+    decoder are opened by the built-in image viewer; compressed formats are
+    rejected clearly instead of pretending to render when no decoder exists.
+    PNG and JPEG decode incrementally into the same packed cache. Decoding and
+    viewing share a fixed 16 KiB block cache. A packed 4-bit cache remains on
+    storage; source blocks survive pan/zoom and matching display rows merge.
+
+    Uses the firmware's shared 640x480 4-bit framebuffer. Text is batched into
+    glyph submissions; the app never allocates a private full-screen buffer.
+*/
+
+#include "narm.tch"
+
+uint fileSize(char path[], uint storage)
+{
+    uint size = 0;
+    if (narm_file_size(path, storage, &size) < 0) return (uint)0;
+    return size;
+}
+
+uint compatDirEntry(char path[], uint index, char name[], int *nameLen,
+                    int *entryKind, uint storage)
+{
+    uint length = 0;
+    uint kind = 0;
+    int result = narm_dir_entry(path, index, name, (uint)48, &length, &kind, storage);
+    *nameLen = (int)length;
+    *entryKind = (int)kind;
+    if (result < 0) return 0;
+    return (uint)result;
+}
+
+uint compatRead(char path[], void *buffer, uint offset, uint bytes, uint storage)
+{
+    int result = narm_file_read(path, buffer, offset, bytes, storage);
+    if (result < 0) return 0;
+    return (uint)result;
+}
+
+uint compatWrite(char path[], const void *buffer, uint offset, uint bytes, uint storage)
+{
+    int result = narm_file_write(path, buffer, offset, bytes, storage);
+    if (result < 0) return 0;
+    return (uint)result;
+}
+
+#define fileRead(path, buffer, offset, storage) compatRead((path), (buffer), (offset), (uint)sizeof(buffer), (storage))
+#define fileWrite(path, buffer, offset, storage) compatWrite((path), (buffer), (offset), (uint)sizeof(buffer), (storage))
+#define fileExists(path, storage) narm_file_exists((path), (storage))
+#define fileMake(path, storage) narm_file_create((path), (storage))
+#define fileDelete(path, storage) narm_file_delete((path), (storage))
+#define dirMake(path, storage) narm_dir_make((path), (storage))
+#define dirDelete(path, storage) narm_dir_delete((path), (storage))
+#define dirEntry(path, index, name, nameLen, entryKind, storage) compatDirEntry((path), (index), (name), &(nameLen), &(entryKind), (storage))
+#define runProg(path, storage) narm_spawn_program((path), (storage))
+#define millis() narm_millis()
+
+/* ------------------------------------------------------------------------- */
+/* Globals                                                                   */
+/* ------------------------------------------------------------------------- */
+
+int SCREEN_W = 640;
+int SCREEN_H = 480;
+int IMAGE_TOP = 70;
+int IMAGE_HEIGHT = 298;
+
+int LIST_X = 38;
+int LIST_Y = 98;
+int ROW_H = 13;
+int VISIBLE_ROWS = 20;
+
+uint COL_BG = 14;
+uint COL_PANEL = 1;
+uint COL_PANEL2 = 2;
+uint COL_TEXT = 0;
+uint COL_DIM = 15;
+uint COL_HILITE = 2;
+uint COL_DIR = 8;
+uint COL_WARN = 4;
+uint COL_OK = 9;
+
+char cwd[96];
+char entryName[48];
+char selectedPath[128];
+char selectedRelPath[128];
+char scratchPath[128];
+char scratchRelPath[128];
+char newName[16];
+char previewBuf[192];
+char viewBuf[128];
+char writeBuf[32];
+char copy32[32];
+char copy16[16];
+char copy8[8];
+char copy4[4];
+char copy2[2];
+char copyByte[1];
+char programProbe[54];
+char audioHdr[12];
+char imageHdr[256];
+char imageSmall[16];
+/* Fixed source working set: four 4 KiB blocks, independent of image size. */
+char imageCacheBuf[16384];
+int imageBlockBase[4] = {-1,-1,-1,-1};
+int imageBlockBytes[4];
+uint imageBlockAge[4];
+uint imageBlockClock = 0;
+int imageBlockSlot = -1;
+int imageReadingSource = 0; /* 0 packed image, 1 source file, 2 JPEG coefficients */
+char codecScratchPath[128];
+int codecScratchBytes = 0;
+int imageCodecError = 0;
+int imageCacheRowBytes = 0;
+int imageCachePayloadBytes = 0;
+char imageCacheWrite[4096];
+int imageCacheWriteCount = 0;
+int imageCacheWriteOffset = 512;
+char imageCacheHdr[512];
+char imageCachePath[128];
+char imageCacheRelPath[128];
+
+int entryLen = 0;
+int entryType = 0;
+uint entryStatus = 0;
+
+int selectedIndex = 0;
+int scrollIndex = 0;
+int entryCount = 0;
+int selectedType = 0;
+int selectedIsProgram = 0;
+uint selectedSize = 0;
+uint previewLen = 0;
+int VIEW_PAGE_BYTES = 128;
+int viewLoading = 0;
+int viewLoadIndex = 0;
+int viewError = 0;
+int renameDeleteWait = 0;
+
+int dirty = 1;
+int quickMoveDirty = 0;
+int nameEditQuickDirty = 0;
+int quickOldSlot = 0;
+int quickNewSlot = 0;
+int confirmDelete = 0;
+int statusCode = 0;
+int createFileCounter = 0;
+int createDirCounter = 0;
+
+uint keyData = 0;
+uint keyPressed = 0;
+uint inputNow = 0;
+uint nextSdMs = 0;
+uint nextRenameMs = 0;
+
+int wasW = 0;
+int wasS = 0;
+int wasI = 0;
+int wasK = 0;
+int wasSpace = 0;
+int wasEnter = 0;
+int wasA = 0;
+int wasBack = 0;
+int wasD = 0;
+int wasF = 0;
+int wasN = 0;
+int wasR = 0;
+
+int hitUp = 0;
+int hitDown = 0;
+int hitOpen = 0;
+int hitBack = 0;
+int hitDelete = 0;
+int hitFile = 0;
+int hitDir = 0;
+int hitRefresh = 0;
+int hitRename = 0;
+int hitStorage = 0;
+int hitLeft = 0;
+int hitRight = 0;
+int hitZoomIn = 0;
+int hitZoomOut = 0;
+
+int g_i = 0;
+int g_j = 0;
+int g_len = 0;
+int g_pos = 0;
+int g_row = 0;
+int g_ch = 0;
+int g_pat = 0;
+int g_x = 0;
+int g_y = 0;
+int g_val = 0;
+int g_digit = 0;
+
+int mode = 0;          /* 0 browser, 1 file view, 2 name edit, 3 rename/copy progress, 4 image view */
+int createMode = 0;    /* 1 create file, 2 create dir, 3 rename file, 4 rename dir */
+int editLen = 0;
+int typedChar = 0;
+int viewOffset = 0;
+int renameOffset = 0;
+uint renameSize = 0;
+int renameSourceType = 0;
+int renameBusy = 0;
+int renameNewUsesRel = 0;
+int renameUnknownSize = 0;
+int selectedInfoDirty = 1;
+int selectedInfoValid = 0;
+int scanActive = 0;
+int scanDone = 0;
+int scanIndex = 0;
+int cacheStart = 0;
+int cacheLoading = 0;
+int cacheLoadRow = 0;
+int cacheLoadStop = 0;
+int programProbeUsesRel = 0;
+
+int imageType = 0;            /* 0 none, 1 PNG, 2 JPEG, 3 GIF, 4 BMP, 5 PPM, 6 PGM */
+int imageRenderable = 0;      /* 1 BMP RGB, 2 PPM P6, 3 PGM P5, 4 PNG, 5 JPEG */
+int imageUsesRel = 0;
+int imageWidth = 0;
+int imageHeight = 0;
+int imageBpp = 0;
+int imageBitDepth = 0;
+int imageColorType = 0;
+int imageDataOffset = 0;
+int imageRowBytes = 0;
+int imageTopDown = 0;
+int imageScale = 256;         /* 8.8 display pixels per source pixel */
+int imageCenterX = 0;
+int imageCenterY = 0;
+int imageMaxVal = 255;
+int imageDrawError = 0;
+int imagePnmPos = 0;
+int imageLookupValid = 0;
+int imageLookupCenterX = 0;
+int imageLookupCenterY = 0;
+int imageLookupScale = 0;
+int imageCacheActive = 0;
+int imageCacheReady = 0;
+int imageCacheUsesRel = 0;
+int imageCacheError = 0;
+int imageCacheBuildY = 0;
+int imageCacheBuildX = 0;
+
+uint activeStorage = 1;       /* 0 internal flash, 1 SD card */
+uint PROGRAM_MIN_BYTES = 160;
+uint PROGRAM_MAX_BYTES = 8388608;
+uint AUDIO_VOICE = 0;         /* FILEMGR owns at most this one mixer voice */
+int audioLoaded = 0;
+int audioPlaying = 0;
+int audioPaused = 0;
+int audioStopped = 0;
+int audioPanelDirty = 1;
+int audioAwaitingStart = 0;
+uint audioCurrentFrame = 0;
+uint audioTotalFrames = 0;
+uint audioSampleRate = 0;
+uint audioNextPollMs = 0;
+uint audioStartDeadline = 0;
+char audioName[48];
+char audioPath[128];
+int hitAudioPause = 0;
+int hitAudioStop = 0;
+int hitAudioHome = 0;
+int hitAudioEnd = 0;
+int hitPageUp = 0;
+int hitPageDown = 0;
+int hitCancel = 0;
+int lastLaunchPid = 0;
+uint imagePalette[256];
+uint firmwarePalette[16] = {255,0,2,16,224,128,97,236,252,28,9,159,7,227,73,146};
+
+int keyWas[128];
+uint keyNextPulse[128];
+uint keyCoolUntil[128];
+char editName[48];
+char selectedDisplayName[48];
+char fileViewName[48];
+char renameOldPath[128];
+char renameOldRelPath[128];
+char renameNewPath[128];
+char renameNewRelPath[128];
+char cacheNames[960];
+int cacheLens[20];
+int cacheTypes[20];
+int cacheStatuses[20];
+int cachePrograms[20];
+int cacheProgramKnown[20];
+int imageSrcXTable[640];
+int imageSrcYTable[480];
+char imageScreenRows[1280];
+int imageScreenRowValid[2];
+int imageScreenRowSrcY[2];
+
+int startCompressedDecode();
+void serviceCompressedDecode();
+void cancelCompressedDecode();
+
+/* Labels are stored as char arrays because Tiny-C does not need C string
+   literal support for this program. */
+char label_title[17] = {'T','I','N','Y',' ','F','I','L','E',' ','M','A','N','A','G','E','R'};
+char label_controls1[35] = {'W','/','S',' ','M','O','V','E',' ',' ','E','N','T','E','R',' ','O','P','E','N','/','R','U','N',' ',' ','B','K','S','P',' ','B','A','C','K'};
+char label_controls2[43] = {'F',' ','F','I','L','E',' ',' ','D',' ','D','I','R',' ',' ','E',' ','R','E','N',' ',' ','X',' ','D','E','L',' ',' ','R',' ','R','E','F',' ',' ','T',' ','D','R','I','V','E'};
+char label_fileview_controls[19] = {'W','/','S',' ','P','A','G','E',' ',' ','B','K','S','P',' ','B','A','C','K'};
+char label_imageview_controls[40] = {'W','A','S','D',' ','P','A','N',' ',' ','I','/','K',' ','Z','O','O','M',' ',' ','E','N','T','E','R',' ','F','I','T',' ',' ','B','K','S','P',' ','B','A','C','K'};
+char status_image_view[10] = {'I','M','A','G','E',' ','V','I','E','W'};
+char image_cache_name[11] = {'.','f','m','_','i','m','g','.','t','m','p'};
+char label_cache_build[13] = {'C','A','C','H','I','N','G',' ','I','M','A','G','E'};
+char label_cache_fail[12] = {'C','A','C','H','E',' ','F','A','I','L','E','D'};
+char label_cached[6] = {'C','A','C','H','E','D'};
+char label_format[7] = {'F','O','R','M','A','T',':'};
+char label_dims[5] = {'D','I','M','S',':'};
+char label_zoom[5] = {'Z','O','O','M',':'};
+char label_png[3] = {'P','N','G'};
+char label_jpeg[4] = {'J','P','E','G'};
+char label_gif[3] = {'G','I','F'};
+char label_bmp[3] = {'B','M','P'};
+char label_ppm[3] = {'P','P','M'};
+char label_pgm[3] = {'P','G','M'};
+char label_valid_compressed[22] = {'V','A','L','I','D',' ','C','O','M','P','R','E','S','S','E','D',' ','I','M','A','G','E'};
+char label_no_decoder[27] = {'N','O',' ','P','I','X','E','L',' ','D','E','C','O','D','E','R',' ','I','N',' ','F','I','L','E','M','G','R'};
+char label_draw_error[10] = {'R','E','A','D',' ','E','R','R','O','R'};
+char label_path[5] = {'P','A','T','H',':'};
+char label_entries[8] = {'E','N','T','R','I','E','S',':'};
+char label_size[5] = {'S','I','Z','E',':'};
+char label_file[4] = {'F','I','L','E'};
+char label_dir[3] = {'D','I','R'};
+char label_program[7] = {'P','R','O','G','R','A','M'};
+char label_sd[2] = {'S','D'};
+char label_fs[2] = {'F','S'};
+char label_preview[8] = {'P','R','E','V','I','E','W',':'};
+
+char status_ready[5] = {'R','E','A','D','Y'};
+char status_opened[16] = {'O','P','E','N','E','D',' ','D','I','R','E','C','T','O','R','Y'};
+char status_root[14] = {'R','O','O','T',' ','D','I','R','E','C','T','O','R','Y'};
+char status_confirm[15] = {'D','E','L','E','T','E','?',' ','X',' ','A','G','A','I','N'};
+char status_deleted[7] = {'D','E','L','E','T','E','D'};
+char status_del_fail[13] = {'D','E','L','E','T','E',' ','F','A','I','L','E','D'};
+char status_file_ok[12] = {'F','I','L','E',' ','C','R','E','A','T','E','D'};
+char status_file_fail[16] = {'F','I','L','E',' ','C','R','E','A','T','E',' ','F','A','I','L'};
+char status_dir_ok[11] = {'D','I','R',' ','C','R','E','A','T','E','D'};
+char status_dir_fail[15] = {'D','I','R',' ','C','R','E','A','T','E',' ','F','A','I','L'};
+char status_refreshed[9] = {'R','E','F','R','E','S','H','E','D'};
+char status_not_dir[15] = {'N','O','T',' ','A',' ','D','I','R','E','C','T','O','R','Y'};
+char status_storage_error[13] = {'S','T','O','R','A','G','E',' ','E','R','R','O','R'};
+char status_scanning[8] = {'S','C','A','N','N','I','N','G'};
+char status_edit_name[9] = {'E','D','I','T',' ','N','A','M','E'};
+char status_name_empty[10] = {'E','M','P','T','Y',' ','N','A','M','E'};
+char status_cancel[9] = {'C','A','N','C','E','L','L','E','D'};
+char status_file_view[9] = {'F','I','L','E',' ','V','I','E','W'};
+char status_exists[11] = {'P','A','T','H',' ','E','X','I','S','T','S'};
+char status_rename_ok[7] = {'R','E','N','A','M','E','D'};
+char status_rename_fail[11] = {'R','E','N','A','M','E',' ','F','A','I','L'};
+char status_renaming[8] = {'R','E','N','A','M','I','N','G'};
+char status_launched[16] = {'L','A','U','N','C','H','E','D',' ','P','R','O','G','R','A','M'};
+char status_storage[15] = {'S','T','O','R','A','G','E',' ','C','H','A','N','G','E','D'};
+char status_img_decoder[21] = {'I','M','A','G','E',' ','D','E','C','O','D','E','R',' ','M','I','S','S','I','N','G'};
+char status_audio_play[13] = {'A','U','D','I','O',' ','P','L','A','Y','I','N','G'};
+char status_audio_fail[17] = {'A','U','D','I','O',' ','P','L','A','Y',' ','F','A','I','L','E','D'};
+char status_audio_sd[17] = {'A','U','D','I','O',' ','R','E','Q','U','I','R','E','S',' ','S','D'};
+
+char label_name[5] = {'N','A','M','E',':'};
+char label_enter_save[42] = {'E','N','T','E','R',' ','S','A','V','E',' ',' ','B','K','S','P',' ','D','E','L','E','T','E',' ',' ','E','M','P','T','Y',' ','B','K','S','P',' ','C','A','N','C','E','L'};
+char label_offset[7] = {'O','F','F','S','E','T',':'};
+char label_ascii[5] = {'T','E','X','T',':'};
+char label_hex[4] = {'H','E','X',':'};
+char label_empty[7] = {'<','E','M','P','T','Y','>'};
+char label_rename[7] = {'R','E','N','A','M','E',':'};
+char label_copied[7] = {'C','O','P','I','E','D',':'};
+
+uint fontLo[64] = {
+    0, 476194, 476194, 476194, 476194, 476194, 476194, 476194,
+    476194, 476194, 21983, 476194, 476194, 31, 0, 33860,
+    476789, 143492, 476194, 984110, 72018, 1032734, 205342, 1016900,
+    476718, 476719, 128, 476194, 34952, 476194, 532610, 476194,
+    476194, 476735, 1001022, 476688, 1001009, 1032734, 1032734, 476695,
+    575039, 462980, 231490, 576152, 541200, 585397, 583347, 476721,
+    1001022, 476721, 1001022, 508430, 1020036, 575025, 575025, 575029,
+    574788, 574788, 1016900, 467208, 476194, 460866, 476194, 0
+};
+
+uint fontHi[64] = {
+    0, 4100, 4100, 4100, 4100, 4100, 4100, 4100,
+    4100, 4100, 15008, 4100, 4100, 0, 4, 8720,
+    26158, 4238, 4383, 1086, 31810, 1086, 17966, 8456,
+    17966, 1100, 128, 4100, 4161, 4100, 4368, 4100,
+    4100, 17969, 17982, 16942, 17982, 16927, 16912, 17967,
+    17969, 4238, 19020, 21073, 16927, 17969, 17969, 17966,
+    16912, 22093, 21073, 1086, 4228, 17966, 17732, 22186,
+    10801, 4228, 8735, 8462, 4100, 2126, 4100, 31
+};
+
+/* ------------------------------------------------------------------------- */
+/* 2D drawing                                                                */
+/* ------------------------------------------------------------------------- */
+
+#include "filemgr_graphics.tch"
+
+/* String and path helpers. */
+
+void clearChars(char buf[], int maxLen)
+{
+    g_i = 0;
+    while (g_i < maxLen)
+    {
+        buf[g_i] = 0;
+        g_i = g_i + 1;
+    }
+}
+
+int strLenLimit(char buf[], int maxLen)
+{
+    g_i = 0;
+    while (g_i < maxLen)
+    {
+        if (buf[g_i] == 0) return g_i;
+        g_i = g_i + 1;
+    }
+    return maxLen;
+}
+
+void copyBuffer(char dst[], char src[], int maxLen)
+{
+    g_i = 0;
+    while (g_i < maxLen)
+    {
+        dst[g_i] = src[g_i];
+        if (src[g_i] == 0)
+        {
+            g_i = g_i + 1;
+            while (g_i < maxLen)
+            {
+                dst[g_i] = 0;
+                g_i = g_i + 1;
+            }
+            return;
+        }
+        g_i = g_i + 1;
+    }
+}
+
+void initRoot()
+{
+    clearChars(cwd, 96);
+    cwd[0] = 47;  /* / */
+    cwd[1] = 0;
+}
+
+void buildPathFromName(char dst[], char name[], int nameLen)
+{
+    clearChars(dst, 128);
+
+    g_len = strLenLimit(cwd, 96);
+    g_i = 0;
+    while (g_i < g_len)
+    {
+        dst[g_i] = cwd[g_i];
+        g_i = g_i + 1;
+    }
+
+    if (g_len == 0)
+    {
+        dst[0] = 47;
+        g_i = 1;
+    }
+
+    if (g_len > 1)
+    {
+        dst[g_i] = 47;
+        g_i = g_i + 1;
+    }
+
+    g_j = 0;
+    while (g_j < nameLen)
+    {
+        if (g_i >= 127) break;
+        dst[g_i] = name[g_j];
+        g_i = g_i + 1;
+        g_j = g_j + 1;
+    }
+    if (g_i < 128) dst[g_i] = 0;
+}
+
+void buildRelPathFromName(char dst[], char name[], int nameLen)
+{
+    clearChars(dst, 128);
+
+    g_len = strLenLimit(cwd, 96);
+    g_i = 0;
+    g_j = 0;
+
+    if (g_len > 0)
+    {
+        if (cwd[0] == 47) g_j = 1;
+        while (g_j < g_len)
+        {
+            if (g_i >= 127) break;
+            dst[g_i] = cwd[g_j];
+            g_i = g_i + 1;
+            g_j = g_j + 1;
+        }
+    }
+
+    if (g_i > 0)
+    {
+        if (g_i < 127)
+        {
+            dst[g_i] = 47;
+            g_i = g_i + 1;
+        }
+    }
+
+    g_j = 0;
+    while (g_j < nameLen)
+    {
+        if (g_i >= 127) break;
+        dst[g_i] = name[g_j];
+        g_i = g_i + 1;
+        g_j = g_j + 1;
+    }
+    if (g_i < 128) dst[g_i] = 0;
+}
+
+void goParent()
+{
+    g_len = strLenLimit(cwd, 96);
+    if (g_len <= 1)
+    {
+        initRoot();
+        statusCode = 2;
+        dirty = 1;
+        return;
+    }
+
+    g_pos = g_len - 1;
+    while (g_pos > 0)
+    {
+        if (cwd[g_pos] == 47) break;
+        g_pos = g_pos - 1;
+    }
+
+    if (g_pos <= 0)
+    {
+        initRoot();
+    }
+    else
+    {
+        cwd[g_pos] = 0;
+        g_i = g_pos + 1;
+        while (g_i < 96)
+        {
+            cwd[g_i] = 0;
+            g_i = g_i + 1;
+        }
+    }
+
+    selectedIndex = 0;
+    scrollIndex = 0;
+    confirmDelete = 0;
+    statusCode = 10;
+    dirty = 1;
+}
+
+void makeFileName(int n)
+{
+    clearChars(newName, 16);
+    newName[0] = 70;  /* F */
+    newName[1] = 73;  /* I */
+    newName[2] = 76;  /* L */
+    newName[3] = 69;  /* E */
+    newName[4] = 48 + ((n / 10) % 10);
+    newName[5] = 48 + (n % 10);
+    newName[6] = 46;  /* . */
+    newName[7] = 84;  /* T */
+    newName[8] = 88;  /* X */
+    newName[9] = 84;  /* T */
+    newName[10] = 0;
+}
+
+void makeDirName(int n)
+{
+    clearChars(newName, 16);
+    newName[0] = 68;  /* D */
+    newName[1] = 73;  /* I */
+    newName[2] = 82;  /* R */
+    newName[3] = 48 + ((n / 10) % 10);
+    newName[4] = 48 + (n % 10);
+    newName[5] = 0;
+}
+
+void initWriteBuf()
+{
+    clearChars(writeBuf, 32);
+    writeBuf[0] = 67;  /* C */
+    writeBuf[1] = 82;  /* R */
+    writeBuf[2] = 69;  /* E */
+    writeBuf[3] = 65;  /* A */
+    writeBuf[4] = 84;  /* T */
+    writeBuf[5] = 69;  /* E */
+    writeBuf[6] = 68;  /* D */
+    writeBuf[7] = 32;  /* space */
+    writeBuf[8] = 66;  /* B */
+    writeBuf[9] = 89;  /* Y */
+    writeBuf[10] = 32;
+    writeBuf[11] = 84; /* T */
+    writeBuf[12] = 70; /* F */
+    writeBuf[13] = 77; /* M */
+    writeBuf[14] = 10; /* newline */
+    writeBuf[15] = 0;
+}
+
+int validProgramProbe()
+{
+    if (programProbe[0] != 78) return 0;
+    if (programProbe[1] != 65) return 0;
+    if (programProbe[2] != 82) return 0;
+    if (programProbe[3] != 77) return 0;
+    if ((((uint)programProbe[4]) & (uint)255) != (uint)160) return 0;
+    if ((((uint)programProbe[5]) & (uint)255) != (uint)0) return 0;
+    if ((((uint)programProbe[6]) & (uint)255) != (uint)1) return 0;
+    if ((((uint)programProbe[12]) & (uint)255) != (uint)1) return 0;
+    if ((((uint)programProbe[13]) & (uint)255) != (uint)0) return 0;
+    if ((((uint)programProbe[14]) & (uint)255) != (uint)8) return 0;
+    if ((((uint)programProbe[15]) & (uint)255) != (uint)0) return 0;
+    return 1;
+}
+
+int validateScratchProgram()
+{
+    uint size;
+    uint gotHeader;
+
+    programProbeUsesRel = 0;
+    size = fileSize(scratchPath, activeStorage);
+    if (size == (uint)0)
+    {
+        size = fileSize(scratchRelPath, activeStorage);
+        if (size == (uint)0) return 0;
+        programProbeUsesRel = 1;
+    }
+
+    if (size < PROGRAM_MIN_BYTES) return 0;
+    if (size > PROGRAM_MAX_BYTES) return 0;
+
+    clearChars(programProbe, 54);
+    if (programProbeUsesRel != 0)
+    {
+        gotHeader = fileRead(scratchRelPath, programProbe, (uint)0, activeStorage);
+    }
+    else
+    {
+        gotHeader = fileRead(scratchPath, programProbe, (uint)0, activeStorage);
+    }
+    if (gotHeader != (uint)54) return 0;
+    if (validProgramProbe() == 0) return 0;
+
+    return 1;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Image validation and viewing                                              */
+/* ------------------------------------------------------------------------- */
+
+uint hdrByte(int idx)
+{
+    return ((uint)imageHdr[idx]) & (uint)255;
+}
+
+uint smallByte(int idx)
+{
+    return ((uint)imageSmall[idx]) & (uint)255;
+}
+
+uint hdrBE16(int idx)
+{
+    return (hdrByte(idx) << (uint)8) | hdrByte(idx + 1);
+}
+
+uint hdrBE32(int idx)
+{
+    return (hdrByte(idx) << (uint)24)
+         | (hdrByte(idx + 1) << (uint)16)
+         | (hdrByte(idx + 2) << (uint)8)
+         | hdrByte(idx + 3);
+}
+
+uint hdrLE16(int idx)
+{
+    return hdrByte(idx) | (hdrByte(idx + 1) << (uint)8);
+}
+
+uint hdrLE32(int idx)
+{
+    return hdrByte(idx)
+         | (hdrByte(idx + 1) << (uint)8)
+         | (hdrByte(idx + 2) << (uint)16)
+         | (hdrByte(idx + 3) << (uint)24);
+}
+
+uint smallBE16(int idx)
+{
+    return (smallByte(idx) << (uint)8) | smallByte(idx + 1);
+}
+
+uint readImageHdr(uint offset)
+{
+    clearChars(imageHdr, 256);
+    if (imageUsesRel != 0) return fileRead(selectedRelPath, imageHdr, offset, activeStorage);
+    return fileRead(selectedPath, imageHdr, offset, activeStorage);
+}
+
+uint readImageSmall(uint offset)
+{
+    clearChars(imageSmall, 16);
+    if (imageUsesRel != 0) return fileRead(selectedRelPath, imageSmall, offset, activeStorage);
+    return fileRead(selectedPath, imageSmall, offset, activeStorage);
+}
+
+
+
+/* Source decoding and packed-cache display share these blocks in separate phases.
+ * Only changing files/phase invalidates them; pan and zoom never do. */
+void invalidateImageBlocks()
+{
+    int i;
+    for (i = 0; i < 4; i = i + 1)
+    {
+        imageBlockBase[i] = -1;
+        imageBlockBytes[i] = 0;
+        imageBlockAge[i] = 0;
+    }
+    imageBlockClock = 0;
+    imageBlockSlot = -1;
+}
+
+uint imageBlockByte(int offset)
+{
+    int s;
+    int slot;
+    int base;
+    int bytes;
+    int limit;
+    int fileOffset;
+    int got;
+    uint age;
+    uint oldest;
+
+    if (imageDrawError != 0) return 0;
+    limit = imageCachePayloadBytes;
+    if (imageReadingSource == 1) limit = (int)selectedSize;
+    if (imageReadingSource == 2) limit = codecScratchBytes;
+    if (offset < 0 || offset >= limit) { imageDrawError = 1; return 0; }
+    slot = imageBlockSlot;
+    if (slot >= 0)
+    {
+        base = imageBlockBase[slot];
+        if (offset >= base && offset < base + imageBlockBytes[slot])
+            return ((uint)imageCacheBuf[slot * 4096 + offset - base]) & (uint)255;
+    }
+    base = (offset / 4096) * 4096;
+    slot = -1;
+    for (s = 0; s < 4; s = s + 1)
+    {
+        if (imageBlockBase[s] == base) slot = s;
+    }
+    if (slot < 0)
+    {
+        oldest = 0;
+        slot = 0;
+        for (s = 0; s < 4; s = s + 1)
+        {
+            if (imageBlockBase[s] < 0) { slot = s; break; }
+            age = imageBlockClock - imageBlockAge[s];
+            if (age >= oldest) { oldest = age; slot = s; }
+        }
+        bytes = limit - base;
+        if (bytes > 4096) bytes = 4096;
+        fileOffset = base;
+        if (imageReadingSource == 0) fileOffset = 512 + base;
+        if (imageReadingSource == 2)
+            got = narm_file_read(codecScratchPath, &imageCacheBuf[slot * 4096], (uint)fileOffset, (uint)bytes, activeStorage);
+        else if (imageReadingSource == 1)
+        {
+            if (imageUsesRel != 0) got = narm_file_read(selectedRelPath, &imageCacheBuf[slot * 4096], (uint)fileOffset, (uint)bytes, activeStorage);
+            else got = narm_file_read(selectedPath, &imageCacheBuf[slot * 4096], (uint)fileOffset, (uint)bytes, activeStorage);
+        }
+        else
+        {
+            if (imageCacheUsesRel != 0) got = narm_file_read(imageCacheRelPath, &imageCacheBuf[slot * 4096], (uint)fileOffset, (uint)bytes, activeStorage);
+            else got = narm_file_read(imageCachePath, &imageCacheBuf[slot * 4096], (uint)fileOffset, (uint)bytes, activeStorage);
+        }
+        if (got != bytes) { imageDrawError = 1; return 0; }
+        imageBlockBase[slot] = base;
+        imageBlockBytes[slot] = got;
+    }
+    imageBlockClock = imageBlockClock + (uint)1;
+    imageBlockAge[slot] = imageBlockClock;
+    imageBlockSlot = slot;
+    return ((uint)imageCacheBuf[slot * 4096 + offset - base]) & (uint)255;
+}
+
+uint cachedImagePixel(int x, int y)
+{
+    uint value;
+    value = imageBlockByte(y * imageCacheRowBytes + x / 2);
+    if ((x & 1) == 0) return value >> (uint)4;
+    return value & (uint)15;
+}
+
+void buildImageCachePaths()
+{
+    buildPathFromName(imageCachePath, image_cache_name, 11);
+    buildRelPathFromName(imageCacheRelPath, image_cache_name, 11);
+}
+
+void deleteImageCacheTemp()
+{
+    cancelCompressedDecode();
+    invalidateImageBlocks();
+    buildImageCachePaths();
+    fileDelete(imageCachePath, activeStorage);
+    fileDelete(imageCacheRelPath, activeStorage);
+    imageCacheReady = 0;
+    imageCacheActive = 0;
+    imageReadingSource = 0;
+}
+
+void clearImageCacheHeader()
+{
+    clearChars(imageCacheHdr, 512);
+    imageCacheHdr[0] = 70;
+    imageCacheHdr[1] = 77;
+    imageCacheHdr[2] = 73;
+    imageCacheHdr[3] = 67;
+    imageCacheHdr[4] = (char)(imageWidth & 255);
+    imageCacheHdr[5] = (char)((imageWidth >> 8) & 255);
+    imageCacheHdr[6] = (char)((imageWidth >> 16) & 255);
+    imageCacheHdr[7] = (char)((imageWidth >> 24) & 255);
+    imageCacheHdr[8] = (char)(imageHeight & 255);
+    imageCacheHdr[9] = (char)((imageHeight >> 8) & 255);
+    imageCacheHdr[10] = (char)((imageHeight >> 16) & 255);
+    imageCacheHdr[11] = (char)((imageHeight >> 24) & 255);
+    imageCacheHdr[12] = 2; /* Packed VGA4 palette indices, row-aligned. */
+    imageCacheHdr[13] = 0;
+    imageCacheHdr[14] = 0;
+    imageCacheHdr[15] = 0;
+}
+
+uint writeImageCacheHeader()
+{
+    uint wrote;
+
+    clearImageCacheHeader();
+    wrote = fileWrite(imageCachePath, imageCacheHdr, (uint)0, activeStorage);
+    if (wrote == (uint)512)
+    {
+        imageCacheUsesRel = 0;
+        return wrote;
+    }
+
+    wrote = fileWrite(imageCacheRelPath, imageCacheHdr, (uint)0, activeStorage);
+    if (wrote == (uint)512)
+    {
+        imageCacheUsesRel = 1;
+        return wrote;
+    }
+
+    return (uint)0;
+}
+
+int startImageCacheBuild()
+{
+    uint ok;
+
+    invalidateImageBlocks();
+    if (selectedSize > (uint)2147483647 || imageWidth > 2147483646)
+    {
+        imageCacheError = 1;
+        return 0;
+    }
+    imageCacheRowBytes = (imageWidth + 1) / 2;
+    if (imageCacheRowBytes <= 0 || imageHeight > 2147483000 / imageCacheRowBytes)
+    {
+        imageCacheError = 1;
+        return 0;
+    }
+    imageCachePayloadBytes = imageCacheRowBytes * imageHeight;
+    imageCacheWriteCount = 0;
+    imageCacheWriteOffset = 512;
+    buildImageCachePaths();
+    fileDelete(imageCachePath, activeStorage);
+    fileDelete(imageCacheRelPath, activeStorage);
+
+    imageCacheUsesRel = 0;
+    ok = fileMake(imageCachePath, activeStorage);
+    if (ok == (uint)0)
+    {
+        ok = fileMake(imageCacheRelPath, activeStorage);
+        if (ok != (uint)0) imageCacheUsesRel = 1;
+    }
+
+    ok = writeImageCacheHeader();
+    if (ok == (uint)0)
+    {
+        imageCacheError = 1;
+        imageCacheActive = 0;
+        imageCacheReady = 0;
+        return 0;
+    }
+
+    imageReadingSource = 1;
+    imageCodecError = 0;
+    imageCacheActive = 1;
+    imageCacheReady = 0;
+    imageCacheError = 0;
+    imageCacheBuildY = 0;
+    imageCacheBuildX = 0;
+    imageLookupValid = 0;
+    invalidateImageRowCaches();
+    if (imageRenderable >= 4) return startCompressedDecode();
+    return 1;
+}
+
+int flushImageCacheWrite()
+{
+    int wrote;
+    if (imageCacheWriteCount == 0) return 1;
+    if (imageCacheUsesRel != 0)
+        wrote = narm_file_write(imageCacheRelPath, imageCacheWrite, (uint)imageCacheWriteOffset, (uint)imageCacheWriteCount, activeStorage);
+    else
+        wrote = narm_file_write(imageCachePath, imageCacheWrite, (uint)imageCacheWriteOffset, (uint)imageCacheWriteCount, activeStorage);
+    if (wrote != imageCacheWriteCount) return 0;
+    imageCacheWriteOffset = imageCacheWriteOffset + imageCacheWriteCount;
+    imageCacheWriteCount = 0;
+    return 1;
+}
+
+int appendImageCacheByte(uint value)
+{
+    imageCacheWrite[imageCacheWriteCount] = (char)value;
+    imageCacheWriteCount = imageCacheWriteCount + 1;
+    if (imageCacheWriteCount == 4096) return flushImageCacheWrite();
+    return 1;
+}
+
+void finishImageCacheBuild()
+{
+    if (imageCacheError == 0 && flushImageCacheWrite() == 0) imageCacheError = 1;
+    imageReadingSource = 0;
+    invalidateImageBlocks();
+    imageCacheActive = 0;
+    imageCacheReady = imageCacheError == 0;
+    invalidateImageRowCaches();
+    dirty = 1;
+}
+
+uint rgb332(uint r, uint g, uint b)
+{
+    return ((r >> (uint)5) << (uint)5)
+         | ((g >> (uint)5) << (uint)2)
+         | (b >> (uint)6);
+}
+
+void initImagePalette()
+{
+    int color;
+    int index;
+    int red;
+    int green;
+    int blue;
+    int pr;
+    int pg;
+    int pb;
+    int dr;
+    int dg;
+    int db;
+    uint distance;
+    uint best;
+    uint packed;
+    for (color = 0; color < 256; color = color + 1)
+    {
+        red = (color >> 5) * 255 / 7;
+        green = ((color >> 2) & 7) * 255 / 7;
+        blue = (color & 3) * 85;
+        best = (uint)0xffffffff;
+        imagePalette[color] = 1;
+        for (index = 0; index < 16; index = index + 1)
+        {
+            packed = firmwarePalette[index];
+            pr = (int)(packed >> 5) * 255 / 7;
+            pg = (int)((packed >> 2) & 7) * 255 / 7;
+            pb = (int)(packed & 3) * 85;
+            dr = red - pr; dg = green - pg; db = blue - pb;
+            distance = (uint)(dr * dr + dg * dg + db * db);
+            if (distance < best)
+            {
+                best = distance;
+                imagePalette[color] = (uint)index;
+            }
+        }
+    }
+}
+
+void resetImageState()
+{
+    cancelCompressedDecode();
+    imageCodecError = 0;
+    invalidateImageBlocks();
+    imageReadingSource = 0;
+    imageType = 0;
+    imageRenderable = 0;
+    imageUsesRel = 0;
+    imageWidth = 0;
+    imageHeight = 0;
+    imageBpp = 0;
+    imageBitDepth = 0;
+    imageColorType = 0;
+    imageDataOffset = 0;
+    imageRowBytes = 0;
+    imageTopDown = 0;
+    imageScale = 256;
+    imageCenterX = 0;
+    imageCenterY = 0;
+    imageMaxVal = 255;
+    imageDrawError = 0;
+    imagePnmPos = 0;
+    imageLookupValid = 0;
+    imageLookupCenterX = 0;
+    imageLookupCenterY = 0;
+    imageLookupScale = 0;
+    imageCacheActive = 0;
+    imageCacheReady = 0;
+    imageCacheUsesRel = 0;
+    imageCacheError = 0;
+    imageCacheBuildY = 0;
+    imageCacheBuildX = 0;
+}
+
+void invalidateImageRowCaches()
+{
+    int s;
+
+    s = 0;
+    while (s < 2)
+    {
+        imageScreenRowValid[s] = 0;
+        imageScreenRowSrcY[s] = -1;
+        s = s + 1;
+    }
+}
+
+void fitImageToScreen()
+{
+    int sx;
+    int sy;
+
+    if (imageWidth <= 0) imageWidth = 1;
+    if (imageHeight <= 0) imageHeight = 1;
+
+    sx = (SCREEN_W * 256) / imageWidth;
+    sy = (IMAGE_HEIGHT * 256) / imageHeight;
+    imageScale = sx;
+    if (sy < imageScale) imageScale = sy;
+    if (imageScale < 1) imageScale = 1;
+
+    imageCenterX = imageWidth / 2;
+    imageCenterY = imageHeight / 2;
+}
+
+void clampImageView()
+{
+    if (imageScale < 1) imageScale = 1;
+    if (imageScale > 16384) imageScale = 16384;
+    if (imageCenterX < 0) imageCenterX = 0;
+    if (imageCenterY < 0) imageCenterY = 0;
+    if (imageWidth > 0)
+    {
+        if (imageCenterX >= imageWidth) imageCenterX = imageWidth - 1;
+    }
+    if (imageHeight > 0)
+    {
+        if (imageCenterY >= imageHeight) imageCenterY = imageHeight - 1;
+    }
+}
+
+void updateImageLookupTables()
+{
+    int x;
+    int y;
+
+    if (imageScale <= 0) imageScale = 1;
+
+    if (imageLookupValid != 0)
+    {
+        if (imageLookupCenterX == imageCenterX)
+        {
+            if (imageLookupCenterY == imageCenterY)
+            {
+                if (imageLookupScale == imageScale) return;
+            }
+        }
+    }
+
+    x = 0;
+    while (x < SCREEN_W)
+    {
+        imageSrcXTable[x] = imageCenterX + (((x - (SCREEN_W / 2)) * 256) / imageScale);
+        x = x + 1;
+    }
+
+    y = 0;
+    while (y < SCREEN_H)
+    {
+        imageSrcYTable[y] = imageCenterY + (((y - (IMAGE_TOP + IMAGE_HEIGHT / 2)) * 256) / imageScale);
+        y = y + 1;
+    }
+
+    imageLookupCenterX = imageCenterX;
+    imageLookupCenterY = imageCenterY;
+    imageLookupScale = imageScale;
+    imageLookupValid = 1;
+    invalidateImageRowCaches();
+}
+
+
+
+void buildImageScreenRowInSlot(int srcY, int slot)
+{
+    int x;
+    int srcX;
+    int previousX;
+    uint color;
+    char *row = &imageScreenRows[slot * 640];
+    if (imageScreenRowValid[slot] != 0 && imageScreenRowSrcY[slot] == srcY) return;
+    previousX = -999999;
+    color = 1;
+    for (x = 0; x < SCREEN_W; x = x + 1)
+    {
+        srcX = imageSrcXTable[x];
+        if (srcX < 0 || srcX >= imageWidth) color = 1;
+        else if (srcX != previousX) color = cachedImagePixel(srcX, srcY);
+        row[x] = (char)color;
+        previousX = srcX;
+    }
+    imageScreenRowSrcY[slot] = srcY;
+    imageScreenRowValid[slot] = 1;
+}
+
+void drawCachedImageRowRuns(int slot, int y0, int y1)
+{
+    int x;
+    int runStart;
+    uint color;
+    char *row = &imageScreenRows[slot * 640];
+    x = 0;
+    while (x < SCREEN_W)
+    {
+        color = (uint)row[x];
+        runStart = x;
+        while (x + 1 < SCREEN_W && (uint)row[x + 1] == color) x = x + 1;
+        if (color != (uint)1) fmFillRect(runStart, y0, x, y1, color);
+        x = x + 1;
+    }
+}
+
+int sameImageScreenRows(int first, int second)
+{
+    int x;
+    char *a = &imageScreenRows[first * 640];
+    char *b = &imageScreenRows[second * 640];
+    for (x = 0; x < 640; x = x + 1)
+    {
+        if (a[x] != b[x]) return 0;
+    }
+    return 1;
+}
+
+int parsePngHeader()
+{
+    if (hdrByte(0) != (uint)137) return 0;
+    if (hdrByte(1) != (uint)80) return 0;
+    if (hdrByte(2) != (uint)78) return 0;
+    if (hdrByte(3) != (uint)71) return 0;
+    if (hdrByte(4) != (uint)13) return 0;
+    if (hdrByte(5) != (uint)10) return 0;
+    if (hdrByte(6) != (uint)26) return 0;
+    if (hdrByte(7) != (uint)10) return 0;
+    if (hdrBE32(8) != (uint)13) return 0;
+    if (hdrByte(12) != (uint)73) return 0;
+    if (hdrByte(13) != (uint)72) return 0;
+    if (hdrByte(14) != (uint)68) return 0;
+    if (hdrByte(15) != (uint)82) return 0;
+
+    imageWidth = (int)hdrBE32(16);
+    imageHeight = (int)hdrBE32(20);
+    imageBitDepth = (int)hdrByte(24);
+    imageColorType = (int)hdrByte(25);
+    if (imageWidth <= 0) return 0;
+    if (imageHeight <= 0) return 0;
+    if (imageBitDepth != 1)
+    {
+        if (imageBitDepth != 2)
+        {
+            if (imageBitDepth != 4)
+            {
+                if (imageBitDepth != 8)
+                {
+                    if (imageBitDepth != 16) return 0;
+                }
+            }
+        }
+    }
+    if (imageColorType != 0)
+    {
+        if (imageColorType != 2)
+        {
+            if (imageColorType != 3)
+            {
+                if (imageColorType != 4)
+                {
+                    if (imageColorType != 6) return 0;
+                }
+            }
+        }
+    }
+
+    imageType = 1;
+    imageRenderable = 4;
+    fitImageToScreen();
+    return 1;
+}
+
+int jpegSofMarker(int marker)
+{
+    if (marker == 0xC0) return 1;
+    if (marker == 0xC1) return 1;
+    if (marker == 0xC2) return 1;
+    if (marker == 0xC3) return 1;
+    if (marker == 0xC5) return 1;
+    if (marker == 0xC6) return 1;
+    if (marker == 0xC7) return 1;
+    if (marker == 0xC9) return 1;
+    if (marker == 0xCA) return 1;
+    if (marker == 0xCB) return 1;
+    if (marker == 0xCD) return 1;
+    if (marker == 0xCE) return 1;
+    if (marker == 0xCF) return 1;
+    return 0;
+}
+
+int parseJpegHeader()
+{
+    int pos;
+    int marker;
+    int segLen;
+    uint got;
+
+    if (hdrByte(0) != (uint)255) return 0;
+    if (hdrByte(1) != (uint)216) return 0;
+
+    pos = 2;
+    while ((uint)pos < selectedSize - (uint)9)
+    {
+        if ((uint)(pos + 9) >= selectedSize) return 0;
+        got = readImageSmall((uint)pos);
+        if (got < (uint)4) return 0;
+
+        if (smallByte(0) != (uint)255)
+        {
+            pos = pos + 1;
+        }
+        else
+        {
+            marker = (int)smallByte(1);
+            if (marker == 255)
+            {
+                pos = pos + 1;
+            }
+            else if (marker == 0)
+            {
+                pos = pos + 2;
+            }
+            else if (marker == 0xD9)
+            {
+                return 0;
+            }
+            else if (marker == 0xDA)
+            {
+                return 0;
+            }
+            else if (marker >= 0xD0)
+            {
+                if (marker <= 0xD7) pos = pos + 2;
+                else
+                {
+                    segLen = (int)smallBE16(2);
+                    if (segLen < 2) return 0;
+                    if ((uint)segLen > selectedSize - (uint)pos - (uint)2) return 0;
+                    pos = pos + 2 + segLen;
+                }
+            }
+            else if (marker == 0x01)
+            {
+                pos = pos + 2;
+            }
+            else
+            {
+                segLen = (int)smallBE16(2);
+                if (segLen < 2) return 0;
+                if (jpegSofMarker(marker) != 0)
+                {
+                    got = readImageSmall((uint)pos);
+                    if (got < (uint)9) return 0;
+                    imageBitDepth = (int)smallByte(4);
+                    imageHeight = (int)smallBE16(5);
+                    imageWidth = (int)smallBE16(7);
+                    if (imageWidth <= 0) return 0;
+                    if (imageHeight <= 0) return 0;
+                    imageType = 2;
+                    imageRenderable = 5;
+                    fitImageToScreen();
+                    return 1;
+                }
+                if ((uint)segLen > selectedSize - (uint)pos - (uint)2) return 0;
+                pos = pos + 2 + segLen;
+            }
+        }
+    }
+
+    return 0;
+}
+
+int parseGifHeader()
+{
+    if (hdrByte(0) != (uint)71) return 0;
+    if (hdrByte(1) != (uint)73) return 0;
+    if (hdrByte(2) != (uint)70) return 0;
+    if (hdrByte(3) != (uint)56) return 0;
+    if (hdrByte(4) != (uint)55)
+    {
+        if (hdrByte(4) != (uint)57) return 0;
+    }
+    if (hdrByte(5) != (uint)97) return 0;
+
+    imageWidth = (int)hdrLE16(6);
+    imageHeight = (int)hdrLE16(8);
+    if (imageWidth <= 0) return 0;
+    if (imageHeight <= 0) return 0;
+    imageBitDepth = (int)((hdrByte(10) & (uint)7) + (uint)1);
+    imageType = 3;
+    imageRenderable = 0;
+    fitImageToScreen();
+    return 1;
+}
+
+int parseBmpHeader()
+{
+    uint rawW;
+    uint rawH;
+    uint signBit;
+    uint comp;
+    uint planes;
+
+    if (hdrByte(0) != (uint)66) return 0;
+    if (hdrByte(1) != (uint)77) return 0;
+    if (hdrLE32(14) < (uint)40) return 0;
+
+    rawW = hdrLE32(18);
+    rawH = hdrLE32(22);
+    signBit = ((uint)1) << (uint)31;
+    if ((rawW & signBit) != (uint)0) return 0;
+    if ((rawH & signBit) != (uint)0)
+    {
+        imageTopDown = 1;
+        imageHeight = (int)((uint)0 - rawH);
+    }
+    else
+    {
+        imageTopDown = 0;
+        imageHeight = (int)rawH;
+    }
+    imageWidth = (int)rawW;
+    if (imageWidth <= 0) return 0;
+    if (imageHeight <= 0) return 0;
+
+    planes = hdrLE16(26);
+    if (planes != (uint)1) return 0;
+    imageBpp = (int)hdrLE16(28);
+    comp = hdrLE32(30);
+    if (comp != (uint)0) return 0;
+    if (imageBpp != 24)
+    {
+        if (imageBpp != 32) return 0;
+    }
+
+    imageDataOffset = (int)hdrLE32(10);
+    imageRowBytes = (((imageWidth * imageBpp) + 31) / 32) * 4;
+    if (imageDataOffset <= 0) return 0;
+    if (imageRowBytes <= 0) return 0;
+    imageType = 4;
+    imageRenderable = 1;
+    fitImageToScreen();
+    return 1;
+}
+
+void pnmSkipSpaceAndComments()
+{
+    int c;
+
+    while (imagePnmPos < 256)
+    {
+        c = (int)hdrByte(imagePnmPos);
+        if (c == 35)
+        {
+            while (imagePnmPos < 256)
+            {
+                c = (int)hdrByte(imagePnmPos);
+                imagePnmPos = imagePnmPos + 1;
+                if (c == 10) break;
+            }
+        }
+        else if (c == 32)
+        {
+            imagePnmPos = imagePnmPos + 1;
+        }
+        else if (c == 9)
+        {
+            imagePnmPos = imagePnmPos + 1;
+        }
+        else if (c == 10)
+        {
+            imagePnmPos = imagePnmPos + 1;
+        }
+        else if (c == 13)
+        {
+            imagePnmPos = imagePnmPos + 1;
+        }
+        else return;
+    }
+}
+
+int pnmReadInt()
+{
+    int v;
+    int c;
+    int any;
+
+    pnmSkipSpaceAndComments();
+    v = 0;
+    any = 0;
+    while (imagePnmPos < 256)
+    {
+        c = (int)hdrByte(imagePnmPos);
+        if (c < 48) break;
+        if (c > 57) break;
+        v = v * 10 + (c - 48);
+        imagePnmPos = imagePnmPos + 1;
+        any = 1;
+    }
+    if (any == 0) return -1;
+    return v;
+}
+
+int parsePnmHeader()
+{
+    int magic;
+
+    if (hdrByte(0) != (uint)80) return 0;
+    magic = (int)hdrByte(1);
+    if (magic != 53)
+    {
+        if (magic != 54) return 0;
+    }
+
+    imagePnmPos = 2;
+    imageWidth = pnmReadInt();
+    imageHeight = pnmReadInt();
+    imageMaxVal = pnmReadInt();
+    if (imageWidth <= 0) return 0;
+    if (imageHeight <= 0) return 0;
+    if (imageMaxVal != 255) return 0;
+    if (imagePnmPos >= 255) return 0;
+
+    if (hdrByte(imagePnmPos) == (uint)13)
+    {
+        imagePnmPos = imagePnmPos + 1;
+        if (hdrByte(imagePnmPos) == (uint)10) imagePnmPos = imagePnmPos + 1;
+    }
+    else
+    {
+        imagePnmPos = imagePnmPos + 1;
+    }
+
+    imageDataOffset = imagePnmPos;
+    imageTopDown = 1;
+    imageBitDepth = 8;
+    if (magic == 54)
+    {
+        imageType = 5;
+        imageRenderable = 2;
+        imageBpp = 24;
+        imageRowBytes = imageWidth * 3;
+    }
+    else
+    {
+        imageType = 6;
+        imageRenderable = 3;
+        imageBpp = 8;
+        imageRowBytes = imageWidth;
+    }
+    fitImageToScreen();
+    return 1;
+}
+
+int validateSelectedImage()
+{
+    uint got;
+
+    resetImageState();
+    selectedSize = fileSize(selectedPath, activeStorage);
+    if (selectedSize == (uint)0)
+    {
+        selectedSize = fileSize(selectedRelPath, activeStorage);
+        if (selectedSize == (uint)0) return 0;
+        imageUsesRel = 1;
+    }
+
+    got = readImageHdr((uint)0);
+    if (got < (uint)16) return 0;
+
+    /* Return values:
+       0 = not a recognized valid image
+       1 = recognized container without a pixel decoder (GIF)
+       2 = valid image with actual pixel rendering support */
+    if (parseBmpHeader() != 0)
+    {
+        if (imageRenderable != 0) return 2;
+        return 1;
+    }
+    if (parsePnmHeader() != 0)
+    {
+        if (imageRenderable != 0) return 2;
+        return 1;
+    }
+    if (parsePngHeader() != 0) return 2;
+    if (parseJpegHeader() != 0) return 2;
+    if (parseGifHeader() != 0) return 1;
+
+    resetImageState();
+    return 0;
+}
+
+#include "filemgr_codecs.tch"
+
+int buildOneImageCacheChunk()
+{
+    int fileY;
+    int rowOffset;
+    int bppBytes;
+    int chunkPix;
+    int remaining;
+    int i;
+    int inOff;
+    uint r;
+    uint g;
+    uint b;
+    uint color;
+    uint packed;
+    if (imageCacheActive == 0) return 0;
+    if (imageCacheBuildY >= imageHeight) { finishImageCacheBuild(); return 0; }
+    fileY = imageCacheBuildY;
+    if (imageRenderable == 1 && imageTopDown == 0) fileY = imageHeight - 1 - fileY;
+    rowOffset = imageDataOffset + fileY * imageRowBytes;
+    bppBytes = imageBpp / 8;
+    if (bppBytes <= 0) bppBytes = 1;
+    remaining = imageWidth - imageCacheBuildX;
+    chunkPix = remaining;
+    if (chunkPix > 1024) chunkPix = 1024;
+    packed = 0;
+    for (i = 0; i < chunkPix; i = i + 1)
+    {
+        inOff = rowOffset + (imageCacheBuildX + i) * bppBytes;
+        if (imageRenderable == 3) { r = imageBlockByte(inOff); g = r; b = r; }
+        else if (imageRenderable == 2) { r = imageBlockByte(inOff); g = imageBlockByte(inOff + 1); b = imageBlockByte(inOff + 2); }
+        else { b = imageBlockByte(inOff); g = imageBlockByte(inOff + 1); r = imageBlockByte(inOff + 2); }
+        color = imagePalette[rgb332(r, g, b)];
+        if ((i & 1) == 0) packed = color << (uint)4;
+        else
+        {
+            packed = packed | color;
+            if (appendImageCacheByte(packed) == 0) { imageCacheError = 1; finishImageCacheBuild(); return 0; }
+        }
+    }
+    if (imageDrawError != 0) { imageCacheError = 1; finishImageCacheBuild(); return 0; }
+    if ((chunkPix & 1) != 0)
+    {
+        if (appendImageCacheByte(packed) == 0) { imageCacheError = 1; finishImageCacheBuild(); return 0; }
+    }
+    imageCacheBuildX = imageCacheBuildX + chunkPix;
+    if (imageCacheBuildX >= imageWidth) { imageCacheBuildX = 0; imageCacheBuildY = imageCacheBuildY + 1; dirty = 1; }
+    if (imageCacheBuildY >= imageHeight) finishImageCacheBuild();
+    return 1;
+}
+
+void serviceImageCacheBuild()
+{
+    int n;
+
+    if (mode != 4) return;
+    if (imageCacheActive == 0) return;
+    if (imageCacheError != 0) return;
+    if (imageRenderable >= 4) { serviceCompressedDecode(); return; }
+
+    n = 0;
+    while (n < 8)
+    {
+        if (buildOneImageCacheChunk() == 0) return;
+        if (imageCacheActive == 0) return;
+        n = n + 1;
+    }
+}
+
+
+/* SD directory/file actions and cached directory state                         */
+/* ------------------------------------------------------------------------- */
+
+void clearCacheSlot(int slot)
+{
+    g_pos = slot * 48;
+    g_i = 0;
+    while (g_i < 48)
+    {
+        cacheNames[g_pos + g_i] = 0;
+        g_i = g_i + 1;
+    }
+    cacheLens[slot] = 0;
+    cacheTypes[slot] = 0;
+    cacheStatuses[slot] = 0;
+    cachePrograms[slot] = 0;
+    cacheProgramKnown[slot] = 0;
+}
+
+void copyCacheSlot(int dstSlot, int srcSlot)
+{
+    int dstPos;
+    int srcPos;
+
+    dstPos = dstSlot * 48;
+    srcPos = srcSlot * 48;
+    g_i = 0;
+    while (g_i < 48)
+    {
+        cacheNames[dstPos + g_i] = cacheNames[srcPos + g_i];
+        g_i = g_i + 1;
+    }
+    cacheLens[dstSlot] = cacheLens[srcSlot];
+    cacheTypes[dstSlot] = cacheTypes[srcSlot];
+    cacheStatuses[dstSlot] = cacheStatuses[srcSlot];
+    cachePrograms[dstSlot] = cachePrograms[srcSlot];
+    cacheProgramKnown[dstSlot] = cacheProgramKnown[srcSlot];
+}
+
+void clearVisibleCache()
+{
+    g_row = 0;
+    while (g_row < VISIBLE_ROWS)
+    {
+        clearCacheSlot(g_row);
+        g_row = g_row + 1;
+    }
+}
+
+void copyEntryNameToCache(int slot)
+{
+    g_pos = slot * 48;
+    g_i = 0;
+    while (g_i < 48)
+    {
+        cacheNames[g_pos + g_i] = entryName[g_i];
+        g_i = g_i + 1;
+    }
+    cacheLens[slot] = entryLen;
+    cacheTypes[slot] = entryType;
+    cacheStatuses[slot] = (int)entryStatus;
+    cachePrograms[slot] = 0;
+    cacheProgramKnown[slot] = 0;
+}
+
+void copyCacheEntryToWorkingName(int slot)
+{
+    g_pos = slot * 48;
+    g_i = 0;
+    while (g_i < 48)
+    {
+        entryName[g_i] = cacheNames[g_pos + g_i];
+        g_i = g_i + 1;
+    }
+    entryLen = cacheLens[slot];
+    entryType = cacheTypes[slot];
+    entryStatus = (uint)cacheStatuses[slot];
+}
+
+int getSelectedCachedEntry()
+{
+    int slot;
+
+    if (entryCount <= 0) return 0;
+
+    slot = selectedIndex - cacheStart;
+    if (slot < 0) return 0;
+    if (slot >= VISIBLE_ROWS) return 0;
+    if (cacheStatuses[slot] == 0) return 0;
+
+    copyCacheEntryToWorkingName(slot);
+    return 1;
+}
+
+void requestVisibleCache()
+{
+    cacheStart = scrollIndex;
+    cacheLoading = 1;
+    cacheLoadRow = 0;
+    cacheLoadStop = VISIBLE_ROWS;
+    clearVisibleCache();
+}
+
+void requestVisibleCacheAfterScroll(int oldStart)
+{
+    if (scrollIndex == oldStart) return;
+
+    if (scrollIndex == oldStart + 1)
+    {
+        g_row = 0;
+        while (g_row < VISIBLE_ROWS - 1)
+        {
+            copyCacheSlot(g_row, g_row + 1);
+            g_row = g_row + 1;
+        }
+        clearCacheSlot(VISIBLE_ROWS - 1);
+        cacheStart = scrollIndex;
+        cacheLoading = 1;
+        cacheLoadRow = VISIBLE_ROWS - 1;
+        cacheLoadStop = VISIBLE_ROWS;
+        return;
+    }
+
+    if (scrollIndex + 1 == oldStart)
+    {
+        g_row = VISIBLE_ROWS - 1;
+        while (g_row > 0)
+        {
+            copyCacheSlot(g_row, g_row - 1);
+            g_row = g_row - 1;
+        }
+        clearCacheSlot(0);
+        cacheStart = scrollIndex;
+        cacheLoading = 1;
+        cacheLoadRow = 0;
+        cacheLoadStop = 1;
+        return;
+    }
+
+    requestVisibleCache();
+}
+
+void clampSelectionAndScroll()
+{
+    if (entryCount < 0) entryCount = 0;
+    if (selectedIndex < 0) selectedIndex = 0;
+    if (scanDone != 0)
+    {
+        if (entryCount <= 0) selectedIndex = 0;
+        else if (selectedIndex >= entryCount) selectedIndex = entryCount - 1;
+    }
+
+    if (scrollIndex > selectedIndex) scrollIndex = selectedIndex;
+    if (selectedIndex >= scrollIndex + VISIBLE_ROWS) scrollIndex = selectedIndex - VISIBLE_ROWS + 1;
+    if (scrollIndex < 0) scrollIndex = 0;
+}
+
+void startRefresh()
+{
+    entryCount = 0;
+    scanIndex = 0;
+    scanActive = 1;
+    scanDone = 0;
+    quickMoveDirty = 0;
+    selectedInfoDirty = 1;
+    selectedInfoValid = 0;
+    previewLen = (uint)0;
+    clearChars(previewBuf, 192);
+    nextSdMs = (uint)0;
+    dirty = 1;
+    clampSelectionAndScroll();
+    requestVisibleCache();
+}
+
+void mountActiveStorage()
+{
+    if (activeStorage == (uint)1) sdMount();
+}
+
+void serviceVisibleCache()
+{
+    int n;
+    int idx;
+    int changed;
+
+    if (cacheLoading == 0) return;
+
+    n = 0;
+    changed = 0;
+    while (n < 4)
+    {
+        if (cacheLoadRow >= cacheLoadStop)
+        {
+            cacheLoading = 0;
+            if (changed != 0) dirty = 1;
+            return;
+        }
+
+        idx = cacheStart + cacheLoadRow;
+        clearChars(entryName, 48);
+        entryLen = 0;
+        entryType = 0;
+        entryStatus = dirEntry(cwd, (uint)idx, entryName, entryLen, entryType, activeStorage);
+
+        if (entryStatus != (uint)0)
+        {
+            copyEntryNameToCache(cacheLoadRow);
+            if (idx + 1 > entryCount) entryCount = idx + 1;
+            if (idx == scanIndex) scanIndex = scanIndex + 1;
+        }
+        else
+        {
+            clearCacheSlot(cacheLoadRow);
+            cacheLoading = 0;
+            if (idx == scanIndex)
+            {
+                scanActive = 0;
+                scanDone = 1;
+                entryCount = idx;
+            }
+            clampSelectionAndScroll();
+            if (cacheStart != scrollIndex) requestVisibleCache();
+            selectedInfoDirty = 1;
+            dirty = 1;
+            return;
+        }
+
+        cacheLoadRow = cacheLoadRow + 1;
+        n = n + 1;
+        changed = 1;
+    }
+
+    if (changed != 0) dirty = 1;
+}
+
+void serviceCountScan()
+{
+    int n;
+
+    if (scanActive == 0) return;
+
+    n = 0;
+    while (n < 1)
+    {
+        clearChars(entryName, 48);
+        entryLen = 0;
+        entryType = 0;
+        entryStatus = dirEntry(cwd, (uint)scanIndex, entryName, entryLen, entryType, activeStorage);
+
+        if (entryStatus == (uint)0)
+        {
+            scanActive = 0;
+            scanDone = 1;
+            entryCount = scanIndex;
+            clampSelectionAndScroll();
+            if (cacheStart != scrollIndex) requestVisibleCache();
+            selectedInfoDirty = 1;
+            dirty = 1;
+            return;
+        }
+
+        scanIndex = scanIndex + 1;
+        entryCount = scanIndex;
+        n = n + 1;
+        /* Do not redraw on every counted entry. Redraw when visible cache changes,
+           when the user moves, or when the scan finishes. */
+    }
+}
+
+void loadSelectedInfo()
+{
+    int slot;
+
+    selectedInfoDirty = 0;
+    selectedInfoValid = 0;
+    selectedType = 0;
+    selectedIsProgram = 0;
+    selectedSize = (uint)0;
+    previewLen = (uint)0;
+    clearChars(selectedDisplayName, 48);
+
+    if (getSelectedCachedEntry() == 0)
+    {
+        selectedInfoDirty = 1;
+        return;
+    }
+
+    selectedInfoValid = 1;
+    selectedType = entryType;
+    slot = selectedIndex - cacheStart;
+    copyBuffer(selectedDisplayName, entryName, 48);
+    buildPathFromName(selectedPath, entryName, entryLen);
+    buildRelPathFromName(selectedRelPath, entryName, entryLen);
+
+    if (entryType == 0)
+    {
+        selectedSize = fileSize(selectedPath, activeStorage);
+        if (selectedSize == (uint)0)
+            selectedSize = fileSize(selectedRelPath, activeStorage);
+        if (slot >= 0)
+        {
+            if (slot < VISIBLE_ROWS)
+            {
+                if (cacheProgramKnown[slot] == 0)
+                {
+                    copyBuffer(scratchPath, selectedPath, 128);
+                    copyBuffer(scratchRelPath, selectedRelPath, 128);
+                    cachePrograms[slot] = validateScratchProgram();
+                    cacheProgramKnown[slot] = 1;
+                }
+                selectedIsProgram = cachePrograms[slot];
+            }
+        }
+    }
+    dirty = 1;
+
+    /* Do not read the file here. Browser selection must stay cheap and must
+       not leave the file busy before a delete/rename operation. The file
+       viewer loads bytes only after it is opened. */
+}
+
+void serviceSd()
+{
+    if (mode != 0) return;
+
+    if (inputNow < nextSdMs)
+    {
+        if (selectedInfoDirty != 0) loadSelectedInfo();
+        return;
+    }
+    nextSdMs = inputNow + (uint)3;
+
+    serviceVisibleCache();
+    if (cacheLoading == 0) serviceCountScan();
+
+    if (selectedInfoDirty != 0)
+    {
+        loadSelectedInfo();
+    }
+}
+
+void startFilePageLoad()
+{
+    clearChars(previewBuf, 192);
+    clearChars(viewBuf, 128);
+    previewLen = (uint)0;
+    viewLoadIndex = 0;
+    viewError = 0;
+
+    selectedSize = fileSize(selectedPath, activeStorage);
+    if (selectedSize == (uint)0)
+    {
+        selectedSize = fileSize(selectedRelPath, activeStorage);
+    }
+
+    if (selectedSize != (uint)0)
+    {
+        if ((uint)viewOffset >= selectedSize)
+        {
+            viewOffset = 0;
+        }
+    }
+
+    /* Always try a read even when fileSize returns 0.  Some storage wrappers
+       return 0 both for an empty file and for a size query failure. */
+    viewLoading = 1;
+    dirty = 1;
+}
+
+void serviceFileViewLoad()
+{
+    uint got;
+
+    if (mode != 1) return;
+    if (viewLoading == 0) return;
+
+    clearChars(viewBuf, 128);
+    got = fileRead(selectedPath, viewBuf, (uint)viewOffset, activeStorage);
+    if (got == (uint)0)
+    {
+        got = fileRead(selectedRelPath, viewBuf, (uint)viewOffset, activeStorage);
+    }
+
+    previewLen = got;
+    if (previewLen > (uint)128) previewLen = (uint)128;
+
+    viewLoading = 0;
+    if (got == (uint)0) viewError = 1;
+    else viewError = 0;
+    dirty = 1;
+}
+
+int validateSelectedWav()
+{
+    uint got;
+
+    clearChars(audioHdr, 12);
+    got = fileRead(selectedPath, audioHdr, (uint)0, activeStorage);
+    if (got < (uint)12)
+    {
+        clearChars(audioHdr, 12);
+        got = fileRead(selectedRelPath, audioHdr, (uint)0, activeStorage);
+    }
+    if (got < (uint)12) return 0;
+
+    if (((uint)audioHdr[0] & (uint)255) != (uint)82) return 0;  /* R */
+    if (((uint)audioHdr[1] & (uint)255) != (uint)73) return 0;  /* I */
+    if (((uint)audioHdr[2] & (uint)255) != (uint)70) return 0;  /* F */
+    if (((uint)audioHdr[3] & (uint)255) != (uint)70) return 0;  /* F */
+    if (((uint)audioHdr[8] & (uint)255) != (uint)87) return 0;  /* W */
+    if (((uint)audioHdr[9] & (uint)255) != (uint)65) return 0;  /* A */
+    if (((uint)audioHdr[10] & (uint)255) != (uint)86) return 0; /* V */
+    if (((uint)audioHdr[11] & (uint)255) != (uint)69) return 0; /* E */
+    return 1;
+}
+
+int playSelectedWav()
+{
+    int result;
+
+    if (activeStorage != (uint)1) return -1;
+    /* The play service replaces this voice and claims ownership.
+       Do not stop an unowned voice before the first playback. */
+    result = narm_audio_play_wav(AUDIO_VOICE, selectedPath);
+    if (result >= 0) copyBuffer(audioPath, selectedPath, 128);
+    if (result < 0)
+    {
+        result = narm_audio_play_wav(AUDIO_VOICE, selectedRelPath);
+        if (result >= 0) copyBuffer(audioPath, selectedRelPath, 128);
+    }
+    if (result < 0)
+    {
+        /* A rejected replacement may leave our previous source alive.
+           Stop only our owned voice; a foreign owner is protected by firmware.
+           Keep the previous track metadata so its controls remain available. */
+        narm_audio_stop(AUDIO_VOICE);
+        audioPlaying = 0;
+        audioPaused = 0;
+        audioStopped = 1;
+        audioAwaitingStart = 0;
+        audioPanelDirty = 1;
+        return result;
+    }
+    copyBuffer(audioName, entryName, 48);
+    audioLoaded = 1;
+    audioPlaying = 1;
+    audioPaused = 0;
+    audioStopped = 0;
+    audioAwaitingStart = 1;
+    audioCurrentFrame = 0;
+    audioTotalFrames = 0;
+    audioSampleRate = 0;
+    audioNextPollMs = millis();
+    audioStartDeadline = millis() + 1000;
+    audioPanelDirty = 1;
+    return result;
+}
+
+void serviceAudio()
+{
+    uint now;
+    uint position = 0;
+    uint total = 0;
+    uint rate = 0;
+    uint flags = 0;
+    int playing;
+    int paused;
+    int result;
+    if (audioLoaded == 0 || audioStopped != 0) return;
+    now = millis();
+    if ((int)(now - audioNextPollMs) < 0) return;
+    audioNextPollMs = now + 100;
+    result = narm_audio_position(AUDIO_VOICE, &position, &total, &rate, &flags);
+    if (result < 0) return; /* queued commands still settling: keep the UI state */
+    if (total == 0 || rate == 0) return;
+    playing = (flags & 1) != 0;
+    paused = playing != 0 && (flags & 2) != 0;
+    if (audioAwaitingStart != 0 && playing == 0 && (int)(now - audioStartDeadline) < 0) return;
+    audioAwaitingStart = 0;
+    if (position > total) position = total;
+    if (playing == 0)
+    {
+        /* A completed voice retains its source metadata in the mixer. */
+        position = total;
+        audioStopped = 1;
+        statusCode = 29;
+        dirty = 1;
+    }
+    if (audioCurrentFrame != position || audioTotalFrames != total ||
+        audioSampleRate != rate || audioPaused != paused ||
+        audioPlaying != (playing != 0 && paused == 0)) audioPanelDirty = 1;
+    audioCurrentFrame = position;
+    audioTotalFrames = total;
+    audioSampleRate = rate;
+    audioPaused = paused;
+    audioPlaying = playing != 0 && paused == 0;
+}
+
+void stopAudioPlayback()
+{
+    int result;
+    if (audioLoaded == 0) return;
+    result = narm_audio_stop(AUDIO_VOICE);
+    if (result < 0)
+    {
+        statusCode = 24;
+        dirty = 1;
+        return;
+    }
+    audioPlaying = 0;
+    audioPaused = 0;
+    audioStopped = 1;
+    audioAwaitingStart = 0;
+    audioCurrentFrame = 0;
+    audioPanelDirty = 1;
+    statusCode = 26;
+    dirty = 1;
+}
+
+int audioSeekTo(uint frame)
+{
+    int result;
+    int remainPaused;
+    if (audioLoaded == 0 || audioTotalFrames == 0) return -1;
+    if (frame >= audioTotalFrames) frame = audioTotalFrames - 1;
+    if (audioStopped != 0)
+    {
+        audioCurrentFrame = frame;
+        audioPanelDirty = 1;
+        return 0;
+    }
+    remainPaused = audioPaused;
+    result = narm_audio_play_wav_from(AUDIO_VOICE, audioPath, frame);
+    if (result < 0)
+    {
+        statusCode = 24;
+        dirty = 1;
+        return result;
+    }
+    if (remainPaused != 0) narm_audio_pause(AUDIO_VOICE, 1);
+    audioCurrentFrame = frame;
+    audioPlaying = remainPaused == 0;
+    audioPaused = remainPaused;
+    audioAwaitingStart = 1;
+    audioStartDeadline = millis() + 1000;
+    audioNextPollMs = millis() + 100;
+    audioPanelDirty = 1;
+    return 0;
+}
+
+int seekAudioBy(int seconds)
+{
+    uint magnitude;
+    uint delta;
+    uint target;
+    if (audioLoaded == 0 || audioTotalFrames == 0 || audioSampleRate == 0) return -1;
+    magnitude = seconds < 0 ? (uint)0 - (uint)seconds : (uint)seconds;
+    if (magnitude > (uint)0xffffffff / audioSampleRate) delta = (uint)0xffffffff;
+    else delta = magnitude * audioSampleRate;
+    if (seconds < 0)
+    {
+        if (delta >= audioCurrentFrame) target = 0;
+        else target = audioCurrentFrame - delta;
+    }
+    else
+    {
+        if (audioCurrentFrame >= audioTotalFrames || delta >= audioTotalFrames - audioCurrentFrame)
+            target = audioTotalFrames - 1;
+        else target = audioCurrentFrame + delta;
+    }
+    return audioSeekTo(target);
+}
+
+void toggleAudioPause()
+{
+    int result;
+    uint start;
+    if (audioLoaded == 0) return;
+    if (audioStopped != 0)
+    {
+        start = audioCurrentFrame;
+        if (start >= audioTotalFrames) start = 0;
+        result = narm_audio_play_wav_from(AUDIO_VOICE, audioPath, start);
+        if (result >= 0)
+        {
+            audioCurrentFrame = start;
+            audioPlaying = 1;
+            audioPaused = 0;
+            audioStopped = 0;
+            audioAwaitingStart = 1;
+            audioStartDeadline = millis() + 1000;
+            audioNextPollMs = millis() + 100;
+            statusCode = 23;
+        }
+    }
+    else
+    {
+        result = narm_audio_pause(AUDIO_VOICE, audioPaused == 0);
+        if (result >= 0)
+        {
+            audioPaused = audioPaused == 0;
+            audioPlaying = audioPaused == 0;
+            statusCode = audioPaused != 0 ? 27 : 23;
+        }
+    }
+    if (result < 0) statusCode = 24;
+    audioPanelDirty = 1;
+    dirty = 1;
+}
+
+void openSelected()
+{
+    if (getSelectedCachedEntry() == 0)
+    {
+        statusCode = 12;
+        return;
+    }
+
+    buildPathFromName(selectedPath, entryName, entryLen);
+    buildRelPathFromName(selectedRelPath, entryName, entryLen);
+    if (entryType == 1)
+    {
+        copyBuffer(cwd, selectedPath, 96);
+        selectedIndex = 0;
+        scrollIndex = 0;
+        confirmDelete = 0;
+        statusCode = 1;
+        startRefresh();
+    }
+    else
+    {
+        copyBuffer(scratchPath, selectedPath, 128);
+        copyBuffer(scratchRelPath, selectedRelPath, 128);
+        if (validateScratchProgram() != 0)
+        {
+            statusCode = 20;
+            dirty = 1;
+            if (programProbeUsesRel != 0) lastLaunchPid = runProg(scratchRelPath, activeStorage);
+            else lastLaunchPid = runProg(scratchPath, activeStorage);
+            if (lastLaunchPid < 0) statusCode = 28;
+            dirty = 1;
+            quickMoveDirty = 0;
+            return;
+        }
+
+        if (validateSelectedWav() != 0)
+        {
+            if (activeStorage != (uint)1) statusCode = 25;
+            else if (playSelectedWav() < 0) statusCode = 24;
+            else statusCode = 23;
+            dirty = 1;
+            return;
+        }
+
+        copyBuffer(fileViewName, entryName, 48);
+        g_val = validateSelectedImage();
+        if (g_val == 2)
+        {
+            startImageCacheBuild();
+            mode = 4;
+            statusCode = 0;
+            dirty = 1;
+            return;
+        }
+        if (g_val == 1)
+        {
+            /* Recognized container without a supported pixel decoder (GIF). */
+            statusCode = 22;
+            dirty = 1;
+            return;
+        }
+
+        viewOffset = 0;
+        mode = 1;
+        statusCode = 0;
+        dirty = 1;
+        startFilePageLoad();
+    }
+}
+
+void createFileNamed()
+{
+    uint ok;
+
+    if (editLen <= 0)
+    {
+        statusCode = 14;
+        nameEditQuickDirty = 0;
+        dirty = 1;
+        return;
+    }
+
+    buildPathFromName(scratchPath, editName, editLen);
+    buildRelPathFromName(scratchRelPath, editName, editLen);
+
+    ok = fileMake(scratchPath, activeStorage);
+    if (ok == (uint)0)
+    {
+        ok = fileMake(scratchRelPath, activeStorage);
+    }
+
+    if (ok != (uint)0)
+    {
+        createFileCounter = createFileCounter + 1;
+        statusCode = 6;
+        mode = 0;
+        startRefresh();
+    }
+    else
+    {
+        if (fileExists(scratchPath, activeStorage) != (uint)0) statusCode = 16;
+        else if (fileExists(scratchRelPath, activeStorage) != (uint)0) statusCode = 16;
+        else statusCode = 7;
+        nameEditQuickDirty = 0;
+        dirty = 1;
+    }
+}
+
+void createDirNamed()
+{
+    uint ok;
+
+    if (editLen <= 0)
+    {
+        statusCode = 14;
+        nameEditQuickDirty = 0;
+        dirty = 1;
+        return;
+    }
+
+    buildPathFromName(scratchPath, editName, editLen);
+    buildRelPathFromName(scratchRelPath, editName, editLen);
+
+    ok = dirMake(scratchPath, activeStorage);
+    if (ok == (uint)0)
+    {
+        ok = dirMake(scratchRelPath, activeStorage);
+    }
+
+    if (ok != (uint)0)
+    {
+        createDirCounter = createDirCounter + 1;
+        statusCode = 8;
+        mode = 0;
+        startRefresh();
+    }
+    else
+    {
+        statusCode = 9;
+        nameEditQuickDirty = 0;
+        dirty = 1;
+    }
+}
+
+void deleteSelected()
+{
+    uint ok;
+
+    if (getSelectedCachedEntry() == 0)
+    {
+        statusCode = 12;
+        return;
+    }
+
+    if (confirmDelete == 0)
+    {
+        confirmDelete = 1;
+        statusCode = 3;
+        dirty = 1;
+        return;
+    }
+
+    buildPathFromName(selectedPath, entryName, entryLen);
+    buildRelPathFromName(selectedRelPath, entryName, entryLen);
+
+    ok = (uint)0;
+    if (entryType == 1)
+    {
+        ok = dirDelete(selectedPath, activeStorage);
+        if (ok == (uint)0) ok = dirDelete(selectedRelPath, activeStorage);
+        if (ok == (uint)0) ok = fileDelete(selectedPath, activeStorage);
+        if (ok == (uint)0) ok = fileDelete(selectedRelPath, activeStorage);
+    }
+    else
+    {
+        ok = fileDelete(selectedPath, activeStorage);
+        if (ok == (uint)0) ok = fileDelete(selectedRelPath, activeStorage);
+        if (ok == (uint)0) ok = dirDelete(selectedPath, activeStorage);
+        if (ok == (uint)0) ok = dirDelete(selectedRelPath, activeStorage);
+    }
+
+    confirmDelete = 0;
+    if (ok != (uint)0)
+    {
+        statusCode = 4;
+        if (selectedIndex > 0) selectedIndex = selectedIndex - 1;
+        selectedInfoDirty = 1;
+        startRefresh();
+    }
+    else
+    {
+        statusCode = 5;
+        dirty = 1;
+    }
+}
+
+void startNameEdit(int kind)
+{
+    createMode = kind;
+    clearChars(editName, 48);
+
+    if (kind == 1)
+    {
+        makeFileName(createFileCounter % 100);
+    }
+    else
+    {
+        makeDirName(createDirCounter % 100);
+    }
+
+    copyBuffer(editName, newName, 48);
+    editLen = strLenLimit(editName, 48);
+    mode = 2;
+    nameEditQuickDirty = 0;
+    statusCode = 13;
+    dirty = 1;
+}
+
+void cancelNameEdit()
+{
+    mode = 0;
+    createMode = 0;
+    nameEditQuickDirty = 0;
+    statusCode = 15;
+    dirty = 1;
+}
+
+void startRenameEdit()
+{
+    if (getSelectedCachedEntry() == 0)
+    {
+        statusCode = 12;
+        return;
+    }
+
+    buildPathFromName(renameOldPath, entryName, entryLen);
+    buildRelPathFromName(renameOldRelPath, entryName, entryLen);
+    renameSourceType = entryType;
+    clearChars(editName, 48);
+    copyBuffer(editName, entryName, 48);
+    editLen = entryLen;
+    if (editLen > 47) editLen = 47;
+    editName[editLen] = 0;
+
+    if (entryType == 0) createMode = 3;
+    else createMode = 4;
+
+    mode = 2;
+    nameEditQuickDirty = 0;
+    statusCode = 13;
+    dirty = 1;
+}
+
+void startFileRenameCopy()
+{
+    uint ok;
+
+    if (editLen <= 0)
+    {
+        statusCode = 14;
+        nameEditQuickDirty = 0;
+        dirty = 1;
+        return;
+    }
+
+    buildPathFromName(renameNewPath, editName, editLen);
+    buildRelPathFromName(renameNewRelPath, editName, editLen);
+
+    renameNewUsesRel = 0;
+    ok = fileMake(renameNewPath, activeStorage);
+    if (ok == (uint)0)
+    {
+        ok = fileMake(renameNewRelPath, activeStorage);
+        if (ok != (uint)0) renameNewUsesRel = 1;
+    }
+
+    if (ok == (uint)0)
+    {
+        if (fileExists(renameNewPath, activeStorage) != (uint)0) statusCode = 16;
+        else if (fileExists(renameNewRelPath, activeStorage) != (uint)0) statusCode = 16;
+        else statusCode = 18;
+        nameEditQuickDirty = 0;
+        dirty = 1;
+        return;
+    }
+
+    renameSize = fileSize(renameOldPath, activeStorage);
+    if (renameSize == (uint)0)
+    {
+        renameSize = fileSize(renameOldRelPath, activeStorage);
+    }
+
+    renameOffset = 0;
+    renameDeleteWait = 0;
+    renameBusy = 1;
+    renameUnknownSize = 0;
+    if (renameSize == (uint)0) renameUnknownSize = 1;
+    mode = 3;
+    statusCode = 19;
+    nextRenameMs = (uint)0;
+    dirty = 1;
+}
+
+void renameDirectoryNow()
+{
+    uint ok;
+
+    if (editLen <= 0)
+    {
+        statusCode = 14;
+        nameEditQuickDirty = 0;
+        dirty = 1;
+        return;
+    }
+
+    buildPathFromName(renameNewPath, editName, editLen);
+    buildRelPathFromName(renameNewRelPath, editName, editLen);
+
+    ok = dirMake(renameNewPath, activeStorage);
+    if (ok == (uint)0) ok = dirMake(renameNewRelPath, activeStorage);
+    if (ok == (uint)0)
+    {
+        statusCode = 18;
+        nameEditQuickDirty = 0;
+        dirty = 1;
+        return;
+    }
+
+    ok = dirDelete(renameOldPath, activeStorage);
+    if (ok == (uint)0) ok = dirDelete(renameOldRelPath, activeStorage);
+    if (ok != (uint)0)
+    {
+        mode = 0;
+        statusCode = 17;
+        startRefresh();
+    }
+    else
+    {
+        dirDelete(renameNewPath, activeStorage);
+        dirDelete(renameNewRelPath, activeStorage);
+        mode = 0;
+        statusCode = 18;
+        startRefresh();
+    }
+}
+
+void finishNameEdit()
+{
+    if (createMode == 1) createFileNamed();
+    else if (createMode == 2) createDirNamed();
+    else if (createMode == 3) startFileRenameCopy();
+    else renameDirectoryNow();
+}
+
+void finishRenameDeleteOld()
+{
+    uint ok;
+
+    if (renameDeleteWait < 20)
+    {
+        renameDeleteWait = renameDeleteWait + 1;
+        return;
+    }
+
+    ok = fileDelete(renameOldPath, activeStorage);
+    if (ok == (uint)0) ok = fileDelete(renameOldRelPath, activeStorage);
+
+    if (ok != (uint)0)
+    {
+        renameBusy = 0;
+        mode = 0;
+        statusCode = 17;
+        startRefresh();
+    }
+    else
+    {
+        renameBusy = 0;
+        mode = 0;
+        statusCode = 18;
+        startRefresh();
+    }
+}
+
+void failRenameCopy()
+{
+    if (renameNewUsesRel == 0) fileDelete(renameNewPath, activeStorage);
+    else fileDelete(renameNewRelPath, activeStorage);
+    renameBusy = 0;
+    mode = 0;
+    statusCode = 18;
+    startRefresh();
+}
+
+void serviceFileRenameCopy()
+{
+    uint got;
+    uint wrote;
+    uint remaining;
+
+    if (mode != 3) return;
+    if (renameBusy == 0) return;
+    if (inputNow < nextRenameMs) return;
+    nextRenameMs = inputNow + (uint)2;
+
+    if (renameUnknownSize != 0)
+    {
+        copyByte[0] = 0;
+        got = fileRead(renameOldPath, copyByte, (uint)renameOffset, activeStorage);
+        if (got == (uint)0) got = fileRead(renameOldRelPath, copyByte, (uint)renameOffset, activeStorage);
+
+        if (got == (uint)0)
+        {
+            finishRenameDeleteOld();
+            return;
+        }
+
+        if (renameNewUsesRel == 0) wrote = fileWrite(renameNewPath, copyByte, (uint)renameOffset, activeStorage);
+        else wrote = fileWrite(renameNewRelPath, copyByte, (uint)renameOffset, activeStorage);
+
+        if (wrote == (uint)0)
+        {
+            failRenameCopy();
+            return;
+        }
+
+        renameOffset = renameOffset + 1;
+        dirty = 1;
+        return;
+    }
+
+    if ((uint)renameOffset >= renameSize)
+    {
+        finishRenameDeleteOld();
+        return;
+    }
+
+    remaining = renameSize - (uint)renameOffset;
+
+    if (remaining >= (uint)32)
+    {
+        got = fileRead(renameOldPath, copy32, (uint)renameOffset, activeStorage);
+        if (got == (uint)0) got = fileRead(renameOldRelPath, copy32, (uint)renameOffset, activeStorage);
+        if (got != (uint)32)
+        {
+            failRenameCopy();
+            return;
+        }
+        if (renameNewUsesRel == 0) wrote = fileWrite(renameNewPath, copy32, (uint)renameOffset, activeStorage);
+        else wrote = fileWrite(renameNewRelPath, copy32, (uint)renameOffset, activeStorage);
+        if (wrote == (uint)0)
+        {
+            failRenameCopy();
+            return;
+        }
+        renameOffset = renameOffset + 32;
+        dirty = 1;
+        return;
+    }
+
+    if (remaining >= (uint)16)
+    {
+        got = fileRead(renameOldPath, copy16, (uint)renameOffset, activeStorage);
+        if (got == (uint)0) got = fileRead(renameOldRelPath, copy16, (uint)renameOffset, activeStorage);
+        if (got != (uint)16)
+        {
+            failRenameCopy();
+            return;
+        }
+        if (renameNewUsesRel == 0) wrote = fileWrite(renameNewPath, copy16, (uint)renameOffset, activeStorage);
+        else wrote = fileWrite(renameNewRelPath, copy16, (uint)renameOffset, activeStorage);
+        if (wrote == (uint)0)
+        {
+            failRenameCopy();
+            return;
+        }
+        renameOffset = renameOffset + 16;
+        dirty = 1;
+        return;
+    }
+
+    if (remaining >= (uint)8)
+    {
+        got = fileRead(renameOldPath, copy8, (uint)renameOffset, activeStorage);
+        if (got == (uint)0) got = fileRead(renameOldRelPath, copy8, (uint)renameOffset, activeStorage);
+        if (got != (uint)8)
+        {
+            failRenameCopy();
+            return;
+        }
+        if (renameNewUsesRel == 0) wrote = fileWrite(renameNewPath, copy8, (uint)renameOffset, activeStorage);
+        else wrote = fileWrite(renameNewRelPath, copy8, (uint)renameOffset, activeStorage);
+        if (wrote == (uint)0)
+        {
+            failRenameCopy();
+            return;
+        }
+        renameOffset = renameOffset + 8;
+        dirty = 1;
+        return;
+    }
+
+    if (remaining >= (uint)4)
+    {
+        got = fileRead(renameOldPath, copy4, (uint)renameOffset, activeStorage);
+        if (got == (uint)0) got = fileRead(renameOldRelPath, copy4, (uint)renameOffset, activeStorage);
+        if (got != (uint)4)
+        {
+            failRenameCopy();
+            return;
+        }
+        if (renameNewUsesRel == 0) wrote = fileWrite(renameNewPath, copy4, (uint)renameOffset, activeStorage);
+        else wrote = fileWrite(renameNewRelPath, copy4, (uint)renameOffset, activeStorage);
+        if (wrote == (uint)0)
+        {
+            failRenameCopy();
+            return;
+        }
+        renameOffset = renameOffset + 4;
+        dirty = 1;
+        return;
+    }
+
+    if (remaining >= (uint)2)
+    {
+        got = fileRead(renameOldPath, copy2, (uint)renameOffset, activeStorage);
+        if (got == (uint)0) got = fileRead(renameOldRelPath, copy2, (uint)renameOffset, activeStorage);
+        if (got != (uint)2)
+        {
+            failRenameCopy();
+            return;
+        }
+        if (renameNewUsesRel == 0) wrote = fileWrite(renameNewPath, copy2, (uint)renameOffset, activeStorage);
+        else wrote = fileWrite(renameNewRelPath, copy2, (uint)renameOffset, activeStorage);
+        if (wrote == (uint)0)
+        {
+            failRenameCopy();
+            return;
+        }
+        renameOffset = renameOffset + 2;
+        dirty = 1;
+        return;
+    }
+
+    copyByte[0] = 0;
+    got = fileRead(renameOldPath, copyByte, (uint)renameOffset, activeStorage);
+    if (got == (uint)0) got = fileRead(renameOldRelPath, copyByte, (uint)renameOffset, activeStorage);
+    if (got != (uint)1)
+    {
+        failRenameCopy();
+        return;
+    }
+    if (renameNewUsesRel == 0) wrote = fileWrite(renameNewPath, copyByte, (uint)renameOffset, activeStorage);
+    else wrote = fileWrite(renameNewRelPath, copyByte, (uint)renameOffset, activeStorage);
+    if (wrote == (uint)0)
+    {
+        failRenameCopy();
+        return;
+    }
+    renameOffset = renameOffset + 1;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Input                                                                     */
+/* ------------------------------------------------------------------------- */
+
+/* Event-based input uses the firmware's normalized keyboard queue. */
+void initKeys()
+{
+    int i;
+    for (i = 0; i < 128; i = i + 1)
+    {
+        keyWas[i] = 0;
+        keyNextPulse[i] = 0;
+        keyCoolUntil[i] = 0;
+    }
+}
+
+void clearHits()
+{
+    hitUp = 0; hitDown = 0; hitOpen = 0; hitBack = 0;
+    hitDelete = 0; hitFile = 0; hitDir = 0; hitRefresh = 0;
+    hitRename = 0; hitStorage = 0; hitLeft = 0; hitRight = 0;
+    hitZoomIn = 0; hitZoomOut = 0; typedChar = 0;
+    hitAudioPause = 0; hitAudioStop = 0; hitAudioHome = 0; hitAudioEnd = 0;
+    hitPageUp = 0; hitPageDown = 0; hitCancel = 0;
+}
+
+void updateInput()
+{
+    uint eventKey = 0;
+    uint action = 0;
+    uint modifiers = 0;
+    uint character = 0;
+    int repeat;
+    clearHits();
+    inputNow = millis();
+    while (narm_next_key_event(&eventKey, &action, &modifiers, &character) > 0)
+    {
+        if (action != NARM_KEY_ACTION_PRESS && action != NARM_KEY_ACTION_REPEAT) continue;
+        if ((modifiers & (NARM_KEY_MOD_ALT | NARM_KEY_MOD_CONTROL)) != 0) continue;
+        repeat = action == NARM_KEY_ACTION_REPEAT;
+        if (mode == 2)
+        {
+            if (eventKey == NARM_KEY_ENTER && repeat == 0) hitOpen = 1;
+            else if (eventKey == NARM_KEY_BACKSPACE) hitBack = 1;
+            else if (eventKey == NARM_KEY_ESCAPE && repeat == 0) hitCancel = 1;
+            else if (character >= 32 && character <= 126 &&
+                     character != 47 && character != 92 && character != 58 &&
+                     character != 42 && character != 63 && character != 34 &&
+                     character != 60 && character != 62 && character != 124)
+                typedChar = (int)character;
+            else continue;
+            return;
+        }
+        if (eventKey == NARM_KEY_UP || eventKey == NARM_KEY_W) hitUp = 1;
+        else if (eventKey == NARM_KEY_DOWN || eventKey == NARM_KEY_S) hitDown = 1;
+        else if (eventKey == NARM_KEY_ENTER && repeat == 0) hitOpen = 1;
+        else if (eventKey == NARM_KEY_BACKSPACE || eventKey == NARM_KEY_ESCAPE) hitBack = 1;
+        else if (eventKey == NARM_KEY_LEFT || (mode == 4 && eventKey == NARM_KEY_A)) hitLeft = 1;
+        else if (eventKey == NARM_KEY_RIGHT || (mode == 4 && eventKey == NARM_KEY_D)) hitRight = 1;
+        else if (eventKey == NARM_KEY_I && mode == 4) hitZoomIn = 1;
+        else if (eventKey == NARM_KEY_K && mode == 4) hitZoomOut = 1;
+        else if (eventKey == 0x4b) hitPageUp = 1;
+        else if (eventKey == 0x4e) hitPageDown = 1;
+        else if (eventKey == NARM_KEY_SPACE && repeat == 0) hitAudioPause = 1;
+        else if (eventKey == NARM_KEY_P && repeat == 0) hitAudioStop = 1;
+        else if (eventKey == 0x4a && repeat == 0) hitAudioHome = 1;
+        else if (eventKey == 0x4d && repeat == 0) hitAudioEnd = 1;
+        else if (eventKey == NARM_KEY_F && repeat == 0) hitFile = 1;
+        else if (eventKey == NARM_KEY_D && repeat == 0) hitDir = 1;
+        else if (eventKey == NARM_KEY_E && repeat == 0) hitRename = 1;
+        else if ((eventKey == NARM_KEY_X || eventKey == 0x4c) && repeat == 0) hitDelete = 1;
+        else if (eventKey == NARM_KEY_R && repeat == 0) hitRefresh = 1;
+        else if ((eventKey == NARM_KEY_T || eventKey == NARM_KEY_TAB) && repeat == 0) hitStorage = 1;
+        else continue;
+        return;
+    }
+}
+
+void toggleStorage()
+{
+    if (activeStorage == (uint)0) activeStorage = (uint)1;
+    else activeStorage = (uint)0;
+
+    initRoot();
+    selectedIndex = 0;
+    scrollIndex = 0;
+    confirmDelete = 0;
+    statusCode = 21;
+    startRefresh();
+}
+
+void applyBrowserInput()
+{
+    int oldScroll;
+    int oldSelected;
+    int allowQuickMove;
+
+    /* Cache loading, focus changes, or another action may already require a
+       full repaint. A new key must not downgrade that pending invalidation. */
+    allowQuickMove = dirty == 0;
+    if (allowQuickMove == 0) quickMoveDirty = 0;
+    if (statusCode == 3 &&
+        (hitUp != 0 || hitDown != 0 || hitPageUp != 0 || hitPageDown != 0))
+        statusCode = 0;
+
+    if (hitPageUp != 0 || hitPageDown != 0)
+    {
+        oldScroll = scrollIndex;
+        if (hitPageUp != 0) selectedIndex = selectedIndex - VISIBLE_ROWS;
+        else selectedIndex = selectedIndex + VISIBLE_ROWS;
+        clampSelectionAndScroll();
+        selectedInfoDirty = 1;
+        confirmDelete = 0;
+        quickMoveDirty = 0;
+        requestVisibleCacheAfterScroll(oldScroll);
+        dirty = 1;
+    }
+
+    if (hitUp != 0)
+    {
+        oldSelected = selectedIndex;
+        oldScroll = scrollIndex;
+        if (selectedIndex > 0) selectedIndex = selectedIndex - 1;
+        clampSelectionAndScroll();
+        selectedInfoDirty = 1;
+        confirmDelete = 0;
+        if (scrollIndex != oldScroll)
+        {
+            quickMoveDirty = 0;
+            requestVisibleCacheAfterScroll(oldScroll);
+        }
+        else if (selectedIndex != oldSelected)
+        {
+            loadSelectedInfo();
+            if (selectedInfoDirty == 0 && allowQuickMove != 0)
+            {
+                quickOldSlot = oldSelected - scrollIndex;
+                quickNewSlot = selectedIndex - scrollIndex;
+                quickMoveDirty = 1;
+            }
+        }
+        dirty = 1;
+    }
+
+    if (hitDown != 0)
+    {
+        oldSelected = selectedIndex;
+        oldScroll = scrollIndex;
+        if (selectedIndex < entryCount - 1) selectedIndex = selectedIndex + 1;
+        else if (scanDone == 0)
+        {
+            if (entryCount > 0) selectedIndex = selectedIndex + 1;
+        }
+        clampSelectionAndScroll();
+        selectedInfoDirty = 1;
+        confirmDelete = 0;
+        if (scrollIndex != oldScroll)
+        {
+            quickMoveDirty = 0;
+            requestVisibleCacheAfterScroll(oldScroll);
+        }
+        else if (selectedIndex != oldSelected)
+        {
+            loadSelectedInfo();
+            if (selectedInfoDirty == 0 && allowQuickMove != 0)
+            {
+                quickOldSlot = oldSelected - scrollIndex;
+                quickNewSlot = selectedIndex - scrollIndex;
+                quickMoveDirty = 1;
+            }
+        }
+        dirty = 1;
+    }
+
+    if (hitOpen != 0) openSelected();
+    if (hitBack != 0)
+    {
+        goParent();
+        startRefresh();
+    }
+    if (hitFile != 0) startNameEdit(1);
+    if (hitDir != 0) startNameEdit(2);
+    if (hitRename != 0) startRenameEdit();
+    if (hitDelete != 0) deleteSelected();
+    if (hitStorage != 0) toggleStorage();
+
+    if (hitRefresh != 0)
+    {
+        mountActiveStorage();
+        confirmDelete = 0;
+        statusCode = 10;
+        startRefresh();
+    }
+}
+
+void applyFileViewInput()
+{
+    if (hitBack != 0)
+    {
+        mode = 0;
+        statusCode = 0;
+        selectedInfoDirty = 1;
+        dirty = 1;
+        return;
+    }
+
+    if (hitUp != 0 || hitPageUp != 0)
+    {
+        if (viewOffset >= 128) viewOffset = viewOffset - 128;
+        else viewOffset = 0;
+        startFilePageLoad();
+    }
+
+    if (hitDown != 0 || hitPageDown != 0)
+    {
+        if ((uint)(viewOffset + 128) < selectedSize)
+        {
+            viewOffset = viewOffset + 128;
+            startFilePageLoad();
+        }
+    }
+}
+
+void applyNameEditInput()
+{
+    int allowQuickEdit;
+    allowQuickEdit = dirty == 0;
+    if (allowQuickEdit == 0) nameEditQuickDirty = 0;
+    if (hitCancel != 0)
+    {
+        cancelNameEdit();
+        return;
+    }
+    if (typedChar != 0)
+    {
+        if (editLen < 47)
+        {
+            editName[editLen] = (char)typedChar;
+            editLen = editLen + 1;
+            editName[editLen] = 0;
+            if (allowQuickEdit != 0) nameEditQuickDirty = 1;
+            dirty = 1;
+        }
+    }
+
+    if (hitBack != 0)
+    {
+        if (editLen > 0)
+        {
+            editLen = editLen - 1;
+            editName[editLen] = 0;
+            if (allowQuickEdit != 0) nameEditQuickDirty = 1;
+            dirty = 1;
+        }
+        else
+        {
+            cancelNameEdit();
+        }
+        return;
+    }
+
+    if (hitOpen != 0)
+    {
+        finishNameEdit();
+        return;
+    }
+}
+
+void applyImageViewInput()
+{
+    int step;
+    int changed;
+
+    if (hitBack != 0)
+    {
+        deleteImageCacheTemp();
+        mode = 0;
+        statusCode = 0;
+        selectedInfoDirty = 1;
+        startRefresh();
+        dirty = 1;
+        return;
+    }
+
+    if (hitOpen != 0)
+    {
+        fitImageToScreen();
+        imageLookupValid = 0;
+        invalidateImageRowCaches();
+        dirty = 1;
+        return;
+    }
+
+    if (imageCacheReady == 0) return;
+    if (imageCacheError != 0) return;
+
+    step = (16 * 256) / imageScale;
+    if (step < 1) step = 1;
+
+    changed = 0;
+
+    if (hitUp != 0)
+    {
+        imageCenterY = imageCenterY - step;
+        changed = 1;
+    }
+    if (hitDown != 0)
+    {
+        imageCenterY = imageCenterY + step;
+        changed = 1;
+    }
+    if (hitLeft != 0)
+    {
+        imageCenterX = imageCenterX - step;
+        changed = 1;
+    }
+    if (hitRight != 0)
+    {
+        imageCenterX = imageCenterX + step;
+        changed = 1;
+    }
+    if (hitZoomIn != 0)
+    {
+        imageScale = (imageScale * 5) / 4;
+        if (imageScale < 2) imageScale = 2;
+        changed = 1;
+    }
+    if (hitZoomOut != 0)
+    {
+        imageScale = (imageScale * 4) / 5;
+        if (imageScale < 1) imageScale = 1;
+        changed = 1;
+    }
+
+    if (changed != 0)
+    {
+        clampImageView();
+        imageLookupValid = 0;
+        invalidateImageRowCaches();
+        dirty = 1;
+    }
+}
+
+void applyInput()
+{
+    if (mode != 2)
+    {
+        if (hitAudioPause != 0) toggleAudioPause();
+        if (hitAudioStop != 0) stopAudioPlayback();
+        if (hitAudioHome != 0) audioSeekTo(0);
+        if (hitAudioEnd != 0 && audioTotalFrames != 0) audioSeekTo(audioTotalFrames - 1);
+        if (mode != 4)
+        {
+            if (hitLeft != 0) seekAudioBy(-10);
+            if (hitRight != 0) seekAudioBy(10);
+        }
+    }
+    if (mode == 0) applyBrowserInput();
+    else if (mode == 1) applyFileViewInput();
+    else if (mode == 2) applyNameEditInput();
+    else if (mode == 4) applyImageViewInput();
+}
+
+/* ------------------------------------------------------------------------- */
+/* Rendering                                                                 */
+/* ------------------------------------------------------------------------- */
+
+#include "filemgr_ui.tch"
+
+/* System events are handled even while background music is playing. */
+int handleSystemEvents()
+{
+    int event = narm_poll_system_event();
+    while (event != NARM_EVENT_NONE)
+    {
+        if (event == NARM_EVENT_CLOSE_REQUESTED) return 0;
+        if (event == NARM_EVENT_FOCUS_GAINED)
+        {
+            dirty = 1;
+            quickMoveDirty = 0;
+            nameEditQuickDirty = 0;
+            audioPanelDirty = 1;
+            initKeys();
+        }
+        if (event == NARM_EVENT_MODE_CHANGED) dirty = 1;
+        event = narm_poll_system_event();
+    }
+    return 1;
+}
+
+void main()
+{
+    initImagePalette();
+    initRoot();
+    initKeys();
+    selectedIndex = 0;
+    scrollIndex = 0;
+    mode = 0;
+    statusCode = 0;
+    mountActiveStorage();
+    startRefresh();
+    while (handleSystemEvents() != 0)
+    {
+        serviceAudio();
+        if (narm_has_focus() == 0)
+        {
+            narm_sleep_ms(40);
+            continue;
+        }
+        updateInput();
+        applyInput();
+        render();
+        serviceImageCacheBuild();
+        serviceFileViewLoad();
+        serviceFileRenameCopy();
+        serviceSd();
+        narm_sleep_ms(2);
+    }
+    stopAudioPlayback();
+    deleteImageCacheTemp();
+}

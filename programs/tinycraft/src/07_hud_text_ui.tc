@@ -1,0 +1,1587 @@
+void drawDigit(int x, int y, int d, uint color)
+{
+    if ((d >= 0) && (d <= 9))
+    {
+        font_offset = (d + 48) * 2;
+        putFont(x, y, 6, 8, &ui_font6x8[font_offset], color);
+        return;
+    }
+
+    /* Legacy vector fallback for invalid digit values. */
+    if (d == 0)
+    {
+        drawLine(x + 1, y, x + 3, y, color);
+        drawLine(x, y + 1, x, y + 5, color);
+        drawLine(x + 4, y + 1, x + 4, y + 5, color);
+        drawLine(x + 1, y + 6, x + 3, y + 6, color);
+    }
+    else if (d == 1)
+    {
+        drawLine(x + 2, y, x + 2, y + 6, color);
+        drawLine(x + 1, y + 1, x + 2, y, color);
+        drawLine(x + 1, y + 6, x + 3, y + 6, color);
+    }
+    else if (d == 2)
+    {
+        drawLine(x + 1, y, x + 3, y, color);
+        drawLine(x + 4, y + 1, x + 4, y + 2, color);
+        drawLine(x + 1, y + 3, x + 3, y + 3, color);
+        drawLine(x, y + 4, x, y + 5, color);
+        drawLine(x, y + 6, x + 4, y + 6, color);
+    }
+    else if (d == 3)
+    {
+        drawLine(x + 1, y, x + 3, y, color);
+        drawLine(x + 4, y + 1, x + 4, y + 5, color);
+        drawLine(x + 1, y + 3, x + 3, y + 3, color);
+        drawLine(x + 1, y + 6, x + 3, y + 6, color);
+    }
+    else if (d == 4)
+    {
+        drawLine(x, y, x, y + 3, color);
+        drawLine(x + 4, y, x + 4, y + 6, color);
+        drawLine(x + 1, y + 3, x + 3, y + 3, color);
+    }
+    else if (d == 5)
+    {
+        drawLine(x, y, x + 4, y, color);
+        drawLine(x, y + 1, x, y + 2, color);
+        drawLine(x + 1, y + 3, x + 3, y + 3, color);
+        drawLine(x + 4, y + 4, x + 4, y + 5, color);
+        drawLine(x, y + 6, x + 3, y + 6, color);
+    }
+    else if (d == 6)
+    {
+        drawLine(x + 1, y, x + 4, y, color);
+        drawLine(x, y + 1, x, y + 5, color);
+        drawLine(x + 1, y + 3, x + 3, y + 3, color);
+        drawLine(x + 4, y + 4, x + 4, y + 5, color);
+        drawLine(x + 1, y + 6, x + 3, y + 6, color);
+    }
+    else if (d == 7)
+    {
+        drawLine(x, y, x + 4, y, color);
+        drawLine(x + 4, y + 1, x + 2, y + 6, color);
+    }
+    else if (d == 8)
+    {
+        drawLine(x + 1, y, x + 3, y, color);
+        drawLine(x, y + 1, x, y + 5, color);
+        drawLine(x + 4, y + 1, x + 4, y + 5, color);
+        drawLine(x + 1, y + 3, x + 3, y + 3, color);
+        drawLine(x + 1, y + 6, x + 3, y + 6, color);
+    }
+    else if (d == 9)
+    {
+        drawLine(x + 1, y, x + 3, y, color);
+        drawLine(x, y + 1, x, y + 2, color);
+        drawLine(x + 4, y + 1, x + 4, y + 5, color);
+        drawLine(x + 1, y + 3, x + 3, y + 3, color);
+        drawLine(x, y + 6, x + 3, y + 6, color);
+    }
+}
+
+void drawNumberAt(int x, int y, int n, uint color)
+{
+    if (n <= 0) return;
+    if (n > 999) n = 999;
+
+    number_x = x;
+    number_value = n;
+    number_digits_started = 0;
+
+    digit_value = number_value / 100;
+    if (digit_value > 0)
+    {
+        number_x = number_x + drawSmallCharAt(number_x, y, digit_value + 48, color);
+        number_digits_started = 1;
+    }
+
+    number_value = number_value % 100;
+    digit_value = number_value / 10;
+    if ((digit_value > 0) || (number_digits_started != 0))
+    {
+        number_x = number_x + drawSmallCharAt(number_x, y, digit_value + 48, color);
+    }
+
+    digit_value = number_value % 10;
+    drawSmallCharAt(number_x, y, digit_value + 48, color);
+}
+
+void drawUIntAt(int x, int y, uint n, uint color)
+{
+    if (n > (uint)999999) n = (uint)999999;
+
+    number_x = x;
+    number_u_value = n;
+    number_u_div = (uint)100000;
+    number_digits_started = 0;
+
+    while (number_u_div > (uint)0)
+    {
+        number_u_digit = number_u_value / number_u_div;
+        if ((number_u_digit > (uint)0) || (number_digits_started != 0) || (number_u_div == (uint)1))
+        {
+            number_x = number_x + drawSmallCharAt(number_x, y, (int)number_u_digit + 48, color);
+            number_digits_started = 1;
+        }
+        number_u_value = number_u_value - (number_u_digit * number_u_div);
+        number_u_div = number_u_div / (uint)10;
+    }
+}
+
+void updateFPSCounter()
+{
+    fps_now = millis();
+    if (fps_last_ms == (uint)0)
+    {
+        fps_last_ms = fps_now;
+        fps_frame_count = 0;
+        fps_value = 0;
+        return;
+    }
+
+    fps_frame_count = fps_frame_count + 1;
+    fps_elapsed = fps_now - fps_last_ms;
+    if (fps_elapsed >= (uint)1000)
+    {
+        fps_value = (int)(((uint)fps_frame_count * (uint)1000) / fps_elapsed);
+        fps_frame_count = 0;
+        fps_last_ms = fps_now;
+    }
+}
+
+
+int drawSmallGlyph(int x, int y, int ch, uint color)
+{
+    if ((ch >= 0) && (ch <= 255))
+    {
+        font_offset = ch * 2;
+        font_left = ui_font_left[ch];
+        font_advance = ui_font_advance[ch];
+        if (font_advance > 0) putFont(x - font_left, y, 6, 8, &ui_font6x8[font_offset], color);
+        return font_advance;
+    }
+
+    /* Legacy vector fallback for non-ASCII values. */
+    if (ch == 65) { drawLine(x+1,y,x+3,y,color); drawLine(x,y+1,x,y+6,color); drawLine(x+4,y+1,x+4,y+6,color); drawLine(x+1,y+3,x+3,y+3,color); }
+    else if (ch == 66) { drawLine(x,y,x,y+6,color); drawLine(x+1,y,x+3,y,color); drawLine(x+1,y+3,x+3,y+3,color); drawLine(x+1,y+6,x+3,y+6,color); drawLine(x+4,y+1,x+4,y+2,color); drawLine(x+4,y+4,x+4,y+5,color); }
+    else if (ch == 67) { drawLine(x+1,y,x+4,y,color); drawLine(x,y+1,x,y+5,color); drawLine(x+1,y+6,x+4,y+6,color); }
+    else if (ch == 68) { drawLine(x,y,x,y+6,color); drawLine(x+1,y,x+3,y,color); drawLine(x+4,y+1,x+4,y+5,color); drawLine(x+1,y+6,x+3,y+6,color); }
+    else if (ch == 69) { drawLine(x,y,x,y+6,color); drawLine(x+1,y,x+4,y,color); drawLine(x+1,y+3,x+3,y+3,color); drawLine(x+1,y+6,x+4,y+6,color); }
+    else if (ch == 70) { drawLine(x,y,x,y+6,color); drawLine(x+1,y,x+4,y,color); drawLine(x+1,y+3,x+3,y+3,color); }
+    else if (ch == 71) { drawLine(x+1,y,x+4,y,color); drawLine(x,y+1,x,y+5,color); drawLine(x+1,y+6,x+4,y+6,color); drawLine(x+2,y+3,x+4,y+3,color); drawLine(x+4,y+3,x+4,y+5,color); }
+    else if (ch == 72) { drawLine(x,y,x,y+6,color); drawLine(x+4,y,x+4,y+6,color); drawLine(x+1,y+3,x+3,y+3,color); }
+    else if (ch == 73) { drawLine(x,y,x+4,y,color); drawLine(x+2,y,x+2,y+6,color); drawLine(x,y+6,x+4,y+6,color); }
+    else if (ch == 75) { drawLine(x,y,x,y+6,color); drawLine(x+4,y,x+1,y+3,color); drawLine(x+1,y+3,x+4,y+6,color); }
+    else if (ch == 76) { drawLine(x,y,x,y+6,color); drawLine(x+1,y+6,x+4,y+6,color); }
+    else if (ch == 77) { drawLine(x,y,x,y+6,color); drawLine(x+4,y,x+4,y+6,color); drawLine(x+1,y+1,x+2,y+3,color); drawLine(x+3,y+1,x+2,y+3,color); }
+    else if (ch == 78) { drawLine(x,y,x,y+6,color); drawLine(x+4,y,x+4,y+6,color); drawLine(x+1,y+1,x+3,y+5,color); }
+    else if (ch == 79) { drawLine(x+1,y,x+3,y,color); drawLine(x,y+1,x,y+5,color); drawLine(x+4,y+1,x+4,y+5,color); drawLine(x+1,y+6,x+3,y+6,color); }
+    else if (ch == 80) { drawLine(x,y,x,y+6,color); drawLine(x+1,y,x+3,y,color); drawLine(x+4,y+1,x+4,y+2,color); drawLine(x+1,y+3,x+3,y+3,color); }
+    else if (ch == 81) { drawLine(x+1,y,x+3,y,color); drawLine(x,y+1,x,y+5,color); drawLine(x+4,y+1,x+4,y+5,color); drawLine(x+1,y+6,x+3,y+6,color); drawLine(x+3,y+5,x+4,y+6,color); }
+    else if (ch == 82) { drawLine(x,y,x,y+6,color); drawLine(x+1,y,x+3,y,color); drawLine(x+4,y+1,x+4,y+2,color); drawLine(x+1,y+3,x+3,y+3,color); drawLine(x+2,y+4,x+4,y+6,color); }
+    else if (ch == 83) { drawLine(x+1,y,x+4,y,color); drawLine(x,y+1,x,y+2,color); drawLine(x+1,y+3,x+3,y+3,color); drawLine(x+4,y+4,x+4,y+5,color); drawLine(x,y+6,x+3,y+6,color); }
+    else if (ch == 84) { drawLine(x,y,x+4,y,color); drawLine(x+2,y,x+2,y+6,color); }
+    else if (ch == 85) { drawLine(x,y,x,y+5,color); drawLine(x+4,y,x+4,y+5,color); drawLine(x+1,y+6,x+3,y+6,color); }
+    else if (ch == 86) { drawLine(x,y,x,y+4,color); drawLine(x+4,y,x+4,y+4,color); drawLine(x+1,y+5,x+2,y+6,color); drawLine(x+3,y+5,x+2,y+6,color); }
+    else if (ch == 87) { drawLine(x,y,x,y+6,color); drawLine(x+4,y,x+4,y+6,color); drawLine(x+2,y+4,x+2,y+6,color); }
+    else if (ch == 88) { drawLine(x,y,x+4,y+6,color); drawLine(x+4,y,x,y+6,color); }
+    else if (ch == 89) { drawLine(x,y,x+2,y+3,color); drawLine(x+4,y,x+2,y+3,color); drawLine(x+2,y+3,x+2,y+6,color); }
+    else if (ch == 90) { drawLine(x,y,x+4,y,color); drawLine(x+4,y,x,y+6,color); drawLine(x,y+6,x+4,y+6,color); }
+    return 6;
+}
+
+
+void drawHeartIcon(int x, int y, int half_state)
+{
+    drawLine(x + 1, y, x + 2, y, (uint)0);
+    drawLine(x + 5, y, x + 6, y, (uint)0);
+    drawLine(x, y + 1, x + 7, y + 1, (uint)0);
+    drawLine(x, y + 2, x + 7, y + 2, (uint)0);
+    drawLine(x + 1, y + 3, x + 6, y + 3, (uint)0);
+    drawLine(x + 2, y + 4, x + 5, y + 4, (uint)0);
+    drawLine(x + 3, y + 5, x + 4, y + 5, (uint)0);
+
+    if (half_state >= 1)
+    {
+        fillRect2D(x + 1, y + 1, x + 3, y + 3, (uint)224);
+        drawLine(x + 3, y + 4, x + 3, y + 5, (uint)224);
+    }
+    if (half_state >= 2)
+    {
+        fillRect2D(x + 4, y + 1, x + 6, y + 3, (uint)224);
+        drawLine(x + 4, y + 4, x + 4, y + 5, (uint)224);
+    }
+}
+
+void drawHealthHud()
+{
+    heart_i = 0;
+    while (heart_i < 10)
+    {
+        heart_half = heart_i * 2;
+        heart_x = 61 + heart_i * 10;
+        heart_y = 204;
+        heart_state = 0;
+        if (player_health > heart_half) heart_state = 1;
+        if (player_health > (heart_half + 1)) heart_state = 2;
+        drawHeartIcon(heart_x, heart_y, heart_state);
+        heart_i = heart_i + 1;
+    }
+}
+
+void drawDeathTitle(int x, int y, uint color)
+{
+    x = x + drawSmallGlyph(x, y, 89, color);
+    x = x + drawSmallGlyph(x, y, 79, color);
+    x = x + drawSmallGlyph(x, y, 85, color); x = x + drawSmallCharAt(x, y, 32, color);
+    x = x + drawSmallGlyph(x, y, 68, color);
+    x = x + drawSmallGlyph(x, y, 73, color);
+    x = x + drawSmallGlyph(x, y, 69, color);
+    drawSmallGlyph(x, y, 68, color);
+}
+
+void drawRespawnWord(int x, int y, uint color)
+{
+    x = x + drawSmallGlyph(x, y, 82, color);
+    x = x + drawSmallGlyph(x, y, 69, color);
+    x = x + drawSmallGlyph(x, y, 83, color);
+    x = x + drawSmallGlyph(x, y, 80, color);
+    x = x + drawSmallGlyph(x, y, 65, color);
+    x = x + drawSmallGlyph(x, y, 87, color);
+    drawSmallGlyph(x, y, 78, color);
+}
+
+void drawDeathButton(int x0, int y0, int x1, int y1, int kind)
+{
+    menu_color = (uint)73;
+    if (cursorInRect(x0, y0, x1, y1) != 0) menu_color = (uint)109;
+    fillRect2D(x0, y0, x1, y1, menu_color);
+    drawLine(x0, y0, x1, y0, (uint)255);
+    drawLine(x0, y1, x1, y1, (uint)37);
+    if (kind == 0) drawRespawnWord(x0 + 36, y0 + 8, (uint)255);
+    else drawLabelText(x0 + 32, y0 + 8, 9, (uint)255);
+}
+
+void drawDeathScreen()
+{
+    clearBuffer((uint)0);
+    ui_cursor_ix = (int)ui_cursor_x;
+    ui_cursor_iy = (int)ui_cursor_y;
+    fillRect2D(44, 42, 276, 196, (uint)36);
+    fillRect2D(48, 46, 272, 192, (uint)73);
+    drawDeathTitle(136, 70, (uint)224);
+    drawDeathButton(92, 112, 228, 136, 0);
+    drawDeathButton(92, 150, 228, 174, 1);
+    drawUICursor();
+}
+
+void updateDeathScreenControls()
+{
+    up_now = millis();
+    if (last_ms == (uint)0) last_ms = up_now;
+    up_dt = up_now - last_ms;
+    last_ms = up_now;
+    if (up_dt > (uint)50) up_dt = (uint)50;
+    up_dtf = (float)up_dt;
+    ui_cursor_speed = up_dtf * 0.22f * cursor_sensitivity;
+
+    key(0x43, key_data, key_pressed);
+    if (key_pressed != 0) ui_cursor_y = ui_cursor_y - ui_cursor_speed;
+    key(0x42, key_data, key_pressed);
+    if (key_pressed != 0) ui_cursor_y = ui_cursor_y + ui_cursor_speed;
+    key(0x3B, key_data, key_pressed);
+    if (key_pressed != 0) ui_cursor_x = ui_cursor_x - ui_cursor_speed;
+    key(0x4B, key_data, key_pressed);
+    if (key_pressed != 0) ui_cursor_x = ui_cursor_x + ui_cursor_speed;
+    if (ui_cursor_x < 0.0f) ui_cursor_x = 0.0f;
+    if (ui_cursor_x > 319.0f) ui_cursor_x = 319.0f;
+    if (ui_cursor_y < 0.0f) ui_cursor_y = 0.0f;
+    if (ui_cursor_y > 239.0f) ui_cursor_y = 239.0f;
+    ui_cursor_ix = (int)ui_cursor_x;
+    ui_cursor_iy = (int)ui_cursor_y;
+
+    key(0x1C, key_data, key_pressed);
+    if (key_pressed != 0)
+    {
+        if (old_death_click == 0)
+        {
+            if (cursorInRect(92, 112, 228, 136) != 0)
+            {
+                respawnPlayerAtWorldSpawn();
+            }
+            else if (cursorInRect(92, 150, 228, 174) != 0)
+            {
+                saveCurrentWorld();
+                player_dead = 0;
+                menu_open = 0;
+                inventory_open = 0;
+                crafting_table_mode = 0;
+                app_state = 0;
+                ui_cursor_x = 160.0f;
+                ui_cursor_y = 87.0f;
+                refreshWorldList();
+                last_ms = millis();
+            }
+        }
+        old_death_click = 1;
+    }
+    else old_death_click = 0;
+}
+
+void drawFPSOverlay()
+{
+    fillRect2D(2, 2, 58, 17, (uint)0);
+    drawSmallGlyph(6, 6, 70, (uint)255);
+    drawSmallGlyph(12, 6, 80, (uint)255);
+    drawSmallGlyph(18, 6, 83, (uint)255);
+    drawUIntAt(36, 6, (uint)fps_value, (uint)255);
+}
+
+void drawIntAt(int x, int y, int n, uint color)
+{
+    if (n < 0)
+    {
+        drawLine(x, y + 3, x + 4, y + 3, color);
+        drawUIntAt(x + 6, y, (uint)(0 - n), color);
+        return;
+    }
+    drawUIntAt(x, y, (uint)n, color);
+}
+
+void drawCoordinateOverlay()
+{
+    debug_coord_x = world_origin_x + floorFloatToInt(player_x);
+    debug_coord_y = floorFloatToInt(player_foot_y);
+    debug_coord_z = world_origin_z + floorFloatToInt(player_z);
+
+    clouds_now = millis();
+    if ((debug_light_cache_valid == 0) || (debug_coord_x != debug_light_cache_x) || (debug_coord_y != debug_light_cache_y) || (debug_coord_z != debug_light_cache_z) || ((clouds_now - debug_light_last_ms) > (uint)250))
+    {
+        debug_light_raw_sky = rawSkyLightAtAbs(debug_coord_x, debug_coord_y, debug_coord_z);
+        debug_light_block = blockLightAtAbs(debug_coord_x, debug_coord_y, debug_coord_z);
+        debug_light_cache_x = debug_coord_x;
+        debug_light_cache_y = debug_coord_y;
+        debug_light_cache_z = debug_coord_z;
+        debug_light_last_ms = clouds_now;
+        debug_light_cache_valid = 1;
+    }
+
+    debug_light_darkening = skyDarkeningValueForTime();
+    debug_light_sky = debug_light_raw_sky - debug_light_darkening;
+    if (debug_light_sky < 0) debug_light_sky = 0;
+    debug_light_total = debug_light_sky;
+    if (debug_light_block > debug_light_total) debug_light_total = debug_light_block;
+
+    fillRect2D(2, 2, 126, 78, (uint)0);
+
+    drawSmallGlyph(6, 6, 70, (uint)255);
+    drawSmallGlyph(12, 6, 80, (uint)255);
+    drawSmallGlyph(18, 6, 83, (uint)255);
+    drawUIntAt(36, 6, (uint)fps_value, (uint)255);
+
+    drawSmallGlyph(6, 17, 88, (uint)255);
+    drawIntAt(18, 17, debug_coord_x, (uint)255);
+
+    drawSmallGlyph(6, 27, 89, (uint)255);
+    drawIntAt(18, 27, debug_coord_y, (uint)255);
+
+    drawSmallGlyph(6, 37, 90, (uint)255);
+    drawIntAt(18, 37, debug_coord_z, (uint)255);
+
+    drawSmallGlyph(6, 48, 76, (uint)255);     /* L = max(effective sky, block) */
+    drawIntAt(18, 48, debug_light_total, (uint)255);
+
+    drawSmallGlyph(6, 58, 83, (uint)255);     /* S = effective sky */
+    drawIntAt(18, 58, debug_light_sky, (uint)255);
+    drawSmallGlyph(54, 58, 66, (uint)255);    /* B = block light */
+    drawIntAt(66, 58, debug_light_block, (uint)255);
+
+    drawSmallGlyph(6, 68, 68, (uint)255);     /* D = night darkening filter */
+    drawIntAt(18, 68, debug_light_darkening, (uint)255);
+    drawSmallGlyph(54, 68, 82, (uint)255);    /* R = raw/technical sky */
+    drawIntAt(66, 68, debug_light_raw_sky, (uint)255);
+}
+
+void drawStreamingStatsOverlay()
+{
+    fillRect2D(2, 2, 112, 86, (uint)0);
+
+    drawSmallGlyph(6, 6, 77, (uint)255);       /* M: visible missing */
+    drawUIntAt(24, 6, (uint)render_visible_missing_count, (uint)255);
+    drawSmallGlyph(58, 6, 86, (uint)255);      /* V: visible required */
+    drawUIntAt(76, 6, (uint)render_visible_required_count, (uint)255);
+
+    drawSmallGlyph(6, 15, 81, (uint)255);      /* Q: dirty queue */
+    drawUIntAt(24, 15, (uint)render_dirty_chunk_count, (uint)255);
+    drawSmallGlyph(58, 15, 66, (uint)255);     /* B: completed builds */
+    drawUIntAt(76, 15, (uint)render_stream_build_count, (uint)255);
+
+    drawSmallGlyph(6, 24, 85, (uint)255);      /* U: mesh slots used */
+    drawUIntAt(24, 24, (uint)render_mesh_count, (uint)255);
+    drawSmallGlyph(58, 24, 68, (uint)255);     /* D: dead slots */
+    drawUIntAt(76, 24, (uint)render_dead_mesh_count, (uint)255);
+
+    drawSmallGlyph(6, 33, 65, (uint)255);      /* A: allocation failures */
+    drawUIntAt(24, 33, (uint)render_mesh_allocation_failures, (uint)255);
+    drawSmallGlyph(58, 33, 73, (uint)255);     /* I: incomplete builds */
+    drawUIntAt(76, 33, (uint)render_mesh_incomplete_builds, (uint)255);
+
+    drawSmallGlyph(6, 42, 84, (uint)255);      /* T: last build milliseconds */
+    drawUIntAt(24, 42, (uint)render_stream_last_build_duration_ms, (uint)255);
+    drawSmallGlyph(58, 42, 70, (uint)255);     /* F: forced low-FPS builds */
+    drawUIntAt(76, 42, (uint)render_stream_forced_build_count, (uint)255);
+
+    drawSmallGlyph(6, 51, 82, (uint)255);      /* R: full resets */
+    drawUIntAt(24, 51, (uint)render_cache_reset_count, (uint)255);
+    drawSmallGlyph(58, 51, 83, (uint)255);     /* S: rolling shifts */
+    drawUIntAt(76, 51, (uint)render_cache_shift_count, (uint)255);
+
+    drawSmallGlyph(6, 60, 80, (uint)255);      /* P: preserved sections */
+    drawUIntAt(24, 60, (uint)render_shift_preserved_sections, (uint)255);
+    drawSmallGlyph(58, 60, 72, (uint)255);     /* H: column-cache hits */
+    drawUIntAt(76, 60, (uint)render_column_cache_hits, (uint)255);
+
+    drawSmallGlyph(6, 69, 67, (uint)255);      /* C: column-cache misses */
+    drawUIntAt(24, 69, (uint)render_column_cache_misses, (uint)255);
+    drawSmallGlyph(58, 69, 70, (uint)255);     /* F: FPS */
+    drawUIntAt(76, 69, (uint)fps_value, (uint)255);
+}
+
+void drawRenderStatsOverlay()
+{
+    if (render_stats_enabled == 0)
+    {
+        drawFPSOverlay();
+        return;
+    }
+    if (render_stats_enabled == 1)
+    {
+        drawCoordinateOverlay();
+        return;
+    }
+    if (render_stats_enabled == 3)
+    {
+        drawStreamingStatsOverlay();
+        return;
+    }
+
+    rs_quads = renderStat((uint)8);
+    rs_tris = renderStat((uint)2);
+    rs_tested = renderStat((uint)3);
+    rs_written = renderStat((uint)4);
+    rs_rejected = renderStat((uint)5);
+    rs_fast_empty = renderStat((uint)6);
+    rs_fast_current = renderStat((uint)7);
+
+    fillRect2D(2, 2, 76, 76, (uint)0);
+
+    drawSmallGlyph(6, 6, 81, (uint)255);
+    drawUIntAt(24, 6, rs_quads, (uint)255);
+
+    drawSmallGlyph(6, 15, 84, (uint)255);
+    drawSmallGlyph(12, 15, 82, (uint)255);
+    drawUIntAt(24, 15, rs_tris, (uint)255);
+
+    drawSmallGlyph(6, 24, 80, (uint)255);
+    drawSmallGlyph(12, 24, 84, (uint)255);
+    drawUIntAt(24, 24, rs_tested, (uint)255);
+
+    drawSmallGlyph(6, 33, 80, (uint)255);
+    drawSmallGlyph(12, 33, 87, (uint)255);
+    drawUIntAt(24, 33, rs_written, (uint)255);
+
+    drawSmallGlyph(6, 42, 90, (uint)255);
+    drawSmallGlyph(12, 42, 82, (uint)255);
+    drawUIntAt(24, 42, rs_rejected, (uint)255);
+
+    drawSmallGlyph(6, 51, 85, (uint)255);
+    drawDigit(12, 51, 0, (uint)255);
+    drawUIntAt(24, 51, rs_fast_empty, (uint)255);
+
+    drawSmallGlyph(6, 60, 67, (uint)255);
+    drawSmallGlyph(12, 60, 70, (uint)255);
+    drawUIntAt(24, 60, rs_fast_current, (uint)255);
+
+    drawSmallGlyph(6, 69, 70, (uint)255);
+    drawSmallGlyph(12, 69, 80, (uint)255);
+    drawSmallGlyph(18, 69, 83, (uint)255);
+    drawUIntAt(36, 69, (uint)fps_value, (uint)255);
+
+}
+
+void processStatsToggleKey()
+{
+    key(0x2C, key_data, key_pressed);  /* T: debug overlay/menu toggle */
+    if (key_pressed != 0)
+    {
+        if (old_stats_key == 0)
+        {
+            render_stats_enabled = render_stats_enabled + 1;
+            if (render_stats_enabled > 3) render_stats_enabled = 0;
+
+            if (render_stats_enabled == 2) renderStats((uint)1);
+            else renderStats((uint)0);
+        }
+        old_stats_key = 1;
+    }
+    else
+    {
+        old_stats_key = 0;
+    }
+}
+
+int drawSmallCharAt(int x, int y, int ch, uint color)
+{
+    return drawSmallGlyph(x, y, ch, color);
+}
+
+void drawNameBuffer(char *buf, int len, int x, int y, uint color)
+{
+    int i;
+    text_x = x;
+    i = 0;
+    while ((i < len) && (buf[i] != 0))
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, (int)buf[i], color);
+        i = i + 1;
+    }
+}
+
+void drawStoredWorldName(int slot, int x, int y, uint color)
+{
+    int base;
+    int i;
+    base = slot * 16;
+    text_x = x;
+    i = 0;
+    while ((i < 15) && (world_names[base + i] != 0))
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, (int)world_names[base + i], color);
+        i = i + 1;
+    }
+}
+
+void drawLabelText(int x, int y, int label, uint color)
+{
+    text_x = x;
+    if (label == 0)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 80, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 76, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 89, color);
+    }
+    else if (label == 1)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 84, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 84, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 73, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 78, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 71, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, color);
+    }
+    else if (label == 2)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 82, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 67, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 73, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 80, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, color);
+    }
+    else if (label == 3)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 88, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 73, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 84, color);
+    }
+    else if (label == 4)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 87, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 82, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 76, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 68, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, color);
+    }
+    else if (label == 5)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 67, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 82, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 84, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+    }
+    else if (label == 6)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 68, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 76, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 84, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+    }
+    else if (label == 7)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 66, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 67, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 75, color);
+    }
+    else if (label == 8)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 76, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 68, color);
+    }
+    else if (label == 9)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 86, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 32, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 88, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 73, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 84, color);
+    }
+    else if (label == 10)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 78, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 77, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+    }
+    else if (label == 11)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 78, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 87, color);
+    }
+    else if (label == 12)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 67, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 76, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 85, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 68, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, color);
+    }
+    else if (label == 13)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 78, color);
+    }
+    else if (label == 14)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 70, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 70, color);
+    }
+    else if (label == 15)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 85, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 84, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 86, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+    }
+    else if (label == 16)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 67, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 78, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 70, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 73, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 71, color);
+    }
+    else if (label == 17)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 86, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+    }
+    else if (label == 18)
+    {
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 80, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 80, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 76, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 89, color);
+        text_x = text_x + 3;
+        drawLine(text_x + 2, y + 1, text_x + 2, y + 5, color);
+        drawLine(text_x, y + 3, text_x + 4, y + 3, color);
+        drawLine(text_x, y + 1, text_x + 4, y + 5, color);
+        text_x = text_x + 8;
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 86, color);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, color);
+    }
+}
+
+int cursorInRect(int x0, int y0, int x1, int y1)
+{
+    if (ui_cursor_ix < x0) return 0;
+    if (ui_cursor_ix > x1) return 0;
+    if (ui_cursor_iy < y0) return 0;
+    if (ui_cursor_iy > y1) return 0;
+    return 1;
+}
+
+void drawUIButton(int x0, int y0, int x1, int y1, int label, int text_x)
+{
+    menu_color = (uint)109;
+    if (cursorInRect(x0, y0, x1, y1) != 0) menu_color = (uint)146;
+    fillRect2D(x0, y0, x1, y1, menu_color);
+    drawLine(x0, y0, x1, y0, (uint)255);
+    drawLine(x0, y1, x1, y1, (uint)37);
+    drawLabelText(text_x, y0 + 7, label, (uint)255);
+}
+
+void drawToggleValue(int x0, int y0, int x1, int y1, int value)
+{
+    menu_color = (uint)109;
+    if (cursorInRect(x0, y0, x1, y1) != 0) menu_color = (uint)146;
+    fillRect2D(x0, y0, x1, y1, menu_color);
+    drawLine(x0, y0, x1, y0, (uint)255);
+    drawLine(x0, y1, x1, y1, (uint)37);
+    if (value != 0) drawLabelText(x0 + 21, y0 + 7, 13, (uint)255);
+    else drawLabelText(x0 + 18, y0 + 7, 14, (uint)255);
+}
+
+void drawWordWood(int x, int y, uint color)
+{ drawSmallGlyph(x,y,87,color); drawSmallGlyph(x+6,y,79,color); drawSmallGlyph(x+12,y,79,color); drawSmallGlyph(x+18,y,68,color); }
+void drawWordDirt(int x, int y, uint color)
+{ drawSmallGlyph(x,y,68,color); drawSmallGlyph(x+6,y,73,color); drawSmallGlyph(x+12,y,82,color); drawSmallGlyph(x+18,y,84,color); }
+void drawWordStone(int x, int y, uint color)
+{ drawSmallGlyph(x,y,83,color); drawSmallGlyph(x+6,y,84,color); drawSmallGlyph(x+12,y,79,color); drawSmallGlyph(x+18,y,78,color); drawSmallGlyph(x+24,y,69,color); }
+void drawWordLeaves(int x, int y, uint color)
+{ drawSmallGlyph(x,y,76,color); drawSmallGlyph(x+6,y,69,color); drawSmallGlyph(x+12,y,65,color); drawSmallGlyph(x+18,y,86,color); drawSmallGlyph(x+24,y,69,color); drawSmallGlyph(x+30,y,83,color); }
+void drawWordOak(int x, int y, uint color)
+{ drawSmallGlyph(x,y,79,color); drawSmallGlyph(x+6,y,65,color); drawSmallGlyph(x+12,y,75,color); }
+void drawWordPlanks(int x, int y, uint color)
+{ drawSmallGlyph(x,y,80,color); drawSmallGlyph(x+6,y,76,color); drawSmallGlyph(x+12,y,65,color); drawSmallGlyph(x+18,y,78,color); drawSmallGlyph(x+24,y,75,color); drawSmallGlyph(x+30,y,83,color); }
+void drawWordCrafting(int x, int y, uint color)
+{ drawSmallGlyph(x,y,67,color); drawSmallGlyph(x+6,y,82,color); drawSmallGlyph(x+12,y,65,color); drawSmallGlyph(x+18,y,70,color); drawSmallGlyph(x+24,y,84,color); drawSmallGlyph(x+30,y,73,color); drawSmallGlyph(x+36,y,78,color); drawSmallGlyph(x+42,y,71,color); }
+void drawWordTable(int x, int y, uint color)
+{ drawSmallGlyph(x,y,84,color); drawSmallGlyph(x+6,y,65,color); drawSmallGlyph(x+12,y,66,color); drawSmallGlyph(x+18,y,76,color); drawSmallGlyph(x+24,y,69,color); }
+void drawWordStick(int x, int y, uint color)
+{ drawSmallGlyph(x,y,83,color); drawSmallGlyph(x+6,y,84,color); drawSmallGlyph(x+12,y,73,color); drawSmallGlyph(x+18,y,67,color); drawSmallGlyph(x+24,y,75,color); }
+void drawWordWooden(int x, int y, uint color)
+{ drawSmallGlyph(x,y,87,color); drawSmallGlyph(x+6,y,79,color); drawSmallGlyph(x+12,y,79,color); drawSmallGlyph(x+18,y,68,color); drawSmallGlyph(x+24,y,69,color); drawSmallGlyph(x+30,y,78,color); }
+void drawWordPickaxe(int x, int y, uint color)
+{ drawSmallGlyph(x,y,80,color); drawSmallGlyph(x+6,y,73,color); drawSmallGlyph(x+12,y,67,color); drawSmallGlyph(x+18,y,75,color); drawSmallGlyph(x+24,y,65,color); drawSmallGlyph(x+30,y,88,color); drawSmallGlyph(x+36,y,69,color); }
+void drawWordSword(int x, int y, uint color)
+{ drawSmallGlyph(x,y,83,color); drawSmallGlyph(x+6,y,87,color); drawSmallGlyph(x+12,y,79,color); drawSmallGlyph(x+18,y,82,color); drawSmallGlyph(x+24,y,68,color); }
+void drawWordShovel(int x, int y, uint color)
+{ drawSmallGlyph(x,y,83,color); drawSmallGlyph(x+6,y,72,color); drawSmallGlyph(x+12,y,79,color); drawSmallGlyph(x+18,y,86,color); drawSmallGlyph(x+24,y,69,color); drawSmallGlyph(x+30,y,76,color); }
+void drawWordAxe(int x, int y, uint color)
+{ drawSmallGlyph(x,y,65,color); drawSmallGlyph(x+6,y,88,color); drawSmallGlyph(x+12,y,69,color); }
+
+void drawItemNameAt(int x, int y, uint b)
+{
+    b = (uint)runtimeItemNameLabel(b);
+
+    if (b == (uint)1)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 71, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 82, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, (uint)255);
+        return;
+    }
+    if (b == (uint)2)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 68, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 73, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 82, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 84, (uint)255);
+        return;
+    }
+    if (b == (uint)3)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 84, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 78, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, (uint)255);
+        return;
+    }
+    if (b == (uint)4)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 75, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 32, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 87, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 68, (uint)255);
+        return;
+    }
+    if (b == (uint)5)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 76, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 86, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, (uint)255);
+        return;
+    }
+    if (b == (uint)6)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 75, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 32, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 80, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 76, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 78, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 75, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, (uint)255);
+        return;
+    }
+    if (b == (uint)7)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 67, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 82, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 70, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 84, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 73, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 78, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 71, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 32, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 84, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 66, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 76, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, (uint)255);
+        return;
+    }
+    if (b == (uint)8)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 67, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 66, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 66, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 76, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 84, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 78, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, (uint)255);
+        return;
+    }
+    if (b == ITEM_STICK)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 84, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 73, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 67, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 75, (uint)255);
+        return;
+    }
+    if (b == ITEM_WOODEN_PICKAXE)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 87, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 68, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 78, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 32, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 80, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 73, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 67, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 75, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 88, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, (uint)255);
+        return;
+    }
+    if (b == ITEM_WOODEN_SWORD)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 87, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 68, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 78, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 32, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 87, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 82, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 68, (uint)255);
+        return;
+    }
+    if (b == ITEM_WOODEN_SHOVEL)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 87, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 68, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 78, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 32, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 83, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 72, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 86, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 76, (uint)255);
+        return;
+    }
+    if (b == ITEM_WOODEN_AXE)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 87, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 68, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 78, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 32, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 88, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 69, (uint)255);
+        return;
+    }
+    if (b == ITEM_RAW_PORKCHOP)
+    {
+        text_x = x;
+        text_x = text_x + drawSmallCharAt(text_x, y, 82, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 65, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 87, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 32, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 80, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 82, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 75, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 67, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 72, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 79, (uint)255);
+        text_x = text_x + drawSmallCharAt(text_x, y, 80, (uint)255);
+        return;
+    }
+}
+
+void drawSlotFrame(int x, int y, int selected, int cursor)
+{
+    fillRect2D(x, y, x + 20, y + 20, (uint)73);
+    drawLine(x, y, x + 20, y, (uint)36);
+    drawLine(x, y + 20, x + 20, y + 20, (uint)36);
+    drawLine(x, y, x, y + 20, (uint)36);
+    drawLine(x + 20, y, x + 20, y + 20, (uint)36);
+
+    if (selected != 0)
+    {
+        drawLine(x - 1, y - 1, x + 21, y - 1, (uint)255);
+        drawLine(x - 1, y + 21, x + 21, y + 21, (uint)255);
+        drawLine(x - 1, y - 1, x - 1, y + 21, (uint)255);
+        drawLine(x + 21, y - 1, x + 21, y + 21, (uint)255);
+    }
+
+    if (cursor != 0)
+    {
+        drawLine(x - 2, y - 2, x + 22, y - 2, (uint)219);
+        drawLine(x - 2, y + 22, x + 22, y + 22, (uint)219);
+        drawLine(x - 2, y - 2, x - 2, y + 22, (uint)219);
+        drawLine(x + 22, y - 2, x + 22, y + 22, (uint)219);
+    }
+}
+
+void drawSlotContents(int x, int y, int slot)
+{
+    if (inv_count[slot] <= 0) return;
+
+    drawIconTexture16(x + 2, y + 2, inv_id[slot]);
+
+    if (inv_count[slot] > 1)
+    {
+        drawNumberAt(x + 8, y + 13, inv_count[slot], (uint)0);
+        drawNumberAt(x + 7, y + 12, inv_count[slot], (uint)255);
+    }
+}
+
+void drawCraftSlotContents(int x, int y, int slot)
+{
+    if (craft_count[slot] <= 0) return;
+    drawIconTexture16(x + 2, y + 2, craft_id[slot]);
+    if (craft_count[slot] > 1)
+    {
+        drawNumberAt(x + 8, y + 13, craft_count[slot], (uint)0);
+        drawNumberAt(x + 7, y + 12, craft_count[slot], (uint)255);
+    }
+}
+
+void drawHotbar()
+{
+    hotbar_y = 216;
+    hotbar_i = 0;
+    while (hotbar_i < 9)
+    {
+        hotbar_x = 61 + hotbar_i * 22;
+        drawSlotFrame(hotbar_x, hotbar_y, hotbar_i == selected_slot, 0);
+        drawSlotContents(hotbar_x, hotbar_y, hotbar_i);
+        hotbar_i = hotbar_i + 1;
+    }
+}
+
+
+void drawUICursor()
+{
+    ui_cursor_ix = (int)ui_cursor_x;
+    ui_cursor_iy = (int)ui_cursor_y;
+
+    /* Half-size pointer compared with v31. */
+    drawLine(ui_cursor_ix + 1, ui_cursor_iy + 1, ui_cursor_ix + 1, ui_cursor_iy + 7, (uint)0);
+    drawLine(ui_cursor_ix + 1, ui_cursor_iy + 1, ui_cursor_ix + 5, ui_cursor_iy + 5, (uint)0);
+    drawLine(ui_cursor_ix + 1, ui_cursor_iy + 7, ui_cursor_ix + 3, ui_cursor_iy + 6, (uint)0);
+
+    drawLine(ui_cursor_ix, ui_cursor_iy, ui_cursor_ix, ui_cursor_iy + 6, (uint)255);
+    drawLine(ui_cursor_ix, ui_cursor_iy, ui_cursor_ix + 4, ui_cursor_iy + 4, (uint)255);
+    drawLine(ui_cursor_ix, ui_cursor_iy + 6, ui_cursor_ix + 2, ui_cursor_iy + 5, (uint)255);
+}
+
+
+void drawInventoryWindow()
+{
+    if (inventory_open == 0) return;
+
+    fillRect2D(8, 16, 312, 210, (uint)73);
+    fillRect2D(12, 20, 308, 206, (uint)109);
+
+    if (crafting_table_mode != 0)
+    {
+        craft_size = 3;
+        craft_grid_x = 228;
+        craft_grid_y = 28;
+        craft_out_x = 288;
+        craft_out_y = 104;
+    }
+    else
+    {
+        craft_size = 2;
+        craft_grid_x = 238;
+        craft_grid_y = 34;
+        craft_out_x = 288;
+        craft_out_y = 76;
+    }
+
+    ui_inv_x0 = 16;
+    ui_inv_y0 = 112;
+    ui_hotbar_y = 184;
+    ui_slot_step = 22;
+    ui_slot_size = 20;
+
+    updateCraftOutput();
+    findInventorySlotUnderCursor();
+
+    /* Item name tooltip at the top-left of the inventory. */
+    hover_item_id = (uint)0;
+    if (inv_actual_slot == 200)
+    {
+        if (craft_output_count > 0) hover_item_id = craft_output_id;
+    }
+    else if (inv_actual_slot >= 100)
+    {
+        craft_slot_i = inv_actual_slot - 100;
+        if (craft_count[craft_slot_i] > 0) hover_item_id = craft_id[craft_slot_i];
+    }
+    else if (inv_actual_slot >= 0)
+    {
+        if (inv_count[inv_actual_slot] > 0) hover_item_id = inv_id[inv_actual_slot];
+    }
+    if (hover_item_id != (uint)0)
+    {
+        fillRect2D(18, 28, 178, 40, (uint)0);
+        drawItemNameAt(22, 30, hover_item_id);
+    }
+
+    /* Crafting area. */
+    craft_slot_i = 0;
+    while (craft_slot_i < (craft_size * craft_size))
+    {
+        craft_slot_col = craft_slot_i % craft_size;
+        craft_slot_row = craft_slot_i / craft_size;
+        craft_slot_x = craft_grid_x + craft_slot_col * ui_slot_step;
+        craft_slot_y = craft_grid_y + craft_slot_row * ui_slot_step;
+        drawSlotFrame(craft_slot_x, craft_slot_y, 0, inv_actual_slot == (100 + craft_slot_i));
+        drawCraftSlotContents(craft_slot_x, craft_slot_y, craft_slot_i);
+        craft_slot_i = craft_slot_i + 1;
+    }
+
+    drawLine(craft_out_x - 18, craft_out_y + 10, craft_out_x - 6, craft_out_y + 10, (uint)255);
+    drawLine(craft_out_x - 10, craft_out_y + 6, craft_out_x - 6, craft_out_y + 10, (uint)255);
+    drawLine(craft_out_x - 10, craft_out_y + 14, craft_out_x - 6, craft_out_y + 10, (uint)255);
+
+    drawSlotFrame(craft_out_x, craft_out_y, 0, inv_actual_slot == 200);
+    if (craft_output_count > 0)
+    {
+        drawIconTexture16(craft_out_x + 2, craft_out_y + 2, craft_output_id);
+        if (craft_output_count > 1)
+        {
+            drawNumberAt(craft_out_x + 8, craft_out_y + 13, craft_output_count, (uint)0);
+            drawNumberAt(craft_out_x + 7, craft_out_y + 12, craft_output_count, (uint)255);
+        }
+    }
+
+    inv_draw_i = 0;
+    while (inv_draw_i < 36)
+    {
+        inv_draw_col = inv_draw_i % 9;
+        inv_draw_row = inv_draw_i / 9;
+
+        if (inv_draw_i < 27)
+        {
+            inv_draw_slot = inv_draw_i + 9;
+            hotbar_x = ui_inv_x0 + inv_draw_col * ui_slot_step;
+            hotbar_y = ui_inv_y0 + inv_draw_row * ui_slot_step;
+        }
+        else
+        {
+            inv_draw_slot = inv_draw_i - 27;
+            hotbar_x = ui_inv_x0 + inv_draw_col * ui_slot_step;
+            hotbar_y = ui_hotbar_y;
+        }
+
+        drawSlotFrame(hotbar_x, hotbar_y, inv_draw_slot == selected_slot, inv_actual_slot == inv_draw_slot);
+        drawSlotContents(hotbar_x, hotbar_y, inv_draw_slot);
+        inv_draw_i = inv_draw_i + 1;
+    }
+
+    if (held_count > 0)
+    {
+        ui_cursor_ix = (int)ui_cursor_x;
+        ui_cursor_iy = (int)ui_cursor_y;
+        drawIconTexture16(ui_cursor_ix + 8, ui_cursor_iy + 8, held_id);
+        if (held_count > 1)
+        {
+            drawNumberAt(ui_cursor_ix + 16, ui_cursor_iy + 22, held_count, (uint)0);
+            drawNumberAt(ui_cursor_ix + 15, ui_cursor_iy + 21, held_count, (uint)255);
+        }
+    }
+
+    drawUICursor();
+}
+
+void drawMiningProgress()
+{
+    if (mining_active == 0) return;
+    if (mining_required_ms == (uint)0) return;
+
+    mine_bar_w = (int)((mining_progress_ms * (uint)36) / mining_required_ms);
+    if (mine_bar_w > 36) mine_bar_w = 36;
+    if (mine_bar_w < 0) mine_bar_w = 0;
+
+    drawLine(142, 134, 178, 134, (uint)0);
+    drawLine(142, 135, 178, 135, (uint)0);
+    drawLine(142, 134, 142 + mine_bar_w, 134, (uint)255);
+    drawLine(142, 135, 142 + mine_bar_w, 135, (uint)255);
+}
+
+
+/* ------------------------------------------------------------------------- */
+/* Pause/settings/recipes menu                                               */
+/* ------------------------------------------------------------------------- */
+
+void drawFontH(int x, int y, int s, int px, int py, int w, uint color)
+{
+    fillRect2D(x + px * s, y + py * s, x + (px + w) * s - 1, y + (py + 1) * s - 1, color);
+}
+
+void drawFontV(int x, int y, int s, int px, int py, int h, uint color)
+{
+    fillRect2D(x + px * s, y + py * s, x + (px + 1) * s - 1, y + (py + h) * s - 1, color);
+}
+
+void drawMenuGlyph(int x, int y, int s, int ch, uint color)
+{
+    if (s == 1)
+    {
+        drawSmallGlyph(x, y, ch, color);
+        return;
+    }
+
+    /* Simple 5x7 block/vector font. Only the letters used by the menu are
+       implemented, keeping code size lower than a full font table. */
+    if (ch == 84)       /* T */
+    {
+        drawFontH(x, y, s, 0, 0, 5, color);
+        drawFontV(x, y, s, 2, 0, 7, color);
+    }
+    else if (ch == 73)  /* I */
+    {
+        drawFontH(x, y, s, 0, 0, 5, color);
+        drawFontV(x, y, s, 2, 0, 7, color);
+        drawFontH(x, y, s, 0, 6, 5, color);
+    }
+    else if (ch == 78)  /* N */
+    {
+        drawFontV(x, y, s, 0, 0, 7, color);
+        drawFontV(x, y, s, 4, 0, 7, color);
+        drawLine(x + 1 * s, y + 1 * s, x + 3 * s, y + 5 * s, color);
+    }
+    else if (ch == 89)  /* Y */
+    {
+        drawLine(x, y, x + 2 * s, y + 3 * s, color);
+        drawLine(x + 4 * s, y, x + 2 * s, y + 3 * s, color);
+        drawFontV(x, y, s, 2, 3, 4, color);
+    }
+    else if (ch == 67)  /* C */
+    {
+        drawFontH(x, y, s, 1, 0, 4, color);
+        drawFontV(x, y, s, 0, 1, 5, color);
+        drawFontH(x, y, s, 1, 6, 4, color);
+    }
+    else if (ch == 82)  /* R */
+    {
+        drawFontV(x, y, s, 0, 0, 7, color);
+        drawFontH(x, y, s, 1, 0, 3, color);
+        drawFontV(x, y, s, 4, 1, 2, color);
+        drawFontH(x, y, s, 1, 3, 3, color);
+        drawLine(x + 2 * s, y + 4 * s, x + 4 * s, y + 6 * s, color);
+    }
+    else if (ch == 65)  /* A */
+    {
+        drawFontH(x, y, s, 1, 0, 3, color);
+        drawFontV(x, y, s, 0, 1, 6, color);
+        drawFontV(x, y, s, 4, 1, 6, color);
+        drawFontH(x, y, s, 1, 3, 3, color);
+    }
+    else if (ch == 70)  /* F */
+    {
+        drawFontV(x, y, s, 0, 0, 7, color);
+        drawFontH(x, y, s, 1, 0, 4, color);
+        drawFontH(x, y, s, 1, 3, 3, color);
+    }
+    else if (ch == 83)  /* S */
+    {
+        drawFontH(x, y, s, 1, 0, 4, color);
+        drawFontV(x, y, s, 0, 1, 2, color);
+        drawFontH(x, y, s, 1, 3, 3, color);
+        drawFontV(x, y, s, 4, 4, 2, color);
+        drawFontH(x, y, s, 0, 6, 4, color);
+    }
+    else if (ch == 69)  /* E */
+    {
+        drawFontV(x, y, s, 0, 0, 7, color);
+        drawFontH(x, y, s, 1, 0, 4, color);
+        drawFontH(x, y, s, 1, 3, 3, color);
+        drawFontH(x, y, s, 1, 6, 4, color);
+    }
+    else if (ch == 71)  /* G */
+    {
+        drawFontH(x, y, s, 1, 0, 4, color);
+        drawFontV(x, y, s, 0, 1, 5, color);
+        drawFontH(x, y, s, 1, 6, 4, color);
+        drawFontH(x, y, s, 2, 3, 3, color);
+        drawFontV(x, y, s, 4, 3, 3, color);
+    }
+    else if (ch == 80)  /* P */
+    {
+        drawFontV(x, y, s, 0, 0, 7, color);
+        drawFontH(x, y, s, 1, 0, 3, color);
+        drawFontV(x, y, s, 4, 1, 2, color);
+        drawFontH(x, y, s, 1, 3, 3, color);
+    }
+    else if (ch == 77)  /* M */
+    {
+        drawFontV(x, y, s, 0, 0, 7, color);
+        drawFontV(x, y, s, 4, 0, 7, color);
+        drawLine(x + 1 * s, y, x + 2 * s, y + 3 * s, color);
+        drawLine(x + 3 * s, y, x + 2 * s, y + 3 * s, color);
+    }
+    else if (ch == 85)  /* U */
+    {
+        drawFontV(x, y, s, 0, 0, 6, color);
+        drawFontV(x, y, s, 4, 0, 6, color);
+        drawFontH(x, y, s, 1, 6, 3, color);
+    }
+    else if (ch == 79)  /* O */
+    {
+        drawFontH(x, y, s, 1, 0, 3, color);
+        drawFontV(x, y, s, 0, 1, 5, color);
+        drawFontV(x, y, s, 4, 1, 5, color);
+        drawFontH(x, y, s, 1, 6, 3, color);
+    }
+}
+
+void drawMenuWordTinyCraft(int x, int y, int s, uint color)
+{
+    drawMenuGlyph(x, y, s, 84, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 73, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 78, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 89, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 67, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 82, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 65, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 70, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 84, color);
+}
+
+void writeTinycraftLogoTexPixel(int x, int y, uint color)
+{
+    logo_tex_addr = y * 75 + (x >> 2);
+    logo_tex_shift = (x & 3) << 3;
+    logo_tex_mask = (uint)255 << logo_tex_shift;
+    logo_tex_word = tinycraft_logo_tex[logo_tex_addr];
+    logo_tex_word = (logo_tex_word & ~logo_tex_mask) | ((color & (uint)255) << logo_tex_shift);
+    tinycraft_logo_tex[logo_tex_addr] = logo_tex_word;
+}
+
+void initTinycraftLogoTexture()
+{
+    logo_tex_i = 0;
+    while (logo_tex_i < 3750)
+    {
+        tinycraft_logo_tex[logo_tex_i] = (uint)606348324; /* 0x24242424, menu background */
+        logo_tex_i = logo_tex_i + 1;
+    }
+
+    logo_i = 0;
+    while (logo_i < 2151)
+    {
+        logo_run = tinycraft_logo_rle[logo_i];
+        logo_y = (int)(logo_run >> 26);
+        logo_x = (int)((logo_run >> 17) & (uint)511);
+        logo_len = (int)((logo_run >> 8) & (uint)511);
+        logo_color = logo_run & (uint)255;
+
+        logo_tex_x = 0;
+        while (logo_tex_x < logo_len)
+        {
+            writeTinycraftLogoTexPixel(logo_x + logo_tex_x, logo_y, logo_color);
+            logo_tex_x = logo_tex_x + 1;
+        }
+        logo_i = logo_i + 1;
+    }
+
+    logo_tex_ready = 1;
+}
+
+void drawTinycraftLogo()
+{
+    if (logo_tex_ready == 0) initTinycraftLogoTexture();
+    fillRect2DTex(10, 8, 299, 50, &tinycraft_logo_tex[0]);
+}
+
+void drawMenuWordSettings(int x, int y, int s, uint color)
+{
+    drawMenuGlyph(x, y, s, 83, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 69, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 84, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 84, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 73, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 78, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 71, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 83, color);
+}
+
+void drawMenuWordRecipes(int x, int y, int s, uint color)
+{
+    drawMenuGlyph(x, y, s, 82, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 69, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 67, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 73, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 80, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 69, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 83, color);
+}
+
+void drawMenuWordCamera(int x, int y, int s, uint color)
+{
+    drawMenuGlyph(x, y, s, 67, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 65, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 77, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 69, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 82, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 65, color);
+}
+
+
+void drawMenuWordCursor(int x, int y, int s, uint color)
+{
+    drawMenuGlyph(x, y, s, 67, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 85, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 82, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 83, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 79, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 82, color);
+}
+
+void drawMenuWordSens(int x, int y, int s, uint color)
+{
+    drawMenuGlyph(x, y, s, 83, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 69, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 78, color); x = x + 6 * s;
+    drawMenuGlyph(x, y, s, 83, color);
+}
+
+void drawMiniRecipeCell(int x, int y, uint b)
+{
+    fillRect2D(x, y, x + 8, y + 8, (uint)37);
+    drawLine(x, y, x + 8, y, (uint)109);
+    drawLine(x, y + 8, x + 8, y + 8, (uint)0);
+    drawLine(x, y, x, y + 8, (uint)109);
+    drawLine(x + 8, y, x + 8, y + 8, (uint)0);
+    if (b != (uint)0)
+    {
+        fillRect2D(x + 2, y + 2, x + 6, y + 6, blockUIColor(b));
+    }
+}
+
+void drawMiniRecipeGrid3x3(int x, int y, uint a, uint b, uint c, uint d, uint e, uint f, uint g, uint h, uint i)
+{
+    drawMiniRecipeCell(x, y, a);
+    drawMiniRecipeCell(x + 10, y, b);
+    drawMiniRecipeCell(x + 20, y, c);
+    drawMiniRecipeCell(x, y + 10, d);
+    drawMiniRecipeCell(x + 10, y + 10, e);
+    drawMiniRecipeCell(x + 20, y + 10, f);
+    drawMiniRecipeCell(x, y + 20, g);
+    drawMiniRecipeCell(x + 10, y + 20, h);
+    drawMiniRecipeCell(x + 20, y + 20, i);
+}
+
+void drawMiniRecipe(int x, int y, uint a, uint b, uint c, uint d, uint e, uint f, uint g, uint h, uint i, uint out_id, int out_count)
+{
+    drawMiniRecipeGrid3x3(x, y, a, b, c, d, e, f, g, h, i);
+    drawLine(x + 34, y + 15, x + 44, y + 15, (uint)255);
+    drawLine(x + 40, y + 11, x + 44, y + 15, (uint)255);
+    drawLine(x + 40, y + 19, x + 44, y + 15, (uint)255);
+    drawSlotFrame(x + 48, y + 5, 0, 0);
+    drawIconTexture16(x + 50, y + 7, out_id);
+    if (out_count > 1)
+    {
+        drawNumberAt(x + 62, y + 19, out_count, (uint)0);
+        drawNumberAt(x + 61, y + 18, out_count, (uint)255);
+    }
+}
+
+void drawStartMenu()
+{
+    clearBuffer((uint)36);
+    ui_cursor_ix = (int)ui_cursor_x;
+    ui_cursor_iy = (int)ui_cursor_y;
+    drawTinycraftLogo();
+    drawUIButton(86, 76, 234, 98, 0, 148);
+    drawUIButton(86, 108, 234, 130, 1, 116);
+    drawUIButton(86, 140, 234, 162, 2, 119);
+    drawUIButton(86, 172, 234, 194, 3, 148);
+    drawUICursor();
+}
+
+void drawWorldSelectMenu()
+{
+    clearBuffer((uint)36);
+    ui_cursor_ix = (int)ui_cursor_x;
+    ui_cursor_iy = (int)ui_cursor_y;
+    drawLabelText(142, 18, 4, (uint)255);
+
+    fillRect2D(24, 36, 296, 168, (uint)73);
+    if (world_list_count <= 0)
+    {
+        drawLabelText(112, 88, 11, (uint)255);
+        drawLabelText(136, 88, 4, (uint)255);
+    }
+    world_tmp_i = 0;
+    while (world_tmp_i < world_list_count)
+    {
+        world_tmp_j = 44 + world_tmp_i * 12;
+        menu_color = (uint)0;
+        if (world_tmp_i == world_selected) menu_color = (uint)109;
+        if (cursorInRect(36, world_tmp_j - 2, 284, world_tmp_j + 10) != 0) menu_color = (uint)146;
+        fillRect2D(36, world_tmp_j - 2, 284, world_tmp_j + 10, menu_color);
+        drawStoredWorldName(world_tmp_i, 44, world_tmp_j, (uint)255);
+        world_tmp_i = world_tmp_i + 1;
+    }
+
+    drawUIButton(28, 184, 82, 206, 7, 43);
+    drawUIButton(92, 184, 146, 206, 11, 110);
+    drawUIButton(156, 184, 210, 206, 8, 171);
+    drawUIButton(220, 184, 292, 206, 6, 238);
+    drawUICursor();
+}
+
+void drawCreateWorldMenu()
+{
+    clearBuffer((uint)36);
+    ui_cursor_ix = (int)ui_cursor_x;
+    ui_cursor_iy = (int)ui_cursor_y;
+    drawTinycraftLogo();
+    drawLabelText(104, 80, 10, (uint)255);
+    fillRect2D(104, 94, 216, 110, (uint)0);
+    if ((cursorInRect(104, 94, 216, 110) != 0) || (world_name_editing != 0))
+    {
+        drawLine(104, 94, 216, 94, (uint)255);
+        drawLine(104, 110, 216, 110, (uint)255);
+    }
+    drawNameBuffer(&new_world_name[0], 16, 110, 99, (uint)255);
+    if (world_name_editing != 0) drawLine(110 + new_world_name_len * 6, 98, 110 + new_world_name_len * 6, 106, (uint)219);
+    drawUIButton(76, 148, 152, 170, 7, 102);
+    drawUIButton(168, 148, 244, 170, 5, 188);
+    if (world_name_editing == 0) drawUICursor();
+}
+
+void drawLoadingWord(int x, int y, uint color)
+{
+    x = x + drawSmallCharAt(x, y, 76, color);
+    x = x + drawSmallCharAt(x, y, 79, color);
+    x = x + drawSmallCharAt(x, y, 65, color);
+    x = x + drawSmallCharAt(x, y, 68, color);
+    x = x + drawSmallCharAt(x, y, 73, color);
+    x = x + drawSmallCharAt(x, y, 78, color);
+    drawSmallCharAt(x, y, 71, color);
+}
+
+void drawLoadingScreen()
+{
+    /* v53: keep the loading frame cheap. Redrawing the full RLE logo every
+       loading frame wasted CPU while the VM was already building terrain. */
+    clearBuffer((uint)36);
+    fillRect2D(64, 110, 256, 150, (uint)0);
+    fillRect2D(68, 114, 252, 146, (uint)73);
+    drawLoadingWord(112, 122, (uint)255);
+    drawLabelText(160, 122, 4, (uint)255);
+
+    if (loading_total <= 0) loading_total = 1;
+    loading_bar_w = (loading_progress * 180) / loading_total;
+    if (loading_bar_w < 0) loading_bar_w = 0;
+    if (loading_bar_w > 180) loading_bar_w = 180;
+    fillRect2D(70, 136, 250, 142, (uint)0);
+    if (loading_bar_w > 0) fillRect2D(70, 136, 70 + loading_bar_w, 142, (uint)219);
+}
+

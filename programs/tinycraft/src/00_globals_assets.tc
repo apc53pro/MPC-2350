@@ -1,0 +1,2885 @@
+
+/*
+    TinyCraft VM demo v59 performance recovery
+    Based on packed-cache TinyCraft branch
+    -----------------
+    Minecraft-like voxel prototype for the RP2350/Pico VM Tiny-C compiler.
+
+    Controls use common PS/2 Set-2 scancodes:
+        W/S         move forward / backward
+        A/D         strafe left / right
+        I/K         camera look up / down, all the way vertical
+        J/L         camera turn left / right
+        Space       smooth one-block jump
+        Shift       run
+        Hold Z      mine blocks over time, or swing if no block is targeted
+        X           place equipped hotbar block with a short pitch animation
+        1..9        select equipped hotbar slot
+        E           open/close inventory
+        M           pause menu
+        Inventory/menu cursor mode:
+                    I/J/K/L moves cursor
+                    A = left click, D = right click
+                    movement/camera keys are disabled while cursor mode is active
+
+
+    v59 performance recovery:
+        - opaque and masked VM rasterizers no longer share transparency work
+        - entity collisions run on a fixed physics cadence instead of every rendered frame
+        - interpolated mob rotations use cached tick endpoints instead of per-frame trigonometry
+        - entity definitions and per-part texture bindings are reused while unchanged
+
+    v58 masked block-breaking texture patch:
+        - TCAC v8 carries ten environment destroy-stage textures and 1-bit masks in one record
+        - block breaking uses the native masked textured-quad builtin on exposed faces
+        - destroy-stage assets use dedicated arrays and do not consume general texture IDs
+
+    v53 block/model/entity definition asset records:
+        - TCAC v8 can carry compact runtime block, block-model, entity, and entity-model records
+        - block hardness, drops, tool rules, texture IDs, item links, and behavior flags can load from assets.tca
+        - old compiled block definitions are only used as a no-block-record fallback
+
+    v64 flat item texture mesh patch:
+        - TCAC v3+ texture records can carry a 1-bit alpha mask after RGB332 pixels
+        - PC asset packer can generate flat item meshes from item PNG alpha
+        - non-block item UI icons use asset-cache item textures and masks
+        - flat item meshes stay data-driven in assets.tca, not hardcoded in source
+
+    v63 custom mesh item cache patch:
+        - TCAC v2 can carry baked custom mesh item records beside texture records
+        - runtime stores compact item mesh face tables loaded from assets.tca
+        - item records can switch to TC_ITEM_RENDER_CUSTOM_MESH without JSON parsing during gameplay
+        - first-person held items can render cache-loaded custom mesh faces
+
+    v62 relative package folder patch:
+        - runtime save/config/asset paths are local filenames inside the launched folder
+        - the deployable game folder is Tinycraft/ with the binary beside config/assets/worlds
+        - converter defaults to writing assets.tca inside that Tinycraft folder
+        - the VM runtime patch resolves relative SD paths against the launched program folder
+
+    v61 external asset converter patch:
+        - adds a PC-side asset packer under the versioned tools folder
+        - converter accepts PNG plus raw .rgb332/.rg332 texture sources
+        - initial converter wrote assets.tca in the existing TCAC v1 format
+        - documents editable manifests and the current runtime cache limits
+
+    v60 binary asset cache patch:
+        - adds startup loading for assets.tca
+        - cache records can override baked texture registry slots with raw RGB332 data
+        - block textures load into 16x16 cache slots, entity atlases load into fixed 64x32 slots
+        - baked textures remain the fallback when the cache file is missing or invalid
+
+    v59 block registry patch:
+        - block registration is split into src/03_block_registry.tc
+        - BlockDef now carries linked item ID and behavior flags
+        - built-in blocks are registered through the block registry before item generation
+        - old runtime block helpers now route through registry-owned metadata
+
+    v58 item registry patch:
+        - item registration is split into src/02_item_registry.tc
+        - items now carry use-action and behavior flags for startup-loaded metadata
+        - block items are generated from registered block definitions
+        - old runtimeItem helpers now route through the item registry
+
+    v57 texture registry patch:
+        - baked textures are registered once at startup with metadata and stable IDs
+        - block/item/runtime lookups now resolve texture IDs through the registry
+        - entity texture metadata is registered too, ready for later SD/cache loading
+
+    v54 pig polish/collision patch:
+        - snout moved one pixel lower on the face
+        - hind legs and their pivots moved two pixels toward the rear
+        - small text uses per-glyph width plus one-pixel spacing
+        - pigs use AABB overlap pushes against the player/other pigs and a larger block hitbox
+
+    v57 runtime table foundation:
+        - block/item behavior now flows through BlockDef and ItemDef runtime tables
+        - no SD asset loading yet; built-in definitions are baked at startup
+
+    v53 pig UV/hand rollback patch:
+        - pig cuboid UVs use full pixel-panel spans instead of size-minus-one spans
+        - removes the 2D hand overlay pass and returns to the 3D viewmodel only
+
+    v53 atlas/font repair patch:
+        - pig atlas is regenerated from C:/Users/enzob/Downloads/pig.png
+        - pig UVs use exact clamped texel coordinates without the inset workaround
+        - UI glyph table is generated from the 16x16 8x8-cell ascii.png sheet
+
+    v53 entity/config/font patch:
+        - config.txt is line-based, human-readable, and editable
+        - E opens inventory; render distance is changed from the settings menu
+        - pig state uses struct Pig slots and streams through the world .tcw entity section
+        - fixes empty/corrupt entity sections respawning no pigs after load
+        - pigs push the player as well as themselves when AABBs overlap
+        - pig head yaw/pitch uses smooth look-control clamps and render interpolation
+        - first-person hand gets a depthless overlay pass above terrain and below HUD
+
+    v53 skylight horizontal-bleed patch:
+        - raw sky light now bleeds sideways from nearby open-sky columns with Minecraft-style taxicab falloff
+        - a single opaque block overhead no longer forces sky light to zero if adjacent open air can feed light underneath
+
+    v53 sky-darkening/gameplay-light patch:
+        - open-sky technical sky light remains 15, but effective gameplay sky light applies a day/night darkening value
+        - sunset lowers effective open-sky light from 14 to 4, night holds at 4, sunrise returns to 15
+        - added future hostile-mob light helper: at night it checks block light only and ignores sky light
+        - T overlay now shows darkening plus effective sky/block/total light
+
+    v53 pig passive AI / light-level patch:
+        - pig wandering now uses rest/walk-to-target behavior
+        - pig legs rotate around their model pivots
+        - added math-only block/sky light level helpers and T overlay display
+        - pig spawning now requires grass, clearance and light >= 7
+
+    v42 pig AI/performance optimization:
+        - pig AI now runs on a slower fixed mob tick instead of every frame
+        - pig terrain/collision checks are skipped while still inside the same block
+        - cached pig sin/cos and leg animation values reduce per-frame trig work
+        - far pigs use a cheaper body/head-only render LOD
+
+    v41 pig render/orientation fix:
+        - pig movement vector now matches the rendered local -Z forward axis
+        - body texture mapping handles the Bedrock 90-degree body bind rotation
+
+
+    v40 pig movement polish:
+        - pig yaw now smoothly turns toward a target direction instead of snapping
+        - random wandering uses small continuous angle changes, not 45/90 degree steps
+        - obstacle avoidance picks a new target yaw but still rotates gradually
+
+    v39 pig mob prototype:
+        - adds simple wandering pig mobs rendered from the uploaded pig model/texture
+        - pigs use textured cuboids, terrain-following movement, and basic wall collision
+
+    v38 dynamic terrain-height rendering fix:
+        - natural render/loading now computes each 8x8 render chunk's highest
+          procedural terrain/tree block and builds sections up to that height
+        - removes the hard-coded section 0..4 natural terrain limit
+
+    v37 movement smoothing fix:
+        - acceleration/drag/gravity still run only on 50 ms physics ticks
+        - player position is smoothed every rendered frame again
+
+    v36 gameplay fixes:
+        - manually dropped hotbar items have a 2 second pickup cooldown
+        - spawn uses natural terrain instead of a forced flat plateau
+        - dropped items collide horizontally with solid blocks
+        - thrown item direction follows camera pitch more strongly
+        - low-FPS jump catch-up uses fixed 50 ms physics ticks only
+
+    v35 UI font consistency:
+        - inventory item names and stack counts now use the same 5x7 style as the menu
+
+    v23 sky sun + grass_carried changes:
+        - sun is now real 3D sky geometry instead of a HUD rectangle
+        - grass top texture uses blocks/grass_carried.png
+
+    v21 packed far-render cache changes:
+        - render distance > 1 uses a compact one-word-per-column cache
+        - no procedural tree/terrain calls happen in the far per-frame hot loop
+        - far block drawing inlines packed neighbor checks and face submission
+
+    v14 procedural world changes:
+        - world[] is now a 16x8x16 active chunk/window around the player
+        - world_origin_x/world_origin_z convert local block coords to absolute coords
+        - terrain is generated deterministically from seed + absolute coordinates
+        - broken/placed blocks are stored in a small global edit overlay
+        - when the player moves near an edge, the active window recenters and regenerates
+        Hold Z      mine/break first block under the crosshair over time
+        X           place equipped hotbar block on the face under the crosshair
+        1..9        select hotbar slot; E opens the 3x9 inventory
+
+    If your keyboard firmware uses different scancodes, change the integer
+    literals in updatePlayer(). The current compiler requires key() scancodes
+    to be integer literals.
+*/
+
+// v24 changes:
+// - builds a greedy mesh from the packed face cache when the render cache rebuilds
+// - renders merged real-3D quads with fillQuad3DTexZTiled() so large faces repeat textures
+// - indexes greedy meshes by 8x8 render chunk so each frame walks only visible chunks
+// - shows FPS by default; press T to cycle FPS / XYZ coordinates / VM render stats
+// - draws chunks near-to-far, pre-culls off-frustum chunks, and skips back-facing block faces
+// - groups each chunk's greedy mesh by face direction so nearer face buckets draw first
+// - skips off-screen sun quads and uses tighter chunk frustum margins for sky views
+// - keeps v23 intact by living in this new tinycraft_v24.tc file
+
+
+    /*v42 tighter culling + pig step patch:
+        - render chunks touched this frame are stamped so pigs only draw in actually rendered x/z chunks
+        - object/chunk frustum culling uses tighter horizontal/vertical projection limits
+        - drops, sky bodies, stars, clouds and pigs stop drawing as soon as their bounds leave the view
+        - pig movement tries one-block step-up when the body footprint hits a ledge and walks off one-block drops cleanly
+        - pig turning speed increased to reduce the minimum turning radius
+
+    v41 pig AI/gravity + culling patch:
+        - pigs keep vertical physics even while resting, so broken floor blocks make them fall
+        - pig walk goals no longer require spawn light, only valid floor/clearance
+        - pigs render only if their terrain render chunk is loaded and the pig is inside the camera frustum
+        - sun, moon, stars and cloud quads now skip drawing when off-screen
+        - T overlay light calculation is cached briefly to avoid repeated skylight-bleed scans*/
+
+/* ------------------------------------------------------------------------- */
+/* Tunable globals/constants. Keep these global so the VM stack stays small.  */
+/* ------------------------------------------------------------------------- */
+
+/* The VM texture path behaves best at the same coordinate scale used by the
+   reference demo. Physics/collision remains in voxel units, but rendering and
+   camera coordinates are multiplied by block_world_size. */
+float block_world_size = 1024.0f;
+float texel_max = 15.0f;
+
+/* Block IDs. Keep IDs below 16 because the packed render cache stores
+   one block in four bits. */
+uint BLOCK_AIR = 0;
+uint BLOCK_GRASS = 1;
+uint BLOCK_DIRT = 2;
+uint BLOCK_STONE = 3;
+uint BLOCK_WOOD = 4;
+uint BLOCK_LEAVES = 5;
+uint BLOCK_OAK_PLANKS = 6;
+uint BLOCK_CRAFTING_TABLE = 7;
+uint BLOCK_COBBLESTONE = 8;
+
+/* Non-placeable item IDs. These stay above the packed block range, so the
+   world/cache can still store real blocks in 4 bits per cell. */
+uint ITEM_STICK = 20;
+uint ITEM_WOODEN_PICKAXE = 21;
+uint ITEM_WOODEN_SWORD = 22;
+uint ITEM_WOODEN_SHOVEL = 23;
+uint ITEM_WOODEN_AXE = 24;
+uint ITEM_RAW_PORKCHOP = 25;
+
+/* Runtime asset table constants. Step 1 keeps the built-in IDs and behavior,
+   but the code now reads metadata from tables that a later SD/cache loader can
+   fill without touching gameplay code. */
+int TC_MAX_BLOCKS = 16;
+int TC_MAX_ITEMS = 32;
+
+int TC_BLOCK_RENDER_NONE = 0;
+int TC_BLOCK_RENDER_FAST_CUBE = 1;
+int TC_BLOCK_RENDER_CUSTOM_MODEL = 2;
+
+int TC_BLOCK_FLAG_SOLID = 1;
+int TC_BLOCK_FLAG_PLACEABLE = 2;
+int TC_BLOCK_FLAG_STOPS_SKY = 4;
+int TC_BLOCK_FLAG_OPENS_CRAFTING = 8;
+
+int TC_ITEM_KIND_NONE = 0;
+int TC_ITEM_KIND_BLOCK = 1;
+int TC_ITEM_KIND_TOOL = 2;
+int TC_ITEM_KIND_RESOURCE = 3;
+int TC_ITEM_KIND_FOOD = 4;
+
+int TC_ITEM_RENDER_NONE = 0;
+int TC_ITEM_RENDER_BLOCK_CUBE = 1;
+int TC_ITEM_RENDER_HANDHELD = 2;
+int TC_ITEM_RENDER_FLAT = 3;
+int TC_ITEM_RENDER_CUSTOM_MESH = 4;
+
+int TC_ITEM_USE_NONE = 0;
+int TC_ITEM_USE_PLACE_BLOCK = 1;
+int TC_ITEM_USE_SWING_TOOL = 2;
+
+int TC_ITEM_FLAG_STACKABLE = 1;
+int TC_ITEM_FLAG_PLACEABLE = 2;
+int TC_ITEM_FLAG_TOOL = 4;
+int TC_ITEM_FLAG_RESOURCE = 8;
+
+int TC_TOOL_NONE = 0;
+int TC_TOOL_PICKAXE = 1;
+int TC_TOOL_AXE = 2;
+int TC_TOOL_SHOVEL = 3;
+int TC_TOOL_SWORD = 4;
+
+int TC_MAX_ENTITY_DEFS = 8;
+int TC_MAX_ACTIVE_ENTITIES = 6;
+int TC_ENTITY_NONE = 0;
+int TC_ENTITY_PIG = 1;
+int TC_ENTITY_ZOMBIE = 2;
+int TC_ENTITY_COW = 3;
+int TC_ENTITY_SKELETON = 4;
+int TC_ENTITY_CREEPER = 5;
+int TC_ENTITY_STEVE = 6;
+
+int TC_ENTITY_RENDER_NONE = 0;
+int TC_ENTITY_RENDER_CUBOIDS = 1;
+int TC_ENTITY_RENDER_PIG_CUBOIDS = 1;
+
+int TC_ENTITY_BEHAVIOR_NONE = 0;
+int TC_ENTITY_BEHAVIOR_CONTROLLER_PASSIVE_00 = 1;
+int TC_ENTITY_BEHAVIOR_CONTROLLER_AGGRESSIVE_00 = 2;
+/* Compatibility alias for older manifests. Prefer controller_passive_00. */
+int TC_ENTITY_BEHAVIOR_PASSIVE_WANDER = 1;
+
+int TC_ENTITY_MODEL_NONE = 0;
+int TC_ENTITY_MODEL_PIG = 1;
+int TC_ENTITY_MODEL_ZOMBIE = 2;
+int TC_ENTITY_MODEL_COW = 3;
+int TC_ENTITY_MODEL_SKELETON = 4;
+int TC_ENTITY_MODEL_CREEPER = 5;
+int TC_ENTITY_MODEL_STEVE = 6;
+
+int TC_ENTITY_PART_NONE = 0;
+int TC_ENTITY_PART_BODY = 1;
+int TC_ENTITY_PART_HEAD = 2;
+int TC_ENTITY_PART_LEG = 3;
+int TC_ENTITY_PART_BODY_ROT_X = 4;
+
+int TC_ENTITY_PART_ANIM_NONE = 0;
+int TC_ENTITY_PART_ANIM_LEG_POS = 1;
+int TC_ENTITY_PART_ANIM_LEG_NEG = 2;
+
+int TC_TEX_MISSING = 0;
+int TC_TEX_GRASS_TOP = 1;
+int TC_TEX_GRASS_SIDE = 2;
+int TC_TEX_DIRT = 3;
+int TC_TEX_STONE = 4;
+int TC_TEX_LOG_SIDE = 5;
+int TC_TEX_LOG_TOP = 6;
+int TC_TEX_LEAVES = 7;
+int TC_TEX_OAK_PLANKS = 8;
+int TC_TEX_CRAFTING_TABLE_TOP = 9;
+int TC_TEX_CRAFTING_TABLE_SIDE = 10;
+int TC_TEX_PIG = 11;
+int TC_TEX_ITEM_STICK = 12;
+int TC_TEX_ITEM_WOODEN_PICKAXE = 13;
+int TC_TEX_ITEM_WOODEN_SWORD = 14;
+int TC_TEX_ITEM_WOODEN_SHOVEL = 15;
+int TC_TEX_ITEM_WOODEN_AXE = 16;
+int TC_TEX_ZOMBIE = 17;
+int TC_TEX_COW = 18;
+int TC_TEX_SKELETON = 19;
+int TC_TEX_COBBLESTONE = 20;
+int TC_TEX_ITEM_RAW_PORKCHOP = 21;
+int TC_TEX_CREEPER = 25;
+int TC_TEX_STEVE = 26;
+
+int TC_MAX_TEXTURES = 32;
+int TC_TEXTURE_KIND_NONE = 0;
+int TC_TEXTURE_KIND_BUILTIN = 1;
+int TC_TEXTURE_KIND_CACHE_SLOT = 2;
+int TC_TEXTURE_FORMAT_RGB332_PACKED = 1;
+int TC_TEXTURE_ALPHA_NONE = 0;
+int TC_TEXTURE_ALPHA_MASK = 1;
+
+int TC_ASSET_CACHE_MAX_TEX16 = 12;
+int TC_ASSET_CACHE_MAX_ENTITY_TEX = 6;
+int TC_ASSET_CACHE_MAGIC = 1413693763; /* 'TCAC' */
+int TC_ASSET_CACHE_VERSION = 8;
+int TC_ASSET_CACHE_MAX_RECORDS = 64;
+int TC_ASSET_CACHE_RECORD_BYTES = 32;
+int TC_ASSET_RECORD_TEXTURE = 0;
+int TC_ASSET_RECORD_ITEM_MESH = 1;
+int TC_ASSET_RECORD_BLOCK_DEF = 2;
+int TC_ASSET_RECORD_BLOCK_MODEL = 3;
+int TC_ASSET_RECORD_ENTITY_DEF = 4;
+int TC_ASSET_RECORD_ENTITY_MODEL = 5;
+int TC_ASSET_RECORD_DESTROY_STAGES = 6;
+int TC_ASSET_RECORD_KIND_SHIFT = 16777216; /* record kind is stored in flags / 2^24 */
+int TC_BLOCK_DEF_BYTES = 32;
+int TC_ENTITY_DEF_BYTES = 32;
+int TC_ENTITY_MODEL_PART_BYTES = 32;
+int TC_ITEM_MESH_FACE_BYTES = 20;
+int TC_BLOCK_MODEL_FACE_BYTES = 20;
+int TC_MAX_ITEM_MESHES = 8;
+int TC_MAX_BLOCK_MODELS = 16;
+int TC_MAX_ENTITY_MODELS = 8;
+int TC_MAX_ENTITY_MODEL_PARTS = 64;
+int TC_TEXTURE_MASK_WORDS = 8;
+int TC_TEXTURE_MASK_BYTES = 32;
+int TC_MAX_ITEM_MESH_FACES = 640;
+int TC_MAX_BLOCK_MODEL_FACES = 384;
+int TC_DESTROY_STAGE_COUNT = 10;
+int TC_DESTROY_STAGE_TEXTURE_WORDS = 64;
+int TC_DESTROY_STAGE_MASK_WORDS = 8;
+int TC_DESTROY_STAGE_BYTES = 288;
+
+int TC_NAME_NONE = 0;
+int TC_NAME_GRASS = 1;
+int TC_NAME_DIRT = 2;
+int TC_NAME_STONE = 3;
+int TC_NAME_OAK_WOOD = 4;
+int TC_NAME_LEAVES = 5;
+int TC_NAME_OAK_PLANKS = 6;
+int TC_NAME_CRAFTING_TABLE = 7;
+int TC_NAME_COBBLESTONE = 8;
+int TC_NAME_STICK = 20;
+int TC_NAME_WOODEN_PICKAXE = 21;
+int TC_NAME_WOODEN_SWORD = 22;
+int TC_NAME_WOODEN_SHOVEL = 23;
+int TC_NAME_WOODEN_AXE = 24;
+int TC_NAME_RAW_PORKCHOP = 25;
+
+struct TextureDef {
+    int used;
+    int id;
+    int source_kind;
+    int format;
+    int width;
+    int height;
+    int word_count;
+    int alpha_kind;
+    int cache_slot;
+    int name_label;
+};
+
+struct BlockDef {
+    int used;
+    uint id;
+    int render_class;
+    int placeable;
+    int stops_sky_light;
+    int light_emission;
+    uint ui_color;
+    uint default_break_ms;
+    int preferred_tool;
+    uint preferred_break_ms;
+    int drop_required_tool;
+    uint dropped_item_id;
+    int dropped_count;
+    int tex_top;
+    int tex_bottom;
+    int tex_side;
+    int icon_tex;
+    int name_label;
+    int opens_crafting;
+    uint linked_item_id;
+    int behavior_flags;
+};
+
+struct ItemDef {
+    int used;
+    uint id;
+    int kind;
+    int render_kind;
+    int max_stack;
+    int linked_block_id;
+    int tool_kind;
+    int tool_level;
+    uint ui_color;
+    int icon_tex;
+    int name_label;
+    int use_action;
+    int behavior_flags;
+    int mesh_id;
+    int attack_damage;
+    int attack_cooldown_ms;
+};
+
+struct ItemMeshDef {
+    int used;
+    int item_id;
+    int first_face;
+    int face_count;
+    int icon_tex;
+    int flags;
+};
+
+struct ItemMeshFace {
+    int x0;
+    int y0;
+    int z0;
+    int x1;
+    int y1;
+    int z1;
+    int x2;
+    int y2;
+    int z2;
+    int x3;
+    int y3;
+    int z3;
+    int u0;
+    int v0;
+    int u1;
+    int v1;
+    int texture_id;
+    int flags;
+};
+
+struct BlockModelDef {
+    int used;
+    int block_id;
+    int first_face;
+    int face_count;
+    int flags;
+};
+
+struct BlockModelFace {
+    int x0;
+    int y0;
+    int z0;
+    int x1;
+    int y1;
+    int z1;
+    int x2;
+    int y2;
+    int z2;
+    int x3;
+    int y3;
+    int z3;
+    int u0;
+    int v0;
+    int u1;
+    int v1;
+    int texture_id;
+    int flags;
+};
+
+struct EntityDef {
+    int used;
+    int id;
+    int render_kind;
+    int behavior_kind;
+    int texture_id;
+    int model_kind;
+    int max_active;
+    int spawn_group;
+    int spawn_floor_block;
+    int spawn_light_min;
+    float hitbox_x;
+    float hitbox_z;
+    float height;
+    float eye_height;
+    float render_radius;
+    float lod_dist_sq;
+    float ai_tick_ms;
+    float move_speed;
+    float turn_speed;
+    float head_turn_speed;
+    float head_yaw_limit;
+    float head_pitch_limit;
+};
+
+struct EntityModelDef {
+    int used;
+    int model_id;
+    int first_part;
+    int part_count;
+    int texture_id;
+    int flags;
+};
+
+struct EntityModelPart {
+    int part_kind;
+    int anim_kind;
+    int lod_group;
+    int texture_id;
+    int uvx;
+    int uvy;
+    int sx;
+    int sy;
+    int sz;
+    int flags;
+    float lx0;
+    float ly0;
+    float lz0;
+    float lx1;
+    float ly1;
+    float lz1;
+    float pivot_x;
+    float pivot_y;
+    float pivot_z;
+};
+
+struct BlockDef blockDefs[16];
+struct ItemDef itemDefs[32];
+struct ItemMeshDef itemMeshDefs[8];
+struct ItemMeshFace itemMeshFaces[640];
+struct BlockModelDef blockModelDefs[16];
+struct BlockModelFace blockModelFaces[384];
+struct EntityDef entityDefs[8];
+struct EntityModelDef entityModelDefs[8];
+struct EntityModelPart entityModelParts[64];
+int entity_runtime_applied_id = -1;
+struct TextureDef textureDefs[32];
+uint *texturePtrs[32];
+uint textureMasks[256];
+/* External texture cache slots. 16x16 textures use 64 packed RGB332 words.
+   Entity atlases use 64x32 slots, one per loaded mob texture. */
+uint asset_cache_tex16[768];
+uint asset_cache_entity_tex[3072];
+uint destroyStageTextures[640];
+uint destroyStageMasks[80];
+int asset_cache_tex16_used[12];
+int asset_cache_entity_tex_used[6];
+int asset_cache_loaded = 0;
+int asset_cache_status = 0;
+int asset_cache_record_count = 0;
+int asset_cache_loaded_textures = 0;
+int asset_cache_loaded_meshes = 0;
+int asset_cache_loaded_blocks = 0;
+int asset_cache_loaded_block_models = 0;
+int asset_cache_loaded_entities = 0;
+int asset_cache_loaded_entity_models = 0;
+int asset_cache_loaded_destroy_stages = 0;
+int asset_cache_version = 0;
+int asset_cache_next_tex16_slot = 0;
+int asset_cache_next_entity_tex_slot = 0;
+int asset_cache_record_kind = 0;
+int asset_cache_record_i = 0;
+int asset_cache_record_off = 0;
+int asset_cache_payload_off = 0;
+int asset_cache_payload_bytes = 0;
+int asset_cache_tex_id = 0;
+int asset_cache_width = 0;
+int asset_cache_height = 0;
+int asset_cache_words = 0;
+int asset_cache_alpha = 0;
+int asset_cache_flags = 0;
+int asset_cache_read = 0;
+int asset_cache_slot = 0;
+int asset_cache_chunk = 0;
+int asset_cache_word_i = 0;
+int asset_cache_mesh_id = 0;
+int asset_cache_face_i = 0;
+int asset_cache_face_count = 0;
+int asset_cache_face_slot = 0;
+int asset_cache_item_id = 0;
+int asset_cache_icon_tex = 0;
+int asset_cache_byte = 0;
+int asset_cache_mask_i = 0;
+int asset_cache_stage_i = 0;
+int asset_cache_block_model_id = 0;
+int asset_cache_block_model_face_slot = 0;
+int asset_cache_entity_id = 0;
+int asset_cache_entity_model_id = 0;
+int asset_cache_entity_model_part_slot = 0;
+int asset_cache_model_min_x = 0;
+int asset_cache_model_min_y = 0;
+int asset_cache_model_min_z = 0;
+int asset_cache_model_max_x = 0;
+int asset_cache_model_max_y = 0;
+int asset_cache_model_max_z = 0;
+int asset_cache_model_fast_cube = 0;
+char asset_cache_path[22] = {'/', 'T', 'i', 'n', 'y', 'c', 'r', 'a', 'f', 't', '/', 'a', 's', 's', 'e', 't', 's', '.', 't', 'c', 'a', 0};
+char asset_cache_io[64];
+char asset_cache_payload[256];
+int runtime_tables_ready = 0;
+int block_registry_ready = 0;
+int block_registry_loaded_count = 0;
+int item_registry_ready = 0;
+int item_registry_loaded_count = 0;
+int texture_registry_ready = 0;
+int texture_registry_loaded_count = 0;
+
+/* Performance knobs. Rendering fewer textured 3D quads matters far more than
+   small arithmetic changes because every submitted face goes through transform,
+   clip, perspective-correct texture sampling, z testing, and rasterization. */
+int render_radius = 8;
+int render_chunks = 1;
+int render_chunks_min = 1;
+int render_chunks_max = 3;
+int render_radius_blocks = 8;
+float render_distance_sq = 96.0f;
+float render_side_margin = 4.0f;
+/* Projection-space culling limits. The camera uses focal 260 with a 320x240
+   screen, so visible half-width/height are roughly 0.62 and 0.46. These are
+   slightly padded so large quads do not pop, but much tighter than the old
+   1.05 cone that kept drawing off-screen objects. */
+float render_fov_scale = 0.68f;
+float render_fov_y_scale = 0.52f;
+
+/* Vertical physics in blocks per millisecond.
+   These values are much smaller than older versions so the player eases
+   through jump/fall motion instead of snapping by whole blocks per frame. */
+float jump_start_speed = 0.0064f;
+float gravity_accel = 0.000016f;
+float max_fall_speed = -0.0180f;
+float ground_snap_epsilon = 0.16f;
+
+/* 20 TPS movement model, Minecraft-like. Horizontal velocities are stored in
+   blocks/tick, not blocks/millisecond. The old per-frame speed values are
+   kept only for non-player drop physics. */
+float tick_ground_walk_accel = 0.098f;
+float tick_ground_run_accel = 0.130f;
+float tick_ground_drag = 0.546f;
+float tick_air_accel_mult = 0.20f;
+float tick_air_drag = 0.910f;
+float tick_air_speed_cap = 0.420f;
+float tick_jump_velocity = 0.420f;
+float tick_gravity = 0.080f;
+float tick_vertical_drag = 0.980f;
+float tick_terminal_fall = -3.200f;
+
+/* PS/2 set-2 scancodes used directly in updatePlayer():
+   W=0x1D A=0x1C S=0x1B D=0x23 I=0x43 J=0x3B K=0x42 L=0x4B Space=0x29 Z=0x1A X=0x22 Y=0x35 M=0x3A R=0x2D F=0x2B LeftShift=0x12 RightShift=0x59.
+   Number keys: 1=0x16 2=0x1E 3=0x26 4=0x25 5=0x2E 6=0x36 7=0x3D 8=0x3E 9=0x46. */
+
+/* 16*64*16 = 16384 block IDs. This is only the active world window,
+   not the whole world. Absolute block coordinates are:
+       abs_x = world_origin_x + local_x
+       abs_z = world_origin_z + local_z
+   When the player approaches the edge, the window is regenerated around them. */
+uint world[16384];
+
+int world_seed = 12345;
+int world_origin_x = -8;
+int world_origin_z = -8;
+int recenter_low = 1;
+int recenter_high = 15;
+
+/* Edit overlay. edit_block=0 means the player intentionally broke the block.
+   Entries not present in this table come from procedural terrain. */
+int edit_x[512];
+int edit_y[512];
+int edit_z[512];
+uint edit_block[512];
+int edit_count = 0;
+
+/* World file/state UI. NARM file paths are SD-root-relative, so the deploy
+   package uses the fixed /Tinycraft directory. World files use .tcw. */
+union SaveBits {
+    uint u;
+    int i;
+    float f;
+};
+union SaveBits save_bits;
+
+int app_state = 0;          /* 0=start, 1=worlds, 2=create, 3=settings, 4=recipes, 5=game, 6=loading */
+int world_list_loaded = 0;
+int world_list_count = 0;
+int world_selected = 0;
+int world_scan_index;
+unsigned world_entry_len;
+unsigned world_entry_type;
+int world_entry_status;
+int world_name_len[10];
+char tinycraft_dir[11] = {'/', 'T', 'i', 'n', 'y', 'c', 'r', 'a', 'f', 't', 0};
+char world_entry[48];
+char world_names[160];
+char current_world_name[16];
+char new_world_name[16];
+int new_world_name_len = 0;
+char world_path[64];
+char world_io[256];
+int world_io_offset;
+int world_file_offset;
+int world_tmp_i;
+int world_tmp_j;
+int world_tmp_base;
+int world_tmp_len;
+int world_tmp_ok;
+int world_text_any_key;
+int old_world_text_key = 0;
+int world_name_editing = 0;
+int old_world_enter_key = 0;
+int current_world_loaded = 0;
+uint world_magic = 0x54435731;  /* TCW1 */
+int world_dirty = 0;
+uint world_last_autosave_ms = 0;
+uint world_player_autosave_ms = 0;
+uint world_autosave_now = 0;
+float world_load_player_x;
+float world_load_player_y;
+float world_load_player_z;
+float world_load_player_foot_y;
+float world_load_yaw;
+float world_load_pitch;
+int world_load_selected_slot;
+int world_load_render_chunks;
+int world_load_camera_sensitivity_percent;
+int world_load_cursor_sensitivity_percent;
+uint world_load_held_id;
+int world_load_held_count;
+int world_load_height;
+uint world_load_day_time_tick;
+uint world_load_day_tick_units;
+int loading_mode = 0;       /* 1=load selected world, 2=create new world */
+int loading_phase = 0;
+int loading_ok = 0;
+int loading_progress = 0;
+int loading_total = 1;
+int loading_chunk_x;
+int loading_chunk_z;
+int loading_section;
+int loading_bar_w;
+int loading_keep_camera_percent;
+int loading_keep_cursor_percent;
+int loading_build_i;
+int loading_scan_x;
+int loading_scan_z;
+int loading_scan_s;
+int loading_best_x;
+int loading_best_z;
+int loading_best_s;
+int loading_best_dist;
+int loading_scan_dist;
+/* Loading scans the exact complete visible 8-block mesh window. */
+int loading_draw_logo_once = 0;
+/* Supplied TinyCraft logo converted from PNG to RGB332 horizontal RLE.
+   Each word packs y:6, x:9, len:9, color:8. Transparent/background pixels are skipped. */
+uint tinycraft_logo_rle[2151] = {
+    67248384, 71831040, 74059008, 76549632, 78647296, 81006336, 83369984, 87826688, 92545280, 97263872, 101982208, 134349056,
+    134480200, 134616941, 137625856, 137758061, 138412544, 138936832, 139198825, 139331949, 140509508, 140640512, 141164800, 141295945,
+    141429357, 142737920, 143655168, 143919725, 145228288, 145752576, 146015853, 146801152, 147063113, 147194733, 147587396, 147718400,
+    147980800, 148245613, 149815625, 149946880, 150470912, 150740077, 154403104, 154534144, 154927616, 155189609, 155321197, 155713792,
+    155851117, 159121920, 159646208, 159915373, 163840256, 164364544, 164495689, 164633965, 168428032, 168952320, 169219949, 172492141,
+    173146624, 201457920, 201589101, 201725878, 204734720, 204866998, 205521408, 206045696, 206307762, 206440886, 207618413, 207749376,
+    208142848, 208404882, 208538294, 209846784, 210764032, 210895176, 211028662, 212337152, 212861440, 213124790, 213909901, 214040832,
+    214172854, 214696301, 214827264, 215089664, 215354550, 216924562, 217055744, 217579776, 217710921, 217849014, 221643008, 222036480,
+    222298546, 222430134, 222822802, 222953728, 223090870, 226230784, 226754816, 227024310, 230818157, 230949120, 231342592, 231604589,
+    231742902, 235536896, 236061184, 236328886, 239338057, 239600822, 240124338, 240255488, 268435968, 268697965, 268834742, 271843584,
+    271975862, 272630272, 273154560, 273416626, 273549750, 274727277, 274858496, 275251712, 275513746, 275647158, 276955648, 277872896,
+    278004040, 278137526, 279446016, 279970304, 280233910, 281149874, 281281718, 281805165, 281936128, 282198528, 282463414, 284033426,
+    284164608, 284688640, 284819785, 284957878, 288751872, 289145344, 289407410, 289539254, 290193773, 290330550, 293339648, 293863680,
+    294133174, 297927021, 298057984, 298451456, 298713453, 298851766, 302645760, 303170048, 303437750, 306446921, 306709686, 307233202,
+    307364352, 335544832, 335806829, 335943606, 338952553, 339084726, 339739136, 340263424, 340525490, 340658614, 341836141, 341967360,
+    342360576, 342622610, 342756022, 344064512, 344981760, 345112904, 345246390, 346554880, 347079168, 347344054, 348914029, 349045760,
+    349572278, 351142290, 351273472, 351797504, 351928649, 352066742, 355860736, 356254208, 356516274, 356648118, 357302637, 357439414,
+    360448512, 360972544, 361242038, 365035885, 365166848, 365560320, 365822317, 365960630, 369754624, 370278912, 370546614, 373555529,
+    373686706, 373818550, 374342066, 374473216, 402653696, 402915693, 403052214, 405930459, 406062774, 406848000, 407372288, 407634354,
+    407767478, 408945005, 409076224, 409469440, 409731474, 409864886, 411173376, 411959808, 412221768, 412355254, 413663744, 414188032,
+    414452918, 416022893, 416154624, 416681142, 418251154, 418382336, 418906368, 419037513, 419175606, 422969600, 423363072, 423625138,
+    423756982, 424411501, 424548278, 427557376, 428081408, 428350902, 432144749, 432275712, 432669184, 432931181, 433069494, 436863488,
+    437387776, 437657270, 441582080, 469762560, 470024557, 470161078, 473039213, 473171638, 473956864, 474481152, 474743218, 474876342,
+    476053869, 476185088, 476578304, 476840338, 476973750, 478282240, 479068672, 479330632, 479464118, 480772608, 481296896, 481561782,
+    483131757, 483263488, 483790006, 485360018, 485491200, 486015232, 486146377, 486284470, 490078464, 490471936, 490734002, 490865846,
+    491520365, 491657142, 494666240, 495190272, 495459766, 499253613, 499384576, 499778048, 500040045, 500178358, 503972352, 504496640,
+    504764086, 507642326, 507773293, 507905718, 508690944, 536871424, 537133421, 537265846, 538051030, 538185654, 540147968, 540280502,
+    541065728, 541590016, 541852082, 541985206, 543162733, 543293952, 543687168, 543949202, 544082614, 545391104, 546177536, 546439497,
+    546572982, 547881472, 548405760, 548670646, 550240621, 550372352, 550898870, 552468882, 552600064, 553124096, 553255241, 553393334,
+    557187328, 557580800, 557842866, 557974710, 558629229, 558766006, 561775104, 562299136, 562568630, 566362477, 566493440, 566886912,
+    567148909, 567287222, 571081216, 571605504, 571869110, 572785110, 572919478, 574751341, 575014582, 575799808, 603980288, 604242285,
+    604374710, 605159826, 605294262, 607125938, 607256832, 607389366, 608174592, 608698880, 608960946, 609094070, 610271597, 610402816,
+    610796032, 611058066, 611190710, 612107263, 612500736, 613286400, 613548361, 613679871, 613941718, 614074294, 614990336, 615514624,
+    615779510, 617349485, 617481216, 618007734, 619577746, 619708928, 620232960, 620364105, 620502198, 624296192, 624689664, 624951730,
+    625083574, 625738093, 625874870, 628883968, 629408000, 629677494, 633471341, 633602304, 633995776, 634257773, 634396086, 638190080,
+    638714368, 638977974, 639893901, 640028342, 641991021, 642123446, 642908672, 671089152, 671351186, 671483647, 672268544, 672399871,
+    672533686, 674103766, 674234843, 674365696, 674498303, 675414272, 675807744, 676069810, 676202166, 676987903, 677380498, 677511680,
+    677904896, 678166930, 678299318, 679084434, 679218688, 681050441, 681183231, 682099200, 682623488, 682888374, 684458349, 684590080,
+    685116598, 686686610, 686817792, 687341824, 687472969, 687606454, 688914907, 689050111, 691274057, 691405056, 691798528, 692060635,
+    692192511, 692846994, 692979382, 693765375, 694291894, 695992832, 696516864, 696780982, 697827803, 697959423, 698352086, 698483894,
+    699008255, 699533494, 700580205, 700711168, 701104640, 701366637, 701500086, 702813183, 705298944, 705823232, 706086655, 706871954,
+    707133915, 707267766, 708837883, 708968777, 709099922, 709232127, 709886427, 710017536, 738200320, 739642550, 741212562, 741345792,
+    742916608, 743178674, 743311030, 744096068, 744228096, 745013760, 745275794, 745410230, 747242496, 747766089, 747897526, 748159305,
+    748292352, 749732352, 749997238, 751567213, 751698944, 752225462, 753795474, 753926656, 754450688, 754581833, 754715318, 756159232,
+    758909184, 760086929, 760218806, 760742322, 760873984, 761397650, 761531574, 763101696, 763625728, 763889846, 765068032, 765460845,
+    765592758, 766116864, 766642358, 767689069, 767820032, 768213504, 768475501, 768608950, 769922304, 772934144, 774242633, 774376630,
+    775949056, 805309184, 806751414, 808321426, 808454656, 810025472, 810289846, 811598189, 811729408, 812122624, 812384658, 812519094,
+    814351360, 814874953, 815008438, 816316928, 816841216, 817106102, 818676077, 818807808, 819334326, 820904338, 821035520, 821559552,
+    821690697, 821824182, 823268096, 826016256, 826278322, 826411958, 827851186, 827982848, 828506514, 828640438, 830210560, 830734592,
+    830998710, 832176896, 832569709, 832701622, 833225728, 833751222, 834797933, 834928896, 835322368, 835584365, 835717046, 836633563,
+    837031168, 840043008, 841351497, 841485494, 843057920, 872418048, 873860278, 875430290, 875563520, 877134336, 877398710, 878707053,
+    878838272, 879231488, 879493522, 879627958, 881460224, 881983817, 882117302, 883425792, 883950080, 884214966, 885784941, 885916672,
+    886443190, 888013202, 888144384, 888668416, 888799561, 888931766, 889586139, 889718015, 890241353, 890376960, 893125120, 893390006,
+    894960050, 895091712, 895615378, 895749302, 897319424, 897843456, 898107574, 899285760, 899678573, 899810486, 900334592, 900860086,
+    901906797, 902037760, 902431232, 902693229, 902825910, 903741764, 903878400, 907151872, 908460361, 908594358, 910166784, 939526912,
+    940969142, 942539154, 942672384, 944243200, 944507574, 945815917, 945947136, 946340352, 946602386, 946736822, 948569088, 949092681,
+    949226166, 950534656, 951058944, 951323830, 952893805, 953025536, 953549270, 953682870, 955122066, 955253248, 955777280, 955908425,
+    956040630, 956831744, 960233984, 960498870, 962068914, 962200576, 962724242, 962858166, 964428288, 964952320, 965216438, 966394624,
+    966787474, 966919163, 967311835, 967443456, 967968950, 969015661, 969146624, 969540096, 969802093, 969935542, 971248896, 974260736,
+    975569225, 975703222, 977275648, 1006635776, 1008078006, 1009648018, 1009781248, 1011352064, 1011616438, 1012924781, 1013056000, 1013449216,
+    1013711250, 1013845686, 1015677952, 1016201545, 1016335030, 1017643520, 1018167808, 1018432694, 1020002669, 1020134400, 1020657993, 1020789211,
+    1020922550, 1022230930, 1022362112, 1022886144, 1023017289, 1023149238, 1023674034, 1024594688, 1027342848, 1027607734, 1029177778, 1029309440,
+    1029833106, 1029967030, 1031537152, 1032061184, 1032325302, 1033372850, 1033896265, 1034028032, 1034552498, 1035077814, 1036124525, 1036255488,
+    1036648960, 1036910957, 1037044406, 1038355378, 1039794541, 1040058034, 1040843264, 1041369600, 1042678089, 1042812086, 1044384512, 1073744640,
+    1075186870, 1076756882, 1076890112, 1078460928, 1078725302, 1080033645, 1080164864, 1080558080, 1080820114, 1080954550, 1082786816, 1083310404,
+    1083443894, 1084752384, 1085276672, 1085538778, 1085670363, 1086065078, 1087243922, 1088030646, 1088947163, 1089339794, 1089470976, 1089995008,
+    1090126153, 1090259638, 1091703552, 1094451712, 1094716854, 1096418450, 1096943542, 1097860827, 1098646016, 1099170048, 1099434678, 1100743126,
+    1100874203, 1101005129, 1101136896, 1101660891, 1101925046, 1103233389, 1103364352, 1103757824, 1104019853, 1104155830, 1106772438, 1106903296,
+    1107034514, 1107166902, 1107952128, 1108478464, 1109786953, 1109920950, 1111493376, 1140853504, 1142295734, 1143865746, 1143998976, 1145569792,
+    1145834166, 1147142509, 1147273728, 1147666944, 1147928978, 1148063414, 1149895789, 1150419346, 1150552758, 1151861248, 1152385536, 1152648265,
+    1153177014, 1155924370, 1156055881, 1156579840, 1157103872, 1157235017, 1157368502, 1158812416, 1161560576, 1161828278, 1164837298, 1164969545,
+    1165754880, 1166278912, 1166543542, 1167851922, 1167982921, 1168114944, 1168769609, 1169033910, 1170342253, 1170473216, 1170866688, 1171128717,
+    1171264694, 1173881234, 1174144950, 1175060992, 1175587328, 1176895817, 1177029814, 1178602240, 1207962368, 1209404598, 1210974610, 1211107840,
+    1212678656, 1212943030, 1214251373, 1214382592, 1214775808, 1215037842, 1215176118, 1218970112, 1219495424, 1220285878, 1223033197, 1223165440,
+    1224212736, 1224343881, 1224477366, 1225921280, 1228669440, 1228936886, 1231815167, 1231946093, 1232078848, 1233387776, 1233652406, 1234960749,
+    1235093504, 1236142774, 1237451117, 1237582080, 1237975552, 1238237581, 1238373302, 1240859094, 1241122998, 1242169856, 1242696192, 1244004681,
+    1244138678, 1245711104, 1275071232, 1276513462, 1278083474, 1278216704, 1279787520, 1280051894, 1281360237, 1281491456, 1281884672, 1282146706,
+    1282284982, 1286078976, 1286604288, 1287394742, 1290142061, 1290274304, 1291321600, 1291452745, 1291586230, 1293030144, 1295778304, 1296045494,
+    1298792850, 1299972608, 1300496640, 1300761270, 1302069613, 1302202368, 1303251638, 1304559981, 1304690944, 1305084416, 1305346445, 1305482166,
+    1307967885, 1308231862, 1309278720, 1309805056, 1311113545, 1311247542, 1312817440, 1312950784, 1342180096, 1343622326, 1345192338, 1345325568,
+    1346896384, 1347160758, 1348469101, 1348600320, 1348993536, 1349255570, 1349388982, 1350697984, 1351225270, 1353187840, 1353713152, 1354503606,
+    1357250925, 1357383168, 1358430464, 1358561609, 1358692827, 1358825910, 1360139008, 1362887168, 1363156662, 1367081472, 1367605504, 1367870134,
+    1369178477, 1369311232, 1370360502, 1371668845, 1371799808, 1372193280, 1372455309, 1372591030, 1375076717, 1375340726, 1376387584, 1376913920,
+    1378222409, 1378356406, 1380059648, 1409419776, 1410731190, 1412301202, 1412434432, 1414005248, 1414269622, 1415577965, 1415709184, 1416102400,
+    1416364434, 1416497846, 1417806848, 1418334134, 1420296704, 1420822016, 1421608191, 1422131675, 1422265526, 1423835643, 1423967231, 1424359826,
+    1424492032, 1425539584, 1425801540, 1425934774, 1427247872, 1429996032, 1430265526, 1434190336, 1434714368, 1434978998, 1436287341, 1436420096,
+    1437469366, 1438777709, 1438908672, 1439302144, 1439564177, 1439699894, 1442185581, 1442316612, 1442449590, 1443496448, 1444022784, 1445331273,
+    1445465270, 1447168512, 1476528640, 1477840054, 1479410066, 1479543296, 1481114112, 1481378486, 1482686829, 1482818048, 1483211264, 1483473298,
+    1483606710, 1484915712, 1485442998, 1487405568, 1487931904, 1489240429, 1489374390, 1491077632, 1492648192, 1492779337, 1492912822, 1494221129,
+    1494356736, 1497104896, 1497374390, 1501299200, 1501823232, 1502087862, 1503396205, 1503527168, 1503658381, 1503790262, 1504313856, 1504578230,
+    1505886573, 1506017536, 1506411008, 1506673042, 1506808758, 1509294445, 1509425481, 1509558454, 1510605312, 1511131648, 1512440137, 1512574134,
+    1514277376, 1543637504, 1544948918, 1546518930, 1546652160, 1548222976, 1548487350, 1549795693, 1549926912, 1550320128, 1550582162, 1550715574,
+    1552024576, 1552551862, 1554514432, 1555040768, 1556349325, 1556483254, 1558186496, 1559757056, 1559888201, 1560021686, 1561329993, 1561465600,
+    1564213760, 1564478646, 1566048726, 1566180571, 1566704086, 1566837942, 1568408064, 1568932096, 1569196726, 1570505101, 1570767250, 1570899126,
+    1571687094, 1572995437, 1573126400, 1573519872, 1573781906, 1573915318, 1575225819, 1576403309, 1576534345, 1576667355, 1577844992, 1578371328,
+    1579549001, 1579682998, 1581385984, 1611792896, 1612057782, 1613627794, 1613758976, 1615331840, 1615596214, 1616904589, 1617035776, 1617428992,
+    1617691058, 1617824438, 1619133440, 1619660726, 1621623296, 1622149632, 1623458189, 1623592118, 1625295360, 1626865920, 1626997065, 1627130550,
+    1628438857, 1628569856, 1631322624, 1631587766, 1633812914, 1633946806, 1635516928, 1636040960, 1636310454, 1640104301, 1640235264, 1640628736,
+    1640890770, 1641024182, 1643643136, 1644823040, 1646395904, 1646657897, 1646791862, 1648492800, 1678901760, 1679166646, 1680736658, 1680867840,
+    1682440704, 1682705078, 1684013453, 1684144640, 1684537856, 1684799963, 1684933375, 1686242304, 1686766043, 1686899711, 1688338902, 1688470198,
+    1688732160, 1689258496, 1690567058, 1690700982, 1692404224, 1693974784, 1694105929, 1694239414, 1695547721, 1695678720, 1698431488, 1698696630,
+    1700921778, 1701055670, 1702625792, 1703149824, 1703414966, 1704985083, 1705116927, 1705643190, 1707213165, 1707344128, 1707737600, 1707999634,
+    1708133046, 1710752000, 1711931904, 1713504768, 1713766765, 1713900726, 1715601664, 1746010624, 1746274486, 1747321339, 1747452927, 1747845558,
+    1747976704, 1749549568, 1749813942, 1751122317, 1751253504, 1751646720, 1753351168, 1755448246, 1755841024, 1756367360, 1757675922, 1757809846,
+    1759513088, 1761083648, 1761214793, 1761348278, 1762656585, 1762791936, 1765540352, 1765802934, 1766197759, 1767375323, 1768030642, 1768164534,
+    1769734656, 1770258688, 1770523830, 1772093805, 1772618057, 1772750079, 1773273558, 1773406134, 1774322029, 1774452992, 1774846464, 1775108498,
+    1775241910, 1777860864, 1779040768, 1780613632, 1780875629, 1781008310, 1781924310, 1782056191, 1782710528, 1813119488, 1813383163, 1814299099,
+    1814430025, 1815085568, 1816658432, 1816922806, 1818231185, 1818362368, 1818755584, 1819017650, 1819151030, 1820460032, 1821507949, 1821640374,
+    1822557110, 1822949888, 1823476224, 1824784786, 1824918710, 1826621952, 1828192512, 1828323657, 1828457142, 1829765449, 1829901056, 1832649216,
+    1832911798, 1835139506, 1835273398, 1836843520, 1837367552, 1837632694, 1839202669, 1840382354, 1840513499, 1840645883, 1841430930, 1841561856,
+    1841955328, 1842217362, 1842350774, 1844969728, 1846149632, 1847853312, 1847984493, 1848116987, 1848902107, 1849033142, 1849688576, 1880228352,
+    1880491849, 1881408950, 1882063250, 1882194432, 1883767296, 1884029366, 1884162518, 1885340050, 1885471232, 1885864448, 1886126514, 1886259926,
+    1887568896, 1888616813, 1888749014, 1889403318, 1889665462, 1889796822, 1890058752, 1890585088, 1891893650, 1892027606, 1893730816, 1895301376,
+    1895432521, 1895566038, 1896874422, 1897009586, 1899364608, 1899758080, 1900020150, 1900151510, 1900544434, 1900677046, 1901593010, 1902248374,
+    1902379739, 1902643926, 1903952384, 1904476416, 1904741590, 1906311533, 1906967990, 1907622253, 1907754569, 1908670720, 1909064192, 1909326226,
+    1909459670, 1912078592, 1913258496, 1914962176, 1915225673, 1916010861, 1916143030, 1916928256, 1947337216, 1947600530, 1948385718, 1948517846,
+    1949172146, 1949303296, 1950876160, 1951138230, 1951271382, 1952448914, 1952580096, 1952973312, 1953235378, 1953368790, 1954677760, 1955725677,
+    1955857878, 1956512182, 1956774326, 1956905686, 1957167616, 1957693952, 1959002514, 1959136214, 1960575451, 1960839424, 1962410240, 1962541385,
+    1962679510, 1966342473, 1966473472, 1966866944, 1967129014, 1967260374, 1967653302, 1967785942, 1968701878, 1969357129, 1969488493, 1969750491,
+    1969883606, 1971061248, 1971585280, 1971850454, 1973420397, 1974077142, 1974862258, 1974994322, 1975648621, 1975779584, 1976173056, 1976435090,
+    1976568534, 1979187456, 1980367360, 1982071040, 1982202185, 1982334610, 1983121110, 1984037120, 2014446080, 2014710998, 2016281010, 2016412160,
+    2017985024, 2018247094, 2018380246, 2019557778, 2019688960, 2020082176, 2020344242, 2020477654, 2021786624, 2022834541, 2022966742, 2023621046,
+    2023883190, 2024014550, 2024276480, 2024933632, 2026111378, 2026245078, 2027684242, 2027948288, 2029519104, 2029650249, 2029788374, 2033451337,
+    2033582336, 2033975808, 2034237878, 2034369238, 2034762166, 2034894806, 2035810742, 2036466065, 2036597650, 2036992470, 2038170112, 2038694144,
+    2038959318, 2040529261, 2041187542, 2042757485, 2042888448, 2043281920, 2043543954, 2043677398, 2046296320, 2047476224, 2049179904, 2049311085,
+    2049445078, 2051145984, 2081554944, 2081819862, 2083389874, 2083521024, 2085093888, 2085355958, 2085489110, 2086666642, 2086797824, 2087191040,
+    2087453106, 2087586518, 2088895488, 2089943405, 2090075606, 2090729910, 2090992054, 2091123414, 2091385344, 2092434944, 2093220242, 2093354198,
+    2095056384, 2096627968, 2096759113, 2096897238, 2100560201, 2100691200, 2101084672, 2101346742, 2101478102, 2101871030, 2102003670, 2102919606,
+    2103574966, 2103708886, 2105278976, 2105803008, 2106068182, 2107638125, 2108296406, 2109866349, 2109997312, 2110390784, 2110652745, 2110783963,
+    2110917078, 2113274368, 2114585088, 2116288768, 2116419949, 2116553942, 2118254848, 2148663808u, 2148928726u, 2150498738u, 2150629888u, 2152202752u,
+    2152464822u, 2152597974u, 2153775506u, 2153906688u, 2154299904u, 2154561970u, 2154695382u, 2156004352u, 2157052269u, 2157184726u, 2158100918u, 2158232278u,
+    2158494208u, 2159543808u, 2160329106u, 2160461014u, 2160984539u, 2161117142u, 2162165248u, 2163736832u, 2163867977u, 2164006102u, 2167669065u, 2167800064u,
+    2168193536u, 2168455606u, 2168586966u, 2168979894u, 2169112534u, 2170028470u, 2170683830u, 2170817750u, 2172387840u, 2172911872u, 2173177046u, 2174746989u,
+    2175405270u, 2176975213u, 2177106176u, 2177499648u, 2177761677u, 2177892786u, 2178025942u, 2180383232u, 2181693952u, 2183397632u, 2183528813u, 2183662806u,
+    2185363712u, 2215772672u, 2216037590u, 2217607602u, 2217738752u, 2219311616u, 2219573686u, 2219706838u, 2220884370u, 2221015552u, 2221408768u, 2221670834u,
+    2221804246u, 2223113216u, 2224161133u, 2224293590u, 2225209782u, 2225341142u, 2225603072u, 2226652672u, 2227437970u, 2227569622u, 2227962331u, 2228093293u,
+    2228226006u, 2229143040u, 2230845696u, 2230976841u, 2231114966u, 2234777929u, 2234908928u, 2235302400u, 2235564470u, 2235695830u, 2236088758u, 2236221398u,
+    2237137334u, 2237792694u, 2237926614u, 2239496704u, 2240020736u, 2240285910u, 2241855853u, 2242514134u, 2244084077u, 2244215040u, 2244608512u, 2244870546u,
+    2245003990u, 2247492096u, 2248802816u, 2250506496u, 2250637677u, 2250771670u, 2252472576u, 2282881536u, 2283146454u, 2284716466u, 2284847616u, 2286420480u,
+    2286682550u, 2286813910u, 2287075803u, 2287208150u, 2287993234u, 2288124416u, 2288517632u, 2288779698u, 2288911062u, 2289172955u, 2289305558u, 2290222080u,
+    2291269997u, 2291402454u, 2292318646u, 2292450006u, 2292711936u, 2294023168u, 2294546833u, 2294678486u, 2295071122u, 2295202121u, 2295334870u, 2296251648u,
+    2297954560u, 2298085705u, 2298223830u, 2301886793u, 2302017792u, 2302411264u, 2302673334u, 2302804438u, 2302935515u, 2303197622u, 2303330262u, 2304246198u,
+    2304901558u, 2305033430u, 2305556955u, 2305689558u, 2306605568u, 2307129600u, 2307393238u, 2308178394u, 2308309467u, 2308441302u, 2308964717u, 2309622998u,
+    2311192941u, 2311323904u, 2311717376u, 2311979410u, 2312112854u, 2314600960u, 2315911680u, 2317615360u, 2317746541u, 2317880534u, 2319581440u, 2349990400u,
+    2350255318u, 2351825330u, 2351956480u, 2353529344u, 2353791414u, 2353922774u, 2354184594u, 2354317014u, 2355102098u, 2355233280u, 2355626496u, 2355888566u,
+    2356019926u, 2356281709u, 2356414422u, 2357330944u, 2358378861u, 2358511318u, 2359427510u, 2359558870u, 2359820800u, 2361393664u, 2361655698u, 2361787350u,
+    2362179986u, 2362310985u, 2362443734u, 2363359744u, 2365063424u, 2365194569u, 2365326550u, 2365850075u, 2365981439u, 2366243291u, 2366379222u, 2368995657u,
+    2369126656u, 2369520128u, 2369782198u, 2369913302u, 2370044342u, 2370175305u, 2370308310u, 2371355062u, 2371486720u, 2372010422u, 2372142294u, 2372665741u,
+    2372796891u, 2372929238u, 2373714432u, 2374238464u, 2374502102u, 2375287222u, 2375418221u, 2375550166u, 2376073581u, 2376731862u, 2378301805u, 2378432768u,
+    2378826240u, 2379088274u, 2379221718u, 2380535040u, 2384724224u, 2384855405u, 2384989398u, 2386690304u, 2417099264u, 2417364223u, 2418934198u, 2419065344u,
+    2420638208u, 2420900315u, 2421031679u, 2421425919u, 2422210962u, 2422342144u, 2422735360u, 2422997467u, 2423128831u, 2423390537u, 2423521755u, 2423654143u,
+    2424439808u, 2425487725u, 2425620223u, 2426536411u, 2426667775u, 2426929664u, 2428502528u, 2428764562u, 2428896255u, 2429288850u, 2429419849u, 2429552639u,
+    2430468608u, 2432172288u, 2432303469u, 2432435455u, 2432958829u, 2433352082u, 2433488127u, 2436104521u, 2436235520u, 2436628992u, 2436891099u, 2437022207u,
+    2437153097u, 2437284315u, 2437417215u, 2438463963u, 2438595584u, 2439119323u, 2439251199u, 2439774866u, 2440038143u, 2440823296u, 2441347328u, 2441611007u,
+    2442395977u, 2442658267u, 2442789887u, 2443182445u, 2443840767u, 2445410706u, 2445541632u, 2445935104u, 2446197174u, 2446330623u, 2447643648u, 2451833088u,
+    2451964269u, 2452098303u, 2453799168u, 2484208128u, 2486174208u, 2487747072u, 2489451008u, 2489844224u, 2491549696u, 2493513984u, 2494038528u, 2495611392u,
+    2497577472u, 2499281408u, 2503213568u, 2503737856u, 2505704448u, 2507932160u, 2508456448u, 2510422784u, 2512650496u, 2513043968u, 2514747904u, 2518941952u,
+    2520777216u, 2551316992u, 2553283072u, 2554855936u, 2556559872u, 2556953088u, 2558657024u, 2559051008u, 2560622848u, 2561147392u, 2562720256u, 2564686336u,
+    2566390272u, 2570322432u, 2570846720u, 2572813312u, 2575041024u, 2575565312u, 2577531904u, 2579759360u, 2580152832u, 2581856768u, 2586050816u, 2587886080u,
+    2618425856u, 2620391936u, 2621964800u, 2623668736u, 2624061952u, 2625765888u, 2626552320u, 2627731712u, 2628256256u, 2629829120u, 2631795200u, 2633499136u,
+    2637431296u, 2637955584u, 2639922176u, 2642149888u, 2642674176u, 2644640768u, 2646868224u, 2647261696u, 2648965632u, 2653159680u, 2654994944u, 2685534720u,
+    2687500800u, 2689073664u, 2690777600u, 2691170816u, 2692874752u, 2693661184u, 2694840576u, 2695365120u, 2696937984u, 2698904064u, 2700608000u, 2704540160u,
+    2705064448u, 2707031040u, 2709258752u, 2709783040u, 2711749632u, 2713977088u, 2714370560u, 2716074496u, 2720268544u, 2722103808u, 2752643584u, 2754609664u,
+    2756182528u, 2757886464u, 2758279680u, 2759983616u, 2760770048u, 2761949440u, 2762473984u, 2764046848u, 2766012928u, 2767716864u, 2771649024u, 2772173312u,
+    2774139904u, 2776367616u, 2776891904u, 2778858496u, 2781085952u, 2781479424u, 2783183360u, 2787377408u, 2789212672u, 2819752448u, 2821718528u, 2823291392u,
+    2824995328u, 2825388544u, 2827092480u, 2827879168u, 2829058304u, 2829582848u, 2831155712u, 2833121792u, 2834825728u, 2838757888u, 2839282176u, 2841248768u,
+    2843476480u, 2844000768u, 2845967360u, 2848194816u, 2848588288u, 2850292224u, 2854486272u, 2856321536u, 2886861312u, 2888827392u, 2890400256u, 2892104192u,
+    2892497408u, 2894201344u, 2894988032u, 2896167168u, 2896691712u, 2898264576u, 2900230656u, 2901934592u, 2905866752u, 2906391040u, 2908357632u, 2910585344u,
+    2911109632u, 2913076224u, 2915303680u, 2915697152u, 2917401088u, 2921595136u, 2923430400u, 2953970176u, 2955936256u, 2957509120u, 2959213056u, 2959606272u,
+    2961310208u, 2962227712u, 2963276032u, 2963800576u, 2965373440u, 2967339520u, 2969043456u, 2972975616u, 2973499904u, 2975466496u, 2977694208u, 2978218496u,
+    2980185088u, 2982412544u, 2982806016u, 2984509952u, 2988704000u, 2990539264u, 3021079040u, 3023045120u, 3024617984u, 3026321920u, 3026715136u, 3028419072u,
+    3029336576u, 3030384896u, 3030909440u, 3032482304u, 3033399552u, 3034448384u, 3036152320u, 3040084480u, 3040608768u, 3042575360u, 3044803072u, 3045327360u,
+    3047293952u, 3049521408u, 3049914880u, 3051618816u, 3055812864u, 3057648128u, 3088187904u, 3090153984u, 3091726848u, 3093430784u, 3093824000u, 3095527936u,
+    3096445440u, 3097493760u, 3098018304u, 3099591168u, 3100508416u, 3101557248u, 3103261184u, 3107193344u, 3107717632u, 3109684224u, 3111911936u, 3112436224u,
+    3114271232u, 3114664448u, 3116630272u, 3117023744u, 3118727680u, 3122921728u, 3124756992u, 3155296768u, 3157262848u, 3158835712u, 3159490816u, 3160539392u,
+    3160932864u, 3161587968u, 3162636800u, 3163554304u, 3164602624u, 3165127168u, 3166700032u, 3167617280u, 3168666112u, 3170370048u, 3171287552u, 3174302208u,
+    3174826496u, 3175350528u, 3176793088u, 3179020800u, 3179545088u, 3180593664u, 3181380096u, 3181773312u, 3183739136u, 3184132608u, 3185836544u, 3190030848u,
+    3191865856u, 3222409472u, 3225947648u, 3228175872u, 3230666240u, 3233943552u, 3237486592u, 3241939200u, 3244298240u, 3246657536u, 3248885760u, 3251375616u,
+    3257143296u, 3289648640u, 3293187328u, 3295415296u, 3297905664u, 3301182976u, 3304719616u, 3305903360u, 3309178624u, 3311537408u, 3313895424u, 3315074304u,
+    3316125184u, 3318614784u, 3324382720u
+};
+int logo_i;
+uint logo_run;
+int logo_x;
+int logo_y;
+int logo_len;
+uint logo_color;
+uint tinycraft_logo_tex[3750];
+int logo_tex_ready = 0;
+int logo_tex_i;
+int logo_tex_x;
+int logo_tex_addr;
+int logo_tex_shift;
+uint logo_tex_mask;
+uint logo_tex_word;
+
+/* 16x16 RGB332 textures, packed as 4 texels per uint word.
+   Embedded as literal data like the reference demo, avoiding runtime
+   texture writes while debugging the textured path. */
+uint tex_grass_carried[64] = {
+    1280078156, 1280068684, 1280068941, 1279807820, 1297173581, 1280134221, 1280397644, 1280068721,
+    1280068689, 1280068684, 1901154636, 1900825676, 1296845900, 1280068940, 1296845900, 1280396364,
+    1282493521, 1363964241, 1363954801, 1280068689, 1363955021, 1296911692, 1280068940, 1280068684,
+    1280396620, 1280068684, 1366379596, 1280135500, 1280134220, 1280396364, 1280078157, 1363956044,
+    1366379857, 1299270737, 1280070001, 1280134220, 1282493517, 1280396620, 1363954764, 1280078156,
+    1364020557, 1280078156, 1280396401, 1280134220, 1363964236, 1280068685, 1280068685, 1280068721,
+    1280068977, 1280068685, 1280068684, 1296847185, 1280069964, 1900825932, 1297173585, 1901153361,
+    1282494801, 1280070001, 1280134476, 1280068945, 1280068940, 1280068945, 1363964236, 1296845900
+};
+
+uint tex_grass_side[64] = {
+    1970632053, 1970369909, 1970632053, 1968206197, 2509600117u, 1903511701, 1972737393, 1970632049,
+    1972979861, 1215645813, 2509600117u, 1215385928, 1212706120, 1212696693, 1215645809, 1766344809,
+    2978834829u, 1768525128, 1833453640, 1766362473, 2374846569u, 1212714345, 1214867784, 2976475497u,
+    1768516017, 2976475538u, 2981194161u, 2372504937u, 2981194089u, 1768525197, 2374846605u, 2374855017u,
+    2372495757u, 1214877033, 1770884457, 1766353257, 1766362473, 1766344809, 1768515945, 2372514225u,
+    2976484713u, 2377214385u, 1219604808, 1771212173, 2372495757u, 2372514189u, 1770884461, 1214877000,
+    1770866793, 1773243789, 1768515945, 2981194089u, 1768525161, 2374855017u, 1219577961, 2374873449u,
+    2974312845u, 1214859369, 2372514225u, 2374855017u, 2377214349u, 1771202957, 1768525197, 1214877069
+};
+
+uint tex_dirt[64] = {
+    1770884529, 2374873449u, 1766353257, 2976493929u, 1766362473, 1217564009, 1770893673, 1212714417,
+    1214867889, 1768516017, 1768516017, 1773226056, 1773235597, 2976467085u, 2372504973u, 1770893673,
+    2978834829u, 1768525128, 1835616397, 1766362473, 2374846569u, 1212714345, 1214867784, 2976475497u,
+    1768516017, 2976475538u, 2981194161u, 2372504937u, 2981194089u, 1768525197, 2374846605u, 2374855017u,
+    2372495757u, 1214877033, 1770884457, 1766353257, 1766362473, 1766344809, 1768515945, 2372514225u,
+    2976484713u, 2377214385u, 1219604808, 1771212173, 2372495757u, 2372514189u, 1770884461, 1214877000,
+    1770866793, 1773243789, 1768515945, 2981194089u, 1768525161, 2374855017u, 1219577961, 2374873449u,
+    2974312845u, 1214859369, 2372514225u, 2374855017u, 2377214349u, 1771202957, 1768525197, 1214877069
+};
+
+uint tex_stone[64] = {
+    2459079314u, 1835887981, 1835887981, 1835887981, 1835887981, 1835887981, 1835887981, 1835887981,
+    1835887981, 1835887981, 1835887981, 1835887981, 2459069805u, 1835897453, 1835897490, 1835887981,
+    1835887981, 1835887981, 2459079277u, 1835888018, 1835897453, 1835887981, 1835887981, 2456644973u,
+    2456644973u, 2456654482u, 1835888018, 1835887981, 1835887981, 1835887981, 1835887981, 1835887981,
+    1838322322, 2456645010u, 1835897490, 1835887981, 1838312813, 2459069805u, 2456645010u, 1838322322,
+    1835887981, 1835887981, 1835887981, 1835887981, 1835887981, 1838322285, 1835887981, 2456654482u,
+    1835887981, 1835897453, 1835887981, 1835887981, 1835897490, 1835887981, 1835887981, 2456644973u,
+    1835887981, 1835887981, 1835887981, 2459079314u, 1835887981, 1835887981, 1838322285, 1835887981
+};
+
+/* blocks/log_oak.png | 16x16 pixels | 64 uint words */
+uint tex_wood[64] = {
+    1770866793, 1770865769, 2372486249u, 1768525128, 1770866793, 1770865769, 2372486249u, 1768515912,
+    1768506473, 1770865769, 1214859369, 1768515912, 1768506509, 1768507497, 1147758953, 1770875208,
+    1768507533, 1768506473, 1768515981, 1770866793, 1766353293, 1214859405, 1217227149, 1770866793,
+    1766353257, 1768515981, 1770875277, 1770866793, 1766091113, 2372495757u, 1770875241, 1770875241,
+    2370062441u, 2372495721u, 1770875241, 1770875277, 2370333033u, 1768515945, 1217227113, 1766091149,
+    2372495721u, 1147758953, 1214867817, 1766091149, 2372487273u, 1147758953, 1147758989, 1766353293,
+    1768507533, 1150118285, 1147758989, 1768515945, 1766353293, 1214867853, 1214867853, 1768515945,
+    2370333069u, 1150118249, 1214859369, 1768525128, 2370333069u, 1217227080, 1768507497, 1768525128
+};
+
+/* blocks/log_oak_top.png | 16x16 pixels | 64 uint words */
+uint tex_log_oak_top[64] = {
+    1768507497, 1768507497, 1768507497, 1768515912, 2981212488u, 2981212593u, 2981212593u, 1219604913,
+    1835905385, 2375126413u, 2442236305u, 1773243789, 2976756073u, 2981212593u, 2981212593u, 1773243825,
+    2978853225u, 2981212593u, 2981212593u, 1773244849, 2979115336u, 2441973169u, 2978844049u, 1219595697,
+    2978853225u, 2981195185u, 2978853297u, 1773243825, 2979115369u, 2444332465u, 2979115409u, 1773244849,
+    2979115369u, 2444332465u, 2978853261u, 1773243825, 2979115336u, 2981203377u, 2979115441u, 1219595697,
+    2978853225u, 1837993393, 2979107213u, 1773244849, 2979115369u, 2981212593u, 2981212593u, 1773243825,
+    2979115336u, 2981212593u, 2981212593u, 1219595697, 2375135593u, 2374864273u, 2374864269u, 1773243789,
+    2981212521u, 2981212593u, 2981212593u, 1773253041, 1768507497, 1768507497, 1768507497, 1768515912
+};
+
+uint tex_leaves[64] = {
+    1296582733, 1299280205, 1212696653, 1900890184, 1212696689, 1299280200, 1903249485, 1900562545,
+    1296910408, 1212697933, 1903260017, 1212696689, 1900900721, 1212697969, 1296920945, 1212696653,
+    1900573041, 1212696689, 1213025608, 1212707185, 1296582728, 1212696653, 1212696648, 1903260017,
+    1212697969, 1903249480, 1213034865, 1903250760, 1213025649, 1900890184, 1215394161, 1900891464,
+    1900562504, 1299271025, 1299280205, 1296910408, 1900563789, 1903250801, 1903259981, 1903249521,
+    1900891505, 1903249485, 1900562545, 1903249521, 1212696689, 1299270984, 1900562504, 1900563789,
+    1296910408, 1213025608, 1903259981, 1212697969, 1903259976, 1212707185, 1903259981, 1212697969,
+    1903259981, 1212707185, 1296910408, 1215394120, 1900891469, 1212696689, 1212696648, 1299280200
+};
+
+
+
+/* Extra atlas textures used by crafting. */
+uint tex_planks_oak[64] = {
+    2981212593u, 2981212593u, 2981212593u, 2377232817u, 2981212593u, 2981204365u, 2981212593u, 2442244529u,
+    2981212593u, 2444341681u, 2979107217u, 2377232817u, 2372758925u, 1768517005, 1835625837, 1768778089,
+    2979115441u, 2444341681u, 2981212593u, 2979115441u, 2981212593u, 2375135633u, 2981212561u, 2981212593u,
+    2981204369u, 2377232817u, 2981212593u, 2442236337u, 1835886953, 1768517005, 1835886953, 1768787309,
+    2981212593u, 2981212593u, 2981212593u, 2444341681u, 2981212593u, 2444341681u, 2444333457u, 2375127473u,
+    2981212593u, 2442236305u, 2981212593u, 2444333457u, 2372757865u, 1768517005, 1837985129, 1768515949,
+    2981204401u, 2444341681u, 2444341681u, 2981212593u, 2981212593u, 2444333457u, 2981212561u, 2981212593u,
+    2979107249u, 2375135665u, 2444341681u, 2442236305u, 1768779113, 2374856041u, 1835625869, 1768515945
+};
+
+uint tex_crafting_table_front[64] = {
+    2981212452u, 1147684017, 2974050372u, 615625137, 2981212452u, 1145344397, 2981184580u, 613527985,
+    2981212452u, 1152496049, 2979107140u, 615625137, 2372758820u, 610889101, 1147759908, 611140676,
+    2979115300u, 1152496049, 615625028, 613491889, 1152495908, 1150398865, 615625028, 615588900,
+    615616804, 1152496049, 3065098564u, 613529270, 611150116, 610889101, 4285360420u, 611179483,
+    615624996, 1152496049, 4289835332u, 615635931, 3688608036u, 1152496091, 2444333380u, 613538779,
+    3686183204u, 1150390783, 2981212484u, 615635967, 2372757796u, 6909325, 1837985024, 610917229,
+    2981204260u, 1152496049, 2444341572u, 615645105, 2981212452u, 1152487825, 2981212484u, 615625137,
+    2979107108u, 1150398897, 2444341572u, 613519761, 1768779044, 613248361, 1835625764, 610888041
+};
+
+uint tex_crafting_table_side[64] = {
+    2981212452u, 1147684017, 2974050372u, 615625137, 2981212452u, 1145344397, 2981184580u, 613527985,
+    2981212452u, 615625137, 2979107108u, 615625137, 2372758820u, 610889101, 1835625764, 611150185,
+    2979115300u, 1152496049, 2981212484u, 613527985, 1152495908, 1150370961, 2981212484u, 615625137,
+    615616804, 1152459953, 2981212484u, 613519793, 1835886884, 610889179, 1835886884, 611159405,
+    3685855524u, 1152506801, 2981212484u, 615625137, 3065098532u, 1152497329, 2444333380u, 613519793,
+    2981212452u, 1150390673, 2981212484u, 615616913, 2372757796u, 6909325, 1837985024, 610888045,
+    2981204260u, 1152496049, 2444341572u, 615625137, 2981212452u, 1152487825, 2981212484u, 615625137,
+    2979107108u, 1150398897, 2444341572u, 613519761, 1768779044, 613248361, 1835625764, 610888041
+};
+
+uint tex_crafting_table_top[64] = {
+    603979812, 1751672900, 1147693160, 606339108, 1152495872, 2913840521u, 2309860781u, 11645252,
+    2906960128u, 2913840557u, 2913840557u, 11617453, 1219314724, 1212696644, 1145324612, 608480584,
+    1219332420, 2907221385u, 2913813677u, 1149873480, 1219341672, 2302979501u, 2911455405u, 1756212552,
+    1219341672, 1212695624, 1145587780, 1756212552, 1219341672, 2907221421u, 2913814701u, 1756212552,
+    1219341672, 2907221421u, 2913814701u, 1756212552, 1152232808, 1145586756, 1145587780, 1756212552,
+    1152232808, 2906959241u, 2913813641u, 1756212552, 1219332420, 2906959241u, 2911454381u, 1149873480,
+    1219314724, 1212695624, 1212696648, 608480584, 2906960128u, 2913840557u, 2913840557u, 11617453,
+    1152495908, 2913840521u, 2309860781u, 615625028, 603989028, 1751672900, 1147693160, 603979812
+};
+
+
+/* Pig entity texture from C:/Users/enzob/Downloads/pig.png. The source is
+   64x64; the top 64x32 pixels are the Bedrock-style pig atlas sampled here. */
+uint tex_pig[512] = {
+    0, 0, 3537040082u, 4141019890u, 4143380214u, 4076009174u, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 3537040114u, 3537040082u, 4143117042u, 3539400438u, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 3539129042u, 3537031890u, 4143380182u, 3539400438u, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 3537031634u, 3537031922u, 4141283058u, 4076271350u, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 3537294034u, 3539129042u, 4141019890u, 4074174198u, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 3453145842u, 4076262130u, 4143117042u, 4076271350u, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 3539129074u, 3539129078u, 4143380178u, 4076008182u, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 4073902834u, 4075999990u, 4076271350u, 4076009206u, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    3453145810u, 3537040081u, 3537031890u, 4143108850u, 4076270326u, 3539400434u, 3537031922u, 3537031922u,
+    0, 3537031922u, 3537031890u, 3537030866u, 3536965074u, 3537031890u, 0, 0,
+    3519926733u, 3469594066u, 4075999954u, 4143380178u, 3537031926u, 4076008146u, 3453145842u, 3536703954u,
+    0, 3537031890u, 3537040082u, 3537031890u, 3537031885u, 3537031890u, 0, 0,
+    3537030605u, 4075990445u, 4143380178u, 4143379186u, 2981294838u, 3537031890u, 3453145554u, 4073901554u,
+    0, 4073902834u, 3537031922u, 3452818130u, 2913849805u, 3537031890u, 0, 0,
+    4073901518u, 4071459245u, 4076011264u, 16774902, 2911482614u, 4073902802u, 3537031926u, 3539129042u,
+    0, 3537041106u, 4073910994u, 3453145810u, 3537022417u, 3537030829u, 0, 0,
+    3537031886u, 3534588333u, 4076008146u, 3606509266u, 2911481590u, 3537031890u, 3520253426u, 3537031890u,
+    0, 4076271350u, 4073910994u, 3453145810u, 2916199889u, 3536704210u, 0, 0,
+    3536702926u, 4075973037u, 4143379186u, 4143379186u, 2978608886u, 3537031922u, 3537031890u, 4073901522u,
+    0, 3606237906u, 3537031890u, 3452818130u, 3537022413u, 3453078989u, 0, 0,
+    3537030605u, 4073902802u, 4075999954u, 4143380214u, 3606237906u, 3539127794u, 3537031890u, 3537031890u,
+    0, 3539129042u, 3537031890u, 3453080306u, 2913850061u, 3537031853u, 0, 0,
+    3537031890u, 3537031890u, 4143108850u, 4143380214u, 4076009170u, 3539129074u, 3537031922u, 4075999954u,
+    0, 3537031922u, 3537031922u, 3537031890u, 3469923026u, 3537031885u, 0, 0,
+    0, 3537031922u, 4136227465u, 0, 4143116800u, 3534925558u, 210, 3539129042u,
+    3537031890u, 3537031890u, 3537031890u, 3520253394u, 3469594062u, 3452883666u, 4073902802u, 3537040082u,
+    0, 3537031890u, 4069118601u, 0, 4143380210u, 62198, 0, 4073902802u,
+    3537031890u, 3537031634u, 3537031890u, 3519925965u, 3452816845u, 3536769741u, 3539129042u, 3537031922u,
+    0, 4073902802u, 4069118601u, 0, 4143090162u, 62089, 0, 3536702926u,
+    3536704210u, 3453144525u, 3537031889u, 3453145554u, 3452816845u, 3536704210u, 3539137266u, 3536704210u,
+    0, 3537031890u, 4136227465u, 0, 4143380210u, 62198, 0, 3536704210u,
+    3452818130u, 3452816845u, 3536966349u, 3452816849u, 3452816845u, 3537031890u, 3539129042u, 3536966354u,
+    3537031890u, 3537040114u, 4073902802u, 3539137266u, 0, 0, 0, 3536702926u,
+    3452818125u, 3452816845u, 3453078989u, 3453078989u, 3452816845u, 3537031890u, 3537031634u, 4073837265u,
+    3537031890u, 3537031890u, 4073910994u, 4076262098u, 0, 0, 0, 3536702929u,
+    3452817869u, 3385707981u, 3452816845u, 3452816845u, 3452818125u, 3539129042u, 3539128818u, 4073575117u,
+    3537031885u, 4073902802u, 3537031890u, 3539137266u, 0, 0, 0, 3519926738u,
+    3452816845u, 3452816845u, 3452816845u, 3385707981u, 3536704205u, 4073902798u, 3539127762u, 3536704210u,
+    3537031890u, 3537031890u, 3537031890u, 3537031922u, 0, 0, 0, 3452816850u,
+    3452554701u, 3452816845u, 3453078989u, 3452816845u, 3452816845u, 3537031890u, 3537030610u, 4073575117u,
+    3452816845u, 3536702925u, 3539129074u, 3537040082u, 0, 0, 0, 3452816845u,
+    3452554697u, 3385707981u, 3452554701u, 3452816845u, 3452816845u, 3537030866u, 3537030642u, 3537031889u,
+    3452816845u, 3446263141u, 3537031890u, 2314373586u, 0, 0, 0, 3452554701u,
+    3452554701u, 3452816845u, 3452816845u, 3452816845u, 3452816845u, 3537031890u, 4073901522u, 3537031889u,
+    0, 0, 0, 0, 0, 0, 0, 3452554701u,
+    3452554701u, 3452816845u, 3452816845u, 3452816845u, 3536702925u, 3537030861u, 3537030610u, 3537040082u,
+    0, 0, 0, 0, 0, 0, 0, 3452816850u,
+    3452816845u, 3385707981u, 3452554701u, 3452816845u, 3536704205u, 3537031890u, 4073901522u, 3537040082u,
+    0, 0, 0, 0, 0, 0, 0, 3452816845u,
+    3452816845u, 3452816845u, 3452816845u, 3519925709u, 3519992269u, 3537031890u, 4073901522u, 4075999954u,
+    0, 0, 0, 0, 0, 0, 0, 3453078989u,
+    3519925713u, 3452816845u, 3452816845u, 3452816845u, 3537031889u, 3537031890u, 3537031890u, 3537031890u,
+    0, 0, 0, 0, 0, 0, 0, 3519925709u,
+    3452816845u, 3452816845u, 3452816845u, 3452816845u, 3469660882u, 3537031890u, 3537031890u, 4073902802u,
+    0, 0, 0, 0, 0, 0, 0, 3452816846u,
+    3453144530u, 3452816845u, 3452816845u, 3536702925u, 3453145810u, 3537031890u, 3537031890u, 3537031890u
+};
+
+/* 6x8 UI font glyphs generated from C:/Users/enzob/Downloads/ascii.png.
+   The source sheet is a 16x16 grid of 8x8 ASCII cells; each glyph keeps the
+   first 6 columns and all 8 rows so the existing 6-pixel text advance remains valid. */
+uint ui_font6x8[512] = {
+    3221693178u, 679477248, 403120890, 679477248, 1915167482, 679477248, 3222249698u, 260046848,
+    1915724002, 260046848, 1343201506, 260046848, 1611534401, 234881024, 432579210, 654311424,
+    1915167370, 654311424, 4161217162u, 654311424, 403219082, 654311424, 4062913162u, 723517440,
+    4161208954u, 662700032, 4161217162u, 654311424, 2311069321u, 3770417152u, 1074663489, 234881024,
+    790593, 234881024, 32124066, 2273312768u, 371130, 2243952640u, 2047279753, 3230400512u,
+    31988747, 3230400512u, 557851307, 1753219072, 557851306, 2810183680u, 2311077425u, 260046848,
+    1915167482, 125829120, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 2181570688u, 134217728, 1363804160, 0, 1364169977, 1157627904,
+    568859659, 3254779904u, 2319517761u, 679477248, 557980338, 1182793728, 1091043328, 0,
+    822616193, 50331648, 3229680656u, 2348810240u, 596112, 0, 8535584, 2147483648u,
+    2, 136314880, 15872, 0, 2, 134217728, 138479681, 134217728,
+    1915333322, 654311424, 562169888, 2407530496u, 1914735682, 796917760, 1914735626, 654311424,
+    413442808, 545259520, 4195287562u, 654311424, 822623370, 654311424, 4196434976u, 2181038080u,
+    1915264138, 654311424, 1915264520, 1174405120, 34078722, 134217728, 34078722, 136314880,
+    277094464, 2164260864u, 1015811, 3758096384u, 2164392993u, 134217728, 1914733600, 33554432,
+    2048617918, 125829120, 1915724426, 679477248, 4063175306u, 788529152, 1915232386, 654311424,
+    4062749322u, 788529152, 4195229826u, 260046848, 4195229826u, 134217728, 2047451786, 654311424,
+    2318377610u, 679477248, 3775139905u, 234881024, 136348170, 654311424, 2320376970u, 679477248,
+    2181570690u, 260046848, 2339021450u, 679477248, 2334828170u, 679477248, 1915265674, 654311424,
+    4063174786u, 134217728, 1915265674, 1182793728, 4063175306u, 679477248, 2047279626, 654311424,
+    4169271328u, 2181038080u, 2317918858u, 654311424, 2317918801u, 1107296256, 2317918891u, 1753219072,
+    2302809226u, 679477248, 2302806048u, 2181038080u, 4162914370u, 260046848, 3792183426u, 234881024,
+    2164525072u, 1082130432, 3766618144u, 2382364672u, 558399488, 0, 0, 4063232,
+    2181300224u, 0, 459386, 662700032, 2181771914u, 788529152, 467586, 654311424,
+    136750730, 662700032, 467706, 125829120, 823070785, 67108864, 500361, 3770417152u,
+    2181771914u, 679477248, 2148016258u, 134217728, 134251018, 681312256, 2181638338u, 2298478592u,
+    2181570690u, 67108864, 862890, 679477248, 991882, 679477248, 467594, 654311424,
+    733835, 3357540352u, 435849, 3766616064u, 733826, 134217728, 499824, 788529152,
+    1091440705, 33554432, 565898, 662700032, 565897, 1107296256, 565930, 2810183680u,
+    562209, 1216348160, 565897, 3770417152u, 1016865, 260046848, 822353985, 50331648,
+    2181562498u, 134217728, 3229746208u, 2348810240u, 1717567488, 0, 136330, 796917760,
+    1915232393, 3230400512u, 1342743178, 662700032, 403120890, 125829120, 1915159162, 662700032,
+    1342636666, 662700032, 3221684858u, 662700032, 537330298, 662700032, 29925513, 3230400512u,
+    1915167482, 125829120, 1342644986, 125829120, 3221693178u, 125829120, 2684620865u, 67108864,
+    1914832928, 2181038080u, 3221491777u, 67108864, 2311634570u, 679477248, 537338618, 679477248,
+    403677410, 260046848, 330362, 2273312768u, 2056202402, 2340421632u, 1915167370, 654311424,
+    1342644874, 654311424, 3221693066u, 654311424, 1914708618, 662700032, 3221791370u, 662700032,
+    1342743177, 3770417152u, 2311627402u, 654311424, 2282267274u, 654311424, 468651, 654835712,
+    824458305, 260046848, 1915333322, 654311424, 659616, 0, 279059488, 2316304384u,
+    403112570, 662700032, 3221758082u, 134217728, 403120778, 654311424, 403219082, 662700032,
+    4161741450u, 679477248, 4161319594u, 1753219072, 1882168835, 3758096384u, 1915264003, 3758096384u,
+    537006210, 654311424, 32205269, 3758096384u, 15880, 536870912, 2319517769u, 1233125376,
+    2319517785u, 1753219072, 33562754, 134217728, 10823760, 2684354560u, 42273362, 2147483648u,
+    572662306, 572653568, 1453681238, 2775187456u, 3655187417u, 3720019968u, 409044504, 1636171776,
+    409044728, 1636171776, 409962232, 1636171776, 886263284, 3545038848u, 252, 3545038848u,
+    1017592, 1636171776, 887046644, 3545038848u, 886263092, 3545038848u, 1032692, 3545038848u,
+    887046652, 0, 886263292, 0, 409962232, 0, 248, 1636171776,
+    409044508, 0, 409044732, 0, 252, 1636171776, 409044508, 1636171776,
+    252, 0, 409044732, 1636171776, 409060892, 1636171776, 886263092, 3545038848u,
+    886262844, 0, 248884, 3545038848u, 887046396, 0, 1032436, 3545038848u,
+    886262836, 3545038848u, 1032444, 0, 887046388, 3545038848u, 409977084, 0,
+    886263292, 0, 1032444, 1636171776, 252, 3545038848u, 886263100, 0,
+    409060892, 0, 116252, 1636171776, 60, 3545038848u, 886263292, 3545038848u,
+    409978620, 1636171776, 409044728, 0, 28, 1636171776, 4294967295u, 4294901760u,
+    255, 4294901760u, 4090445043u, 3476815872u, 204522252, 818085888, 4294967040u, 0,
+    489419, 2000683008, 32308943, 3962568704u, 66908355, 201326592, 66509677, 3066036224u,
+    4281732195u, 1069547520, 521947, 1728053248, 26630501, 4130340864u, 31311384, 1635778560,
+    4240946125u, 3812556800u, 968654789, 3011510272u, 968651117, 3200253952u, 482451407, 931135488,
+    521945, 4026531840u, 70776537, 4130340864u, 965492417, 2206203904u, 2067592143, 1019215872,
+    66076419, 4026531840u, 818924592, 264241152, 1623297120, 264241152, 415632408, 264241152,
+    207717912, 1636171776, 409044507, 1838940160, 817905408, 3271557120u, 31309943, 1879048192,
+    968281600, 0, 1560, 0, 24, 0, 204522477, 3016163328u,
+    2042026860, 0, 1885542520, 0, 249660, 4026531840u, 0, 0
+};
+
+/* Per-glyph crop data for ui_font6x8. ui_font_left shifts visible pixels to
+   the requested x coordinate; ui_font_advance is visible width plus one pixel. */
+int ui_font_left[256] = {
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0,
+    3, 0, 0, 3, 0, 0, 3, 2, 2, 2, 0, 0, 2, 0, 0, 0,
+    0, 0, 0, 2, 3, 3, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 3, 0, 0, 0, 1, 3, 3, 0, 1, 1, 2, 0
+};
+
+int ui_font_advance[256] = {
+    6, 6, 6, 6, 6, 6, 4, 6, 6, 6, 6, 6, 6, 6, 6, 4,
+    4, 6, 7, 6, 6, 6, 6, 6, 6, 0, 0, 0, 0, 0, 0, 0,
+    4, 2, 5, 6, 6, 6, 6, 3, 5, 5, 5, 6, 2, 6, 2, 6,
+    6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 2, 2, 5, 6, 5, 6,
+    7, 6, 6, 6, 6, 6, 6, 6, 6, 4, 6, 6, 6, 6, 6, 6,
+    6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 4, 6, 4, 6, 6,
+    3, 6, 6, 6, 6, 6, 5, 6, 6, 2, 6, 5, 3, 6, 6, 6,
+    6, 6, 6, 6, 4, 6, 6, 6, 6, 6, 6, 5, 2, 5, 7, 6,
+    6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 4, 6, 3, 6, 6,
+    6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 4, 6,
+    6, 3, 6, 6, 6, 6, 6, 6, 6, 7, 6, 6, 6, 2, 6, 6,
+    6, 7, 7, 3, 6, 6, 7, 7, 6, 7, 5, 7, 7, 7, 6, 6,
+    4, 7, 7, 4, 7, 7, 4, 5, 5, 5, 7, 7, 5, 7, 7, 7,
+    7, 7, 7, 5, 4, 4, 5, 7, 7, 6, 4, 7, 7, 5, 3, 7,
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 6, 7,
+    7, 7, 7, 7, 4, 6, 7, 7, 6, 3, 3, 7, 6, 5, 5, 0
+};
+
+/* 18-float transform block expected by fillQuad3DTexZ. */
+float cam[18];
+
+/* Player/camera state. Position is the eye/camera position. */
+float player_x;
+float player_y;
+float player_z;
+float player_foot_y;
+float player_vy;
+float player_vx;
+float player_vz;
+int player_on_ground;
+float yaw_angle;
+float pitch_angle;
+float sin_yaw;
+float cos_yaw;
+float sin_pitch;
+float cos_pitch;
+float view_x;
+float view_y;
+float view_z;
+
+/* Walking camera bob and first-person hand sway. These are globals because the
+   VM stack is expensive and these values are used every frame. */
+float cam_bob_phase;
+float cam_bob_x;
+float cam_bob_y;
+float cam_bob_wave;
+float cam_bob_wave_abs;
+float hand_walk_x;
+float hand_walk_y;
+float hand_sway_x;
+float hand_sway_y;
+float hand_sway_target_x;
+float hand_sway_target_y;
+uint air_hit_anim_ms;
+uint place_anim_ms;
+uint land_anim_ms;
+float air_hit_t;
+float air_hit_fold;
+float place_anim_t;
+float place_anim_fold;
+float land_anim_t;
+float land_anim_fold;
+float land_cam_y;
+float land_hand_y;
+float mine_anim_t;
+float mine_anim_fold;
+float mine_anim_wave;
+float mine_anim_punch;
+uint mine_anim_phase_ms;
+
+/* Frame/input globals. */
+int key_data;
+int key_pressed;
+uint last_ms;
+float frame_move_speed;
+float frame_turn_speed;
+int old_break_key;
+int old_place_key;
+int old_jump_key;
+int old_render_inc_key;
+int old_render_dec_key;
+int old_stats_key;
+int render_stats_enabled = 0;
+uint last_jump_ms;
+
+/* Pause/menu state. Menu is intentionally screen-space only and stops the
+   normal update/render path while open. */
+int menu_open = 0;
+int menu_page = 0;          /* 0=main, 1=settings, 2=recipes */
+int old_menu_key = 0;
+float camera_sensitivity = 1.0f;
+int camera_sensitivity_percent = 100;
+float cursor_sensitivity = 1.0f;
+int cursor_sensitivity_percent = 100;
+float ui_cursor_x = 160.0f;
+float ui_cursor_y = 120.0f;
+float ui_cursor_speed;
+int ui_cursor_ix;
+int ui_cursor_iy;
+int old_cursor_left_click = 0;
+int old_cursor_right_click = 0;
+int menu_tmp_x;
+int menu_tmp_y;
+int menu_tmp_w;
+uint menu_color;
+
+/* Persistent configuration stored in the SD deploy directory as editable text. */
+char config_path[22] = {'/', 'T', 'i', 'n', 'y', 'c', 'r', 'a', 'f', 't', '/', 'c', 'o', 'n', 'f', 'i', 'g', '.', 't', 'x', 't', 0};
+uint config_magic = 0x54434331; /* TCC1 */
+int clouds_enabled = 0;
+int cloud_area_blocks = 64;
+int autosave_enabled = 1;
+int pending_camera_sensitivity_percent = 100;
+int pending_cursor_sensitivity_percent = 100;
+int pending_render_chunks = 1;
+int pending_clouds_enabled = 0;
+int pending_cloud_area_blocks = 64;
+int pending_autosave_enabled = 1;
+int stars_enabled = 1;
+int aimed_outline_enabled = 0;
+int pending_stars_enabled = 1;
+int pending_aimed_outline_enabled = 0;
+int config_dirty = 0;
+uint autosave_icon_until_ms = 0;
+/* v53 autosave throttling state. */
+uint world_last_dirty_edit_ms = 0;
+int autosave_step_active = 0;
+int autosave_step_phase = 0;
+int autosave_step_i = 0;
+int autosave_step_file_offset = 0;
+uint config_icon_until_ms = 0;
+int config_tmp;
+int config_scan_i;
+int config_value;
+int config_digit_seen;
+int config_sign;
+uint clouds_now;
+int cloud_scroll;
+int cloud_i;
+int cloud_x;
+int cloud_y;
+int cloud_color;
+float cloud_t;
+float cloud_base_x;
+float cloud_base_z;
+float cloud_y_world;
+float cloud_layer_y;
+float cloud_rect_x0;
+float cloud_rect_x1;
+float cloud_rect_z0;
+float cloud_rect_z1;
+uint cloud_rect_color;
+int cloud_grid_x;
+int cloud_grid_z;
+int cloud_shape;
+int cloud_cell_x;
+int cloud_cell_z;
+float cloud_tile;
+float cloud_span;
+float cloud_origin_x;
+float cloud_origin_z;
+float cloud_tile_x;
+float cloud_tile_z;
+float cloud_motion;
+float cloud_abs_player_x;
+float cloud_abs_player_z;
+float cloud_abs_tile_x;
+float cloud_abs_tile_z;
+int cloud_origin_tile_x;
+int cloud_origin_tile_z;
+int cloud_tile_index_x;
+int cloud_tile_index_z;
+int cloud_grid_count;
+int cloud_hash;
+int cloud_variant;
+int cloud_skip;
+float cloud_size_x;
+float cloud_size_z;
+float cloud_off_x;
+float cloud_off_z;
+float cloud_mid_x;
+float cloud_mid_z;
+float cloud_frustum_top_y;
+float cloud_frustum_bottom_y;
+
+/* Day/night cycle. This is visual-only: terrain/blocks are not shaded. */
+int day_cycle_speed_percent = 100;
+int pending_day_cycle_speed_percent = 100;
+uint day_now_ms;
+uint day_last_ms;
+uint day_elapsed_ms;
+uint day_tick_units;
+uint day_time_tick;
+uint day_length_ms;
+uint day_phase_ms;
+float day_phase_float;
+float day_angle;
+float day_sin;
+float day_cos;
+uint sky_color_current = 111;
+uint cloud_day_color = 255;
+uint cloud_shadow_color = 219;
+int night_active = 0;
+float moon_cx;
+float moon_cy;
+float moon_cz;
+float sky_body_outer;
+float sky_body_inner;
+uint sky_outer_color;
+uint sky_inner_color;
+int star_i;
+int star_hash;
+float star_side;
+float star_tangent;
+float star_size;
+float star_cx;
+float star_cy;
+float star_cz;
+float star_rx;
+float star_ry;
+float star_rz;
+float star_ux;
+float star_uy;
+float star_uz;
+float star_moon_up;
+
+/* Mining/breaking state. Z must be held until mining_progress_ms reaches
+   mining_required_ms. If the ray target changes or the key is released,
+   progress resets, matching the Minecraft-style feel. */
+int mining_active;
+int mining_target_valid;
+int mining_target_x;
+int mining_target_y;
+int mining_target_z;
+uint mining_target_block;
+uint mining_progress_ms;
+uint mining_required_ms;
+uint mining_last_ms;
+
+/* Survival/health state. Health is stored in half-hearts: 20 = 10 full hearts. */
+int player_health = 20;
+int player_dead = 0;
+float player_hurt_ms = 0.0f;
+float player_invuln_ms = 0.0f;
+float player_last_damage_taken = 0.0f;
+float player_attack_cooldown_ms = 0.0f;
+float fall_highest_foot_y = 0.0f;
+float fall_distance_blocks = 0.0f;
+int fall_tracking = 0;
+int fall_damage_half_hearts = 0;
+int old_death_click = 0;
+int death_respawn_x0;
+int death_respawn_y0;
+int death_respawn_x1;
+int death_respawn_y1;
+int death_exit_x0;
+int death_exit_y0;
+int death_exit_x1;
+int death_exit_y1;
+int heart_i;
+int heart_half;
+int heart_x;
+int heart_y;
+int heart_state;
+int up_running;
+float up_run_mult;
+
+/* Aimed block outline scratch. */
+int outline_save_valid;
+int outline_save_x;
+int outline_save_y;
+int outline_save_z;
+uint outline_save_block;
+int outline_save_face;
+int outline_face;
+uint outline_col = 73;
+float outline_thick = 0.22f;
+int outline_neighbor_solid;
+int outline_abs_x;
+int outline_abs_z;
+
+/* Q-drop / hotbar animation scratch. */
+int old_drop_key;
+uint drop_throw_item;
+int drop_throw_ok;
+float drop_frame_alpha;
+float drop_pull_x;
+float drop_pull_y;
+float drop_pull_z;
+int old_selected_slot_for_anim = 0;
+uint hotbar_raise_anim_ms = 0;
+float hotbar_raise_t;
+float hotbar_raise_offset;
+
+/* Global raycast scratch, avoiding stack-heavy raycast locals. */
+float ray_rx;
+float ray_ry;
+float ray_rz;
+int ray_i;
+int ray_bx;
+int ray_by;
+int ray_bz;
+int ray_last_x;
+int ray_last_y;
+int ray_last_z;
+uint ray_b;
+float ray_t;
+float ray_tmax_x;
+float ray_tmax_y;
+float ray_tmax_z;
+float ray_tdelta_x;
+float ray_tdelta_y;
+float ray_tdelta_z;
+int ray_step_x;
+int ray_step_y;
+int ray_step_z;
+float ray_hit_x;
+float ray_hit_y;
+float ray_hit_z;
+float ray_frac_x;
+float ray_frac_y;
+float ray_frac_z;
+
+/* Screen-space hand/animation scratch. */
+uint hand_now;
+int hand_frame;
+int mine_bar_w;
+
+/* Shared temporary coordinates for block drawing. */
+float bx0;
+float bx1;
+float by0;
+float by1;
+float bz0;
+float bz1;
+
+/* v13 global scratch state. These replace hot-path local variables and
+   high-frequency function parameters. On this VM, locals/arguments live in
+   stack frames, so reusing globals reduces ENTER/frame-slot/argument traffic
+   in the renderer and per-frame input/physics path. */
+int g_i;
+int g_x;
+int g_y;
+int g_z;
+int g_x0;
+int g_x1;
+int g_z0;
+int g_z1;
+int g_base;
+uint g_b;
+float g_fx;
+float g_fy;
+float g_fz;
+float g_dx;
+float g_dz;
+float g_d2;
+float g_forward;
+float g_side;
+float g_side_abs;
+float g_max_side;
+float g_mesh_extent;
+
+/* Current block being drawn. */
+int db_x;
+int db_y;
+int db_z;
+int db_abs_x;
+int db_abs_z;
+uint db_id;
+uint *db_top_tex;
+uint *db_side_tex;
+uint *db_bottom_tex;
+uint *render_mesh_top_tex_by_block[16];
+uint *render_mesh_bottom_tex_by_block[16];
+uint *render_mesh_side_tex_by_block[16];
+float render_mesh_native_config[6];
+
+/* Textured inventory/drop/viewmodel item drawing scratch. The block side texture
+   is used for icons; full top/side/bottom textures are used for item cubes. */
+uint *item_top_tex;
+uint *item_side_tex;
+uint *item_bottom_tex;
+uint *icon_tex;
+int icon_tex_id = 0;
+uint *pig_texture_ptr;
+int pig_texture_w;
+int pig_texture_h;
+int pig_texture_id = 11;
+int pig_part_texture_id = 11;
+int pig_bound_texture_id = -1;
+int pig_model_id = 1;
+int entity_behavior_kind = 1;
+int pig_max_active = 6;
+int pig_spawn_group = 4;
+int pig_spawn_floor_block = 1;
+int pig_spawn_light_min = 7;
+float pig_hitbox_x = 0.45f;
+float pig_hitbox_z = 0.70f;
+float pig_body_height = 0.95f;
+float pig_eye_height = 0.72f;
+float pig_render_radius = 1.45f;
+float pig_lod_dist_sq = 100.0f;
+float pig_ai_tick_ms = 96.0f;
+float pig_move_speed = 0.00082f;
+float pig_turn_speed = 0.00235f;
+float pig_head_turn_speed = 0.0026f;
+float pig_head_yaw_limit = 1.309f;
+float pig_head_pitch_limit = 0.70f;
+float entity_controller_chase_dist_sq = 256.0f;
+float entity_controller_attack_dist_sq = 1.74f;
+float entity_controller_attack_cooldown_ms = 1000.0f;
+int entity_controller_attack_damage = 3;
+float entity_melee_knockback_strength = 0.40f;
+float entity_knockback_resistance = 0.0f;
+float entity_knockback_motion_scale = 0.020f;
+float entity_knockback_vertical_scale = 0.010f;
+float entity_knockback_vertical_cap = 0.004f;
+float entity_panic_duration_ms = 4000.0f;
+float entity_death_duration_ms = 1000.0f;
+float player_melee_reach = 3.0f;
+float player_melee_expand = 0.10f;
+int player_fist_damage = 1;
+int player_fist_cooldown_ms = 500;
+int combat_damage_melee = 1;
+int font_offset;
+int font_left;
+int font_advance;
+int text_x;
+int icon_ix;
+int icon_iy;
+int icon_word_idx;
+int icon_shift;
+uint icon_word;
+uint icon_color;
+int icon_px;
+int icon_py;
+
+/* Sky sun: fixed relative to the player on the +Z sky axis.
+   The center follows the player like a skybox object, but it is always
+   located above/in front of the player on one block-grid axis instead of
+   being tied to camera yaw. The quad is parallel to the X/Y block face, so
+   from that locked +Z sky-axis position it always faces back toward the
+   player without rotating with the camera angle. */
+float sun_distance_blocks = 420.0f;
+float sun_height_blocks = 420.0f;
+float sun_orbit_radius_blocks = 420.0f;
+float sun_radius_blocks = 14.0f;
+float sky_core_offset_blocks = 3.0f;
+float sun_cx;
+float sun_cy;
+float sun_cz;
+float sun_rx;
+float sun_ry;
+float sun_rz;
+float sun_ux;
+float sun_uy;
+float sun_uz;
+float sun_outer;
+float sun_inner;
+float sky_rel_y;
+float sky_rel_z;
+float sky_core_cy;
+float sky_core_cz;
+float sky_core_push;
+float star_basis_y;
+float star_basis_z;
+
+
+/* Real inventory/hotbar.
+   Slots 0..8 are the 9-slot hotbar. Slots 9..35 are the 3x9 inventory.
+   Slot ID is a block ID, slot count is the stack amount. A zero count means empty. */
+int selected_slot = 0;
+uint selected_block = 0;
+int max_stack_size = 64;
+uint inv_id[36];
+int inv_count[36];
+int inventory_open = 0;
+uint held_id = 0;
+int held_count = 0;
+int old_slot1_key = 0;
+int old_slot2_key = 0;
+int old_slot3_key = 0;
+int old_slot4_key = 0;
+int old_slot5_key = 0;
+int old_slot6_key = 0;
+int old_slot7_key = 0;
+int old_slot8_key = 0;
+int old_slot9_key = 0;
+int old_inventory_key = 0;
+int inv_actual_slot;
+uint inv_tmp_id;
+int inv_tmp_count;
+int inv_add_i;
+int inv_add_remaining;
+int inv_add_space;
+int inv_add_move;
+int inv_draw_i;
+int inv_draw_row;
+int inv_draw_col;
+int inv_draw_slot;
+int hotbar_i;
+int hotbar_x;
+int hotbar_y = 212;
+int hotbar_count;
+uint hotbar_color;
+int digit_value;
+int number_value;
+int number_x;
+int number_digits_started;
+uint number_u_value;
+uint number_u_div;
+uint number_u_digit;
+uint rs_quads;
+uint rs_tris;
+uint rs_tested;
+uint rs_written;
+uint rs_rejected;
+uint rs_fast_empty;
+uint rs_fast_current;
+uint fps_last_ms;
+uint fps_now;
+uint fps_elapsed;
+int fps_frame_count;
+int fps_value;
+int debug_coord_x;
+int debug_coord_y;
+int debug_coord_z;
+
+/* Crafting state. inventory_open + crafting_table_mode selects the visible
+   grid: normal inventory uses 2x2 + output, crafting table uses 3x3 + output. */
+int crafting_table_mode = 0;
+uint craft_id[9];
+int craft_count[9];
+uint craft_output_id = 0;
+int craft_output_count = 0;
+int craft_active_slots = 4;
+int craft_slot_i;
+int craft_slot_x;
+int craft_slot_y;
+int craft_slot_col;
+int craft_slot_row;
+int craft_nonempty_count;
+int craft_plank_count;
+int craft_wood_count;
+int craft_recipe_ok;
+int craft_out_x;
+int craft_out_y;
+int craft_grid_x;
+int craft_grid_y;
+int craft_step = 22;
+int craft_size = 2;
+int craft_consume_i;
+
+/* World item drops. Blocks do not enter inventory instantly; they spawn as
+   pickup entities and are collected only when the player gets close. */
+int drop_active[64];
+uint drop_block[64];
+int drop_count[64];
+float drop_x[64];          /* absolute world block coordinates */
+float drop_y[64];
+float drop_z[64];
+float drop_vy[64];
+float drop_vx[64];
+float drop_vz[64];
+int drop_resting[64];
+float drop_ground_base[64];
+uint drop_age_ms[64];
+uint drop_pickup_delay_ms[64];
+int drop_spin_speed[64];
+float drop_spin_angle[64];
+float drop_spin_rate[64];
+int drop_active_count = 0;
+int drop_i;
+int drop_j;
+int drop_wx;
+int drop_wz;
+int drop_ground_y;
+float drop_ground_f;
+float drop_lx;
+float drop_lz;
+float drop_dx;
+float drop_dy;
+float drop_dz;
+float drop_dist2;
+uint drop_col;
+uint drop_rnd;
+int drop_rand_x;
+int drop_rand_z;
+int drop_rot_phase;
+int drop_merge_space;
+int drop_merge_move;
+int drop_added_count;
+uint drop_merge_last_ms = 0;
+float drop_rot_c;
+float drop_rot_s;
+int drop_bob_tick;
+float drop_bob_y;
+float drop_draw_y;
+float item_cx;
+float item_cy;
+float item_cz;
+float item_h;
+float item_xa;
+float item_za;
+float item_xb;
+float item_zb;
+float item_xc;
+float item_zc;
+float item_xd;
+
+float item_zd;
+
+/* Pig mobs. Positions are absolute world block coordinates so they survive
+   active-window recentering without needing to be copied like world[]. */
+struct Pig {
+    int active;
+    int type_id;
+    float x;
+    float y;
+    float z;
+    float prev_x;
+    float prev_y;
+    float prev_z;
+    float yaw;
+    float prev_yaw;
+    float target_yaw;
+    float cached_c;
+    float cached_s;
+    float prev_cached_c;
+    float prev_cached_s;
+    float leg_offset;
+    float prev_leg_offset;
+    float vy;
+    int on_ground;
+    float walk_ms;
+    float turn_ms;
+    float step_phase;
+    float goal_x;
+    float goal_z;
+    float rest_ms;
+    int has_goal;
+    int save_slot;
+    float head_yaw;
+    float prev_head_yaw;
+    float head_pitch;
+    float prev_head_pitch;
+    float head_rel_c;
+    float head_rel_s;
+    float prev_head_rel_c;
+    float prev_head_rel_s;
+    float head_pitch_c;
+    float head_pitch_s;
+    float prev_head_pitch_c;
+    float prev_head_pitch_s;
+    float attack_cooldown_ms;
+    float panic_ms;
+    int max_health;
+    int health;
+    float hurt_ms;
+    float invuln_ms;
+    float last_damage_taken;
+    float vx;
+    float vz;
+    int dead;
+    float death_ms;
+};
+struct Pig pigs[6];
+float pig_ai_accum_ms = 0.0f;
+float pig_collision_accum_ms = 0.0f;
+float pig_ai_dt = 0.0f;
+float entity_update_tick_ms = 96.0f;
+int pig_count = 0;
+int entity_spawn_type;
+int entity_type_count;
+int pig_i;
+int pig_j;
+int pig_ground_y;
+int pig_rand_dir;
+int pig_turn_sign;
+float pig_turn_delta;
+float pig_turn_step;
+float pig_yaw_error;
+float pig_dx;
+float pig_dz;
+float pig_dist2;
+float pig_forward;
+float pig_side;
+float pig_side_abs;
+float pig_max_side;
+float pig_step;
+float pig_nx;
+float pig_nz;
+float pig_new_y;
+float pig_diff_y;
+float pig_c;
+float pig_s;
+float pig_draw_x;
+float pig_draw_y;
+float pig_draw_z;
+float pig_draw_c;
+float pig_draw_s;
+float pig_render_blend;
+float pig_render_yaw;
+float pig_render_leg;
+float pig_death_progress;
+float pig_death_roll_angle;
+float pig_death_roll_c;
+float pig_death_roll_s;
+float pig_roll_x;
+float pig_roll_y;
+float pig_leg_anim;
+float pig_leg_swing;
+float pig_part_angle;
+int pig_model_first_part;
+int pig_model_part_end;
+int pig_model_part_i;
+float pig_box_lx0;
+float pig_box_lx1;
+float pig_box_ly0;
+float pig_box_ly1;
+float pig_box_lz0;
+float pig_box_lz1;
+int pig_uvx;
+int pig_uvy;
+int pig_sx;
+int pig_sy;
+int pig_sz;
+float pig_fu0;
+float pig_fv0;
+float pig_fu1;
+float pig_fv1;
+float pig_tx0;
+float pig_tx1;
+float pig_tx2;
+float pig_tx3;
+float pig_tz0;
+float pig_tz1;
+float pig_tz2;
+float pig_tz3;
+float pig_y0;
+float pig_y1;
+float pig_abs_x;
+float pig_abs_z;
+int pig_bx0;
+int pig_bx1;
+int pig_bz0;
+int pig_bz1;
+int pig_by0;
+int pig_by1;
+int pig_spawn_x;
+int pig_spawn_z;
+int pig_old_floor_x;
+int pig_old_floor_z;
+int pig_new_floor_x;
+int pig_new_floor_z;
+int pig_spawn_attempts;
+int pig_goal_attempts;
+int pig_goal_off_x;
+int pig_goal_off_z;
+int pig_goal_bx;
+int pig_goal_bz;
+float pig_goal_dx;
+float pig_goal_dz;
+float pig_goal_dist2;
+float pig_goal_abs;
+float pig_goal_tx;
+float pig_goal_tz;
+float pig_goal_dot;
+float pig_goal_cross;
+float pig_leg_piv_y;
+float pig_leg_piv_z;
+float pig_leg_rot_c;
+float pig_leg_rot_s;
+float pig_leg_rel_y;
+float pig_leg_rel_z;
+int pig_spawn_ok;
+int pig_render_cx;
+int pig_render_cz;
+int pig_render_section;
+int pig_render_chunk_id;
+float pig_ground_top;
+float pig_probe_x;
+float pig_probe_z;
+float pig_step_y;
+float pig_overlap_x;
+float pig_overlap_z;
+float pig_center_dx;
+float pig_center_dz;
+float pig_push_dist;
+float pig_push_x;
+float pig_push_z;
+float pig_push_angle;
+float pig_push_abs_x;
+float pig_push_abs_z;
+float pig_sqrt_guess;
+float pig_min_a;
+float pig_max_a;
+float pig_min_b;
+float pig_max_b;
+float pig_player_nx;
+float pig_player_nz;
+float combat_tmp;
+float combat_amount;
+float combat_final_damage;
+float combat_source_x;
+float combat_source_z;
+float combat_kb_strength;
+float combat_dx;
+float combat_dz;
+float combat_len;
+float combat_width;
+float combat_target_width;
+float combat_reach_sq;
+float combat_ray_ox;
+float combat_ray_oy;
+float combat_ray_oz;
+float combat_ray_dx;
+float combat_ray_dy;
+float combat_ray_dz;
+float combat_ray_len;
+float combat_ray_tmin;
+float combat_ray_tmax;
+float combat_ray_axis_min;
+float combat_ray_axis_max;
+float combat_ray_axis_origin;
+float combat_ray_axis_dir;
+float combat_ray_t1;
+float combat_ray_t2;
+float combat_best_t;
+int combat_best_slot;
+int combat_hit;
+int combat_damage_int;
+uint combat_item_id;
+uint entity_drop_item;
+float pig_head_yaw;
+float pig_head_pitch;
+float pig_head_rel_yaw;
+float pig_head_piv_x = 0.0f;
+float pig_head_piv_y = 0.7000f;
+float pig_head_piv_z = -0.5000f;
+float pig_head_rel_x;
+float pig_head_rel_y;
+float pig_head_rel_z;
+float pig_head_pitch_y;
+float pig_head_pitch_z;
+float pig_head_yaw_x;
+float pig_head_yaw_z;
+float pig_head_rot_c;
+float pig_head_rot_s;
+float pig_head_pitch_c;
+float pig_head_pitch_s;
+float pig_look_tx;
+float pig_look_ty;
+float pig_look_tz;
+float pig_look_dx;
+float pig_look_dy;
+float pig_look_dz;
+float pig_look_hdist;
+float pig_look_target_pitch;
+float pig_look_pitch_err;
+float pig_look_step;
+float pig_look_rel;
+float pig_look_blend;
+float pig_look_dist2;
+float pig_look_target_yaw;
+float pig_cam_dx;
+float pig_cam_dz;
+float pig_cam_base_lx;
+float pig_cam_base_ly;
+float pig_cam_base_lz;
+float pig_cam_rel_x;
+float pig_cam_rel_y;
+float pig_cam_rel_z;
+float pig_cam_pitch_z;
+float pig_cam_local_x;
+float pig_cam_local_y;
+float pig_cam_local_z;
+int pig_draw_face_front;
+int pig_draw_face_right;
+int pig_draw_face_back;
+int pig_draw_face_left;
+int pig_draw_face_top;
+int pig_draw_face_bottom;
+
+/* File-backed entity streaming. The world file reserves a fixed entity section
+   after the maximum edit area, so edit_count changes never move entity records. */
+int entity_file_offset = 8960;
+int entity_record_size = 64;
+int entity_max_slots = 128;
+int entity_stream_radius_blocks = 48;
+int entity_stream_loaded = 0;
+int entity_stream_center_cx = 999999;
+int entity_stream_center_cz = 999999;
+int entity_stream_cx;
+int entity_stream_cz;
+int entity_stream_slot;
+int entity_stream_free_slot;
+int entity_stream_record_type;
+int entity_stream_active_flag;
+int entity_stream_read;
+int entity_stream_loaded_any;
+int entity_stream_skip_flush = 0;
+int entity_stream_dist_limit_sq;
+int entity_stream_abs_x;
+int entity_stream_abs_z;
+float entity_stream_player_x;
+float entity_stream_player_z;
+float entity_stream_x;
+float entity_stream_y;
+float entity_stream_z;
+float entity_stream_dx;
+float entity_stream_dz;
+int world_load_entity_slots;
+int world_load_entity_version;
+
+void flushActiveEntitiesToWorldFile();
+void streamEntitiesForCurrentPosition();
+void clearPigsOnly();
+int drawSmallCharAt(int x, int y, int ch, uint color);
+
+/* Shared camera-frustum object culling scratch. Coordinates are in local
+   block units, matching player_x/player_y/player_z. */
+float obj_dx;
+float obj_dy;
+float obj_dz;
+float obj_forward;
+float obj_side;
+float obj_side_abs;
+float obj_up;
+float obj_up_abs;
+float obj_margin;
+float obj_radius;
+float obj_cx;
+float obj_cy;
+float obj_cz;
+
+/* Cached T-overlay light values. Skylight bleed can scan many columns, so
+   avoid doing that math every rendered frame while the debug menu is open. */
+uint debug_light_last_ms = 0;
+int debug_light_cache_valid = 0;
+int debug_light_cache_x = 0;
+int debug_light_cache_y = 0;
+int debug_light_cache_z = 0;
+
+/* Math-only light levels. Rendering does not use these values yet. */
+int light_y;
+int light_level_sky;          /* effective sky light after time-of-day darkening */
+int light_level_raw_sky;      /* stored/technical sky light before darkening */
+int light_level_block;
+int light_level_total;
+int light_level_decay;
+int light_level_darkening;
+int light_level_effective_sky;
+uint light_block_id;
+int debug_light_sky;
+int debug_light_raw_sky;
+int debug_light_block;
+int debug_light_total;
+int debug_light_darkening;
+int hostile_light_check;
+int light_dx;
+int light_dz;
+int light_adx;
+int light_adz;
+int light_scan_dist;
+int light_best;
+int light_source;
+int light_candidate;
+int light_step_x;
+int light_step_z;
+int light_px;
+int light_pz;
+int light_path_i;
+int light_path_len;
+int light_path_ok;
+
+/* Block-breaking overlay. Ten masked 16x16 textures are loaded from the
+   environment/destroy_stage sequence and drawn slightly above exposed faces. */
+int mining_target_face;
+int crack_stage;
+int crack_face;
+int crack_abs_x;
+int crack_abs_z;
+float crack_u0;
+float crack_v0;
+float crack_u1;
+float crack_v1;
+float crack_s;
+float crack_eps = 7.0f;
+float crack_bx0;
+float crack_bx1;
+float crack_by0;
+float crack_by1;
+float crack_bz0;
+float crack_bz1;
+float crack_fu0;
+float crack_fv0;
+float crack_fu1;
+float crack_fv1;
+
+/* True 3D first-person viewmodel. hand_cam is an identity camera-space
+   transform: vertices are already in camera coordinates, so the model stays
+   attached to the player's view like Minecraft's arm. */
+float hand_cam[18];
+float vm_x0;
+float vm_x1;
+float vm_y0;
+float vm_y1;
+float vm_z0;
+float vm_z1;
+float hand_anim_x;
+float hand_anim_y;
+float hand_anim_z;
+uint hand_col_a;
+uint hand_col_b;
+uint hand_col_c;
+int held_is_placeable_block;
+int held_is_tool_item;
+int hover_slot_kind;
+uint hover_item_id;
+int hover_item_count;
+int item_mesh_draw_id;
+int item_mesh_draw_face;
+int item_mesh_draw_face_end;
+int item_mesh_draw_tex;
+uint *item_mesh_draw_tex_ptr;
+int item_mesh_face_flags;
+int item_mesh_vm_flags;
+float item_mesh_scale = 4.0f;
+float item_mesh_base_x;
+float item_mesh_base_y;
+float item_mesh_base_z;
+float item_mesh_lx;
+float item_mesh_ly;
+float item_mesh_lz;
+float item_mesh_rx;
+float item_mesh_rz;
+float item_mesh_tx;
+float item_mesh_ty;
+float item_mesh_tz;
+float item_mesh_rot;
+float item_mesh_rot_c;
+float item_mesh_rot_s;
+float item_mesh_depth_scale;
+float item_mesh_tilt_z;
+float item_mesh_x0;
+float item_mesh_y0;
+float item_mesh_z0;
+float item_mesh_x1;
+float item_mesh_y1;
+float item_mesh_z1;
+float item_mesh_x2;
+float item_mesh_y2;
+float item_mesh_z2;
+float item_mesh_x3;
+float item_mesh_y3;
+float item_mesh_z3;
+float item_mesh_u0;
+float item_mesh_v0;
+float item_mesh_u1;
+float item_mesh_v1;
+int block_model_draw_id;
+int block_model_draw_face;
+int block_model_draw_face_end;
+int block_model_draw_block_id;
+int block_model_world_x;
+int block_model_world_y;
+int block_model_world_z;
+float block_model_origin_x;
+float block_model_origin_y;
+float block_model_origin_z;
+float block_model_unit;
+uint craft_recipe_type;
+int craft_stick_count;
+int craft_tool_count;
+int craft_use_count;
+int craft_use0;
+int craft_use1;
+int craft_use2;
+int craft_use3;
+int craft_use4;
+int craft_check_col;
+int craft_check_row;
+int craft_s0;
+int craft_s1;
+int craft_s2;
+int craft_s3;
+int craft_s4;
+int ui_inv_x0;
+int ui_inv_y0;
+int ui_hotbar_y;
+int ui_slot_step;
+int ui_slot_size;
+
+/* Per-frame/update scratch. */
+uint up_now;
+uint up_dt;
+float up_dtf;
+int up_break_now;
+int up_place_now;
+int up_view_dirty;
+float up_move_x;
+float up_move_z;
+float up_air_max;
+int up_moving;
+uint game_tick_accum_ms;
+uint game_tick_count;
+uint game_tick_i;
+int tick_w_down;
+int tick_s_down;
+int tick_a_down;
+int tick_d_down;
+int tick_jump_request;
+float tick_input_x;
+float tick_input_z;
+float tick_input_len_sq;
+float tick_input_inv;
+float tick_accel;
+float tick_speed_sq;
+float tick_speed_len;
+float tick_speed_scale;
+float tick_new_foot_y;
+float frame_tick_alpha;
+float frame_alpha_left;
+float frame_alpha_step;
+uint frame_alpha_guard;
+float frame_vy_step;
+int tick_jump_started;
+int tick_jump_this_update;
+float cam_right_x;
+float cam_right_z;
+float cam_up_x;
+float cam_up_y;
+float cam_up_z;
+float cam_px;
+float cam_py;
+float cam_pz;
+float phys_ground_y;
+float phys_new_foot_y;
+int phys_was_ground;
+float move_nx;
+float move_nz;
+float move_ground_y;
+float move_diff_y;
+int move_moved_axis;
+
+/* Procedural/chunk-window scratch globals. */
+int gen_wx;
+int gen_wz;
+int gen_lx;
+int gen_lz;
+int gen_idx;
+int gen_h;
+int gen_edit_i;
+int gen_edit_lx;
+int gen_edit_lz;
+uint gen_hash;
+
+/* Smooth terrain-generation scratch. Kept global to avoid stack pressure in the
+   procedural hot path. */
+int fd_q;
+int fd_r;
+int tn_gx0;
+int tn_gz0;
+int tn_fx;
+int tn_fz;
+int tn_sx;
+int tn_sz;
+int tn_n00;
+int tn_n10;
+int tn_n01;
+int tn_n11;
+int tn_ix0;
+int tn_ix1;
+int tn_val;
+int tn_low;
+int tn_mid;
+int tn_small;
+int tn_fine;
+int tn_ridge;
+int tn_dist;
+int tn_blend;
+int tn_soil;
+int stone_bx;
+int stone_bz;
+int stone_dx;
+int stone_dz;
+int stone_adx;
+int stone_adz;
+int stone_h;
+float rec_abs_x;
+float rec_abs_z;
+int rec_new_origin_x;
+int rec_new_origin_z;
+int floor_tmp_i;
+int edit_i;
+float render_abs_player_x;
+float render_abs_player_z;
+int tree_bx;
+int tree_bz;
+int tree_h;
+int tree_trunk_h;
+int tree_dx;
+int tree_dz;
+int tree_adx;
+int tree_adz;
+int tree_leaf_y;
+
+
+/* v36 sectioned render cache.
+   One uint still stores an 8-block vertical section-column using 4 bits per block:
+       bits  0.. 3 = y0
+       bits  4.. 7 = y1
+       ...
+       bits 28..31 = y7
+   Instead of storing every vertical section for every cached x/z column,
+   TinyCraft builds one 8x8x8 scratch section while remeshing. Rendered
+   section meshes are retained and indexed by x/z chunk plus vertical section. */
+uint render_section_block[64];
+uint render_section_face_low[64];
+uint render_section_face_high[64];
+int render_cache_valid = 0;
+int render_cache_radius = 0;
+int render_cache_width = 0;
+int render_cache_origin_x = 0;
+int render_cache_origin_z = 0;
+int render_cache_center_x = 0;
+int render_cache_center_z = 0;
+int render_cache_chunks = 0;
+int render_desired_cache_radius = 0;
+int render_cache_shift_margin = 0;
+/* Lazy procedural-column cache. One packed word per x/z column stores terrain
+   height and the natural surface/tree decisions used by baseBlockAtAbs(). The
+   second array lets cache shifts preserve the overlapping columns instead of
+   recomputing all terrain noise after every move. */
+uint render_natural_column_info[16384];
+uint render_natural_column_shift[16384];
+uint render_natural_column_invalid = (uint)0xFFFFFFFF;
+uint render_column_info_word;
+uint render_column_tree_word;
+int render_column_cache_i;
+int render_column_cache_x;
+int render_column_cache_z;
+int render_column_cache_new_x;
+int render_column_cache_new_z;
+int render_column_cache_hits = 0;
+int render_column_cache_misses = 0;
+int render_visible_center_x = 0;
+int render_visible_center_z = 0;
+int render_visible_min_x = 0;
+int render_visible_max_x = 0;
+int render_visible_min_z = 0;
+int render_visible_max_z = 0;
+int rc_cache_dx;
+int rc_cache_dz;
+int rc_x;
+int rc_z;
+int rc_y;
+int rc_wx;
+int rc_wz;
+int rc_idx;
+int rc_col_x;
+int rc_col_z;
+int rc_tree_x;
+int rc_tree_z;
+int rc_leaf_x;
+int rc_leaf_z;
+int rc_leaf_y;
+int rc_dx;
+int rc_dz;
+int rc_adx;
+int rc_adz;
+int rc_h;
+int rc_shift;
+int rc_tmp_shift;
+uint rc_word;
+uint rc_mask;
+uint rc_block;
+uint rc_neighbor_block;
+uint rc_top_block;
+uint rc_bottom_block;
+uint rc_north_block;
+uint rc_south_block;
+uint rc_west_block;
+uint rc_east_block;
+uint rc_face_low_word;
+uint rc_face_high_word;
+uint rc_face_word;
+uint rc_face_bits;
+uint rc_draw_bits;
+int rc_face_shift;
+/* Dedicated scratch for cache access helpers. Do NOT reuse rc_idx/rc_shift here: the mesh builder keeps those as the current output column/voxel while calling these helpers for neighbor checks. */
+int rb_local_x;
+int rb_local_y;
+int rb_local_z;
+int rb_idx;
+int rb_shift;
+int rf_local_x;
+int rf_local_y;
+int rf_local_z;
+int rf_idx;
+int rf_shift;
+int cf_local_x;
+int cf_local_y;
+int cf_local_z;
+int cf_idx;
+int cf_shift;
+float rc_abs_player_x;
+float rc_abs_player_z;
+int rc_center_floor_x;
+int rc_center_floor_z;
+
+// v36 greedy mesh cache.
+// Each merged rectangle uses two packed words:
+//   p0: x0[0..6], z0[7..13], y0[14..19], faceBits[20..25], blockId[26..29]
+//   p1: x1[0..6], z1[7..13], y1[14..19], chunkId[20..31]
+// This keeps greedy meshing cheap in VM RAM and prepares the renderer for
+// larger tiled quads via fillQuad3DTexZTiled().
+uint render_mesh_p0[24576];
+uint render_mesh_p1[24576];
+int render_mesh_next[24576];
+int render_chunk_face_head[12288];
+int render_chunk_built[2048];
+int render_chunk_max_y[2048];
+int render_chunk_has_edit[2048];
+int render_chunk_has_custom_model[2048];
+/* v66 fast-terrain render optimization: per-section fast face masks let
+   renderWorld skip empty direction buckets before calling the native packed
+   terrain renderer. */
+int render_chunk_has_fast_faces[2048];
+int render_chunk_face_mask[2048];
+/* Legacy compaction counters remain for image/cache maintenance. Direct edit
+   splits now unlink and recycle their mesh node immediately. */
+int render_dead_mesh_count = 0;
+int render_mesh_compact_needed = 0;
+/* v66 delayed greedy recovery: edits are patched instantly, then after the
+   player stops editing the touched sections are rebuilt with full greedy
+   meshing so long-term terrain performance recovers. */
+int render_bg_greedy_dirty[2048];
+int render_bg_greedy_x[512];
+int render_bg_greedy_z[512];
+int render_bg_greedy_s[512];
+int render_bg_greedy_count = 0;
+int render_bg_greedy_scan = 0;
+int render_bg_greedy_pick = -1;
+int render_bg_greedy_delay_ms = 2000;
+/* NARM branch: recover direct-edit fragmentation only while the normal stream
+   queue is empty and FPS has headroom. The worker is interval-limited to one
+   section, so cleanup cannot monopolize a frame sequence. */
+int render_bg_greedy_enabled = 1;
+uint render_bg_greedy_next_ms = 0;
+int render_bg_greedy_interval_ms = 1000;
+int render_mesh_compact_enabled = 1;
+/* v65 render optimization: custom block models are kept in a per-section
+   linked list built during remesh. The old renderer scanned all 512 blocks
+   in every visible section every frame just to find the few custom blocks. */
+int render_custom_block_head[2048];
+int render_custom_block_next[1024];
+int render_custom_block_x[1024];
+int render_custom_block_y[1024];
+int render_custom_block_z[1024];
+uint render_custom_block_id[1024];
+int render_custom_block_count = 0;
+int render_custom_block_free_head = -1;
+int render_custom_block_slot = 0;
+int render_custom_block_next_slot = 0;
+int render_custom_block_frame_budget = 128;
+float render_custom_block_distance_sq = 400.0f;
+int render_chunk_dirty[2048];
+int render_chunk_dirty_edit[2048];
+int render_chunk_fast_edit[2048];
+/* Linked edit list per render chunk/section. This avoids scanning all 512
+   saved edits every time a single edited section has to be rebuilt. */
+int render_chunk_edit_head[2048];
+int edit_next_in_render_chunk[512];
+/* Per-frame visibility stamps. renderWorld() marks only x/z chunks and
+   sections that are actually inside the current camera frustum this frame.
+   Entity drawing checks these stamps instead of historical built flags, so
+   mobs cannot keep rendering in chunks that are no longer rendered. */
+int render_chunk_visible_stamp[2048];
+int render_xz_visible_stamp[256];
+int render_frame_stamp = 1;
+/* Natural vertical render limit per 8x8 x/z render chunk. Index is cz*16+cx.
+   This is computed from the generator instead of being a fixed section count. */
+int render_chunk_natural_max_section[256];
+int render_shift_chunk_built[2048];
+int render_shift_chunk_max_y[2048];
+int render_shift_natural_max_section[256];
+int render_dirty_chunk_x[1024];
+int render_dirty_chunk_z[1024];
+int render_dirty_chunk_s[1024];
+int render_dirty_chunk_count = 0;
+int render_dirty_scan;
+int render_dirty_exists;
+int render_dirty_pick;
+int render_remesh_wait = 0;
+int render_remesh_delay = 0;
+/* Visible gameplay work enters this near-first queue in small batches. */
+int render_missing_queue_budget = 0;
+/* NARM streaming is time-budgeted rather than stopped by an FPS threshold.
+   Low-FPS play still gets one guaranteed section build per force interval. */
+uint render_stream_next_build_ms = 0;
+uint render_stream_last_build_ms = 0;
+uint render_stream_build_start_ms = 0;
+uint render_stream_build_end_ms = 0;
+int render_stream_frame_budget_ms = 4;
+int render_stream_force_interval_ms = 200;
+int render_stream_last_build_duration_ms = 0;
+int render_stream_build_count = 0;
+int render_stream_forced_build_count = 0;
+/* v53: block edits are rebuilt with the cheap straight-face pass first.
+   The expensive greedy remesh was the visible spike after breaking/placing.
+   Natural/loading chunks still use greedy meshes; edited chunks prioritize
+   stable frame time over perfect mesh compression. */
+uint render_last_edit_ms = 0;
+int render_edit_remesh_delay_ms = 0;
+/* v53: direct edit-mesh patching. Breaking/placing a block no longer queues
+   even a cheap section rebuild. Instead, the affected greedy rectangles are
+   split only where the changed unit face lived, and newly exposed faces are
+   inserted as single-face meshes. */
+uint edit_patch_old_block = 0;
+uint edit_patch_new_block = 0;
+int edit_patch_mesh_i;
+int edit_patch_next_i;
+int edit_patch_prev_i;
+int edit_patch_face_slot;
+int edit_patch_cell_x;
+int edit_patch_cell_y;
+int edit_patch_cell_z;
+int edit_patch_block_id;
+int edit_patch_found;
+int edit_patch_local_ok;
+int edit_patch_wx;
+int edit_patch_wz;
+int edit_patch_y;
+/* v53 background mesh prefetch. The visible renderer queues chunks only when
+   they enter view; at render distance > 1 that caused constant stutter while
+   walking. These cursors slowly build cached-but-not-yet-visible chunks during
+   good frames, so movement into a new area usually finds meshes ready. */
+int render_prefetch_active = 0;
+int render_prefetch_x = 0;
+int render_prefetch_z = 0;
+int render_prefetch_s = 0;
+int render_prefetch_attempts = 0;
+int render_prefetch_radius = 0;
+int render_prefetch_cx0 = 0;
+int render_prefetch_cx1 = 0;
+int render_prefetch_cz0 = 0;
+int render_prefetch_cz1 = 0;
+uint render_prefetch_next_ms = 0;
+int render_prefetch_interval_ms = 100;
+
+uint render_cached_tex_block = 999;
+int render_chunk_i;
+int render_face_slot;
+int render_mesh_count = 0;
+int render_free_mesh_head = -1;
+int render_mesh_slot;
+int render_mesh_build_failed = 0;
+int render_mesh_allocation_failures = 0;
+int render_mesh_incomplete_builds = 0;
+int render_visible_required_count = 0;
+int render_visible_built_count = 0;
+int render_visible_missing_count = 0;
+int render_cache_reset_count = 0;
+int render_cache_shift_count = 0;
+int render_shift_preserved_sections = 0;
+int render_shift_preserved_meshes = 0;
+int render_shift_old_origin_x;
+int render_shift_old_origin_z;
+int render_shift_old_width;
+int render_shift_new_origin_x;
+int render_shift_new_origin_z;
+int render_shift_new_width;
+int render_shift_old_chunk_id;
+int render_shift_new_chunk_id;
+int render_shift_new_chunk_x;
+int render_shift_new_chunk_z;
+int render_shift_new_mesh_count;
+int render_shift_max_y;
+int gm_x;
+int gm_y;
+int gm_z;
+int gm_x0;
+int gm_y0;
+int gm_z0;
+int gm_x1;
+int gm_y1;
+int gm_z1;
+int gm_scan_x;
+int gm_scan_y;
+int gm_scan_z;
+int gm_can_extend;
+int gm_pass;
+int gm_mesh_i;
+int gm_next_mesh_i;
+int gm_chunk_x;
+int gm_chunk_z;
+int gm_chunk_x0;
+int gm_chunk_z0;
+int gm_chunk_x1;
+int gm_chunk_z1;
+int gm_chunk_id;
+int gm_section;
+int gm_section_y0;
+int gm_section_y1;
+int gm_local_x;
+int gm_local_y;
+int gm_local_z;
+int gm_chunk_cx0;
+int gm_chunk_cz0;
+int gm_chunk_cx1;
+int gm_chunk_cz1;
+int gm_player_chunk_x;
+int gm_player_chunk_z;
+int gm_radius;
+int gm_max_radius;
+int gm_dx;
+int gm_dz;
+uint gm_face_bit;
+uint gm_block_id;
+uint gm_p0;
+uint gm_p1;
+float gm_fx0;
+float gm_fx1;
+float gm_fy0;
+float gm_fy1;
+float gm_fz0;
+float gm_fz1;
+float gm_u_tiles;
+float gm_v_tiles;
+float gm_cam_block_x;
+float gm_cam_block_y;
+float gm_cam_block_z;
+float gm_center_x;
+float gm_center_y;
+float gm_center_z;
+float gm_chunk_center_x;
+float gm_chunk_center_z;
+float gm_forward;
+float gm_side;
+float gm_side_abs;
+float gm_up;
+float gm_up_abs;
+float gm_fov_margin;
+float gm_half_x;
+float gm_half_y;
+float gm_half_z;
+float gm_extent_side;
+float gm_extent_up;
+float gm_extent_forward;
+int gm_abs_x0;
+int gm_abs_x1;
+int gm_abs_z0;
+int gm_abs_z1;
+int rn_cx;
+int rn_cz;
+int rn_idx;
+int rn_x;
+int rn_z;
+int rn_x0;
+int rn_x1;
+int rn_z0;
+int rn_z1;
+int rn_h;
+int rn_max_y;
+int rn_tree_x;
+int rn_tree_z;
+int rn_trunk_h;
+int rn_dx;
+int rn_dz;
+int rn_adx;
+int rn_adz;
+int rn_lx;
+int rn_lz;
+int rn_leaf_y;
+int rn_max_s;
+/* Cached edit lookups can happen inside a mesh build while the gm_* globals
+   describe the section being generated. Keep lookup scratch separate so a
+   boundary-neighbor query cannot redirect subsequent mesh writes. */
+int edit_lookup_col_x;
+int edit_lookup_col_z;
+int edit_lookup_chunk_x;
+int edit_lookup_chunk_z;
+int edit_lookup_section;
+int edit_lookup_chunk_id;
+int edit_lookup_i;

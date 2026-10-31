@@ -1,0 +1,192 @@
+void clearEntityRegistry()
+{
+    entity_runtime_applied_id = -1;
+    g_i = 0;
+    while (g_i < TC_MAX_ENTITY_DEFS)
+    {
+        entityDefs[g_i].used = 0;
+        entityDefs[g_i].id = g_i;
+        entityDefs[g_i].render_kind = TC_ENTITY_RENDER_NONE;
+        entityDefs[g_i].behavior_kind = TC_ENTITY_BEHAVIOR_NONE;
+        entityDefs[g_i].texture_id = TC_TEX_MISSING;
+        entityDefs[g_i].model_kind = TC_ENTITY_MODEL_NONE;
+        entityDefs[g_i].max_active = 0;
+        entityDefs[g_i].spawn_group = 0;
+        entityDefs[g_i].spawn_floor_block = 0;
+        entityDefs[g_i].spawn_light_min = 0;
+        entityDefs[g_i].hitbox_x = 0.0f;
+        entityDefs[g_i].hitbox_z = 0.0f;
+        entityDefs[g_i].height = 0.0f;
+        entityDefs[g_i].eye_height = 0.0f;
+        entityDefs[g_i].render_radius = 0.0f;
+        entityDefs[g_i].lod_dist_sq = 0.0f;
+        entityDefs[g_i].ai_tick_ms = 0.0f;
+        entityDefs[g_i].move_speed = 0.0f;
+        entityDefs[g_i].turn_speed = 0.0f;
+        entityDefs[g_i].head_turn_speed = 0.0f;
+        entityDefs[g_i].head_yaw_limit = 0.0f;
+        entityDefs[g_i].head_pitch_limit = 0.0f;
+        g_i = g_i + 1;
+    }
+}
+
+void defineRuntimeEntityFull(
+    int id,
+    int render_kind,
+    int behavior_kind,
+    int texture_id,
+    int model_kind,
+    int max_active,
+    int spawn_group,
+    int spawn_floor_block,
+    int spawn_light_min,
+    int hitbox_x_milli,
+    int hitbox_z_milli,
+    int height_milli,
+    int eye_height_milli,
+    int render_radius_milli,
+    int lod_dist_sq,
+    int ai_tick_ms,
+    int move_speed_micro,
+    int turn_speed_micro,
+    int head_turn_speed_micro,
+    int head_yaw_limit_milli,
+    int head_pitch_limit_milli)
+{
+    if (id < 0) return;
+    if (id >= TC_MAX_ENTITY_DEFS) return;
+    if (entity_runtime_applied_id == id) entity_runtime_applied_id = -1;
+
+    entityDefs[id].used = 1;
+    entityDefs[id].id = id;
+    entityDefs[id].render_kind = render_kind;
+    entityDefs[id].behavior_kind = behavior_kind;
+    entityDefs[id].texture_id = texture_id;
+    entityDefs[id].model_kind = model_kind;
+    entityDefs[id].max_active = max_active;
+    entityDefs[id].spawn_group = spawn_group;
+    entityDefs[id].spawn_floor_block = spawn_floor_block;
+    entityDefs[id].spawn_light_min = spawn_light_min;
+    entityDefs[id].hitbox_x = (float)hitbox_x_milli * 0.001f;
+    entityDefs[id].hitbox_z = (float)hitbox_z_milli * 0.001f;
+    entityDefs[id].height = (float)height_milli * 0.001f;
+    entityDefs[id].eye_height = (float)eye_height_milli * 0.001f;
+    entityDefs[id].render_radius = (float)render_radius_milli * 0.001f;
+    entityDefs[id].lod_dist_sq = (float)lod_dist_sq;
+    entityDefs[id].ai_tick_ms = (float)ai_tick_ms;
+    entityDefs[id].move_speed = (float)move_speed_micro * 0.000001f;
+    entityDefs[id].turn_speed = (float)turn_speed_micro * 0.000001f;
+    entityDefs[id].head_turn_speed = (float)head_turn_speed_micro * 0.000001f;
+    entityDefs[id].head_yaw_limit = (float)head_yaw_limit_milli * 0.001f;
+    entityDefs[id].head_pitch_limit = (float)head_pitch_limit_milli * 0.001f;
+}
+
+void initFallbackEntityRegistry()
+{
+    if (entityDefs[TC_ENTITY_PIG].used != 0) return;
+
+    defineRuntimeEntityFull(
+        TC_ENTITY_PIG,
+        TC_ENTITY_RENDER_CUBOIDS,
+        TC_ENTITY_BEHAVIOR_CONTROLLER_PASSIVE_00,
+        TC_TEX_PIG,
+        TC_ENTITY_MODEL_PIG,
+        6,
+        4,
+        (int)BLOCK_GRASS,
+        7,
+        450,
+        700,
+        950,
+        720,
+        1450,
+        100,
+        96,
+        820,
+        2350,
+        2600,
+        1309,
+        700
+    );
+}
+
+int entityDefinitionUsable(int entity_id)
+{
+    initFallbackEntityRegistry();
+
+    if (entity_id <= TC_ENTITY_NONE) return 0;
+    if (entity_id >= TC_MAX_ENTITY_DEFS) return 0;
+    if (entityDefs[entity_id].used == 0) return 0;
+    if (entityDefs[entity_id].render_kind != TC_ENTITY_RENDER_CUBOIDS) return 0;
+    if (entityDefs[entity_id].model_kind <= TC_ENTITY_MODEL_NONE) return 0;
+    if (entityDefs[entity_id].model_kind >= TC_MAX_ENTITY_MODELS) return 0;
+    if (entityModelDefs[entityDefs[entity_id].model_kind].used == 0) return 0;
+    return 1;
+}
+
+void applyEntityDefinitionToRuntime(int entity_id)
+{
+    initFallbackEntityRegistry();
+
+    if (entityDefinitionUsable(entity_id) == 0) entity_id = TC_ENTITY_PIG;
+    if (entity_runtime_applied_id == entity_id) return;
+
+    pig_texture_id = entityDefs[entity_id].texture_id;
+    if (pig_texture_id < 0) pig_texture_id = TC_TEX_PIG;
+    if (pig_texture_id >= TC_MAX_TEXTURES) pig_texture_id = TC_TEX_PIG;
+
+    pig_texture_ptr = textureRegistryPtr(pig_texture_id);
+    pig_texture_w = textureRegistryWidth(pig_texture_id);
+    pig_texture_h = textureRegistryHeight(pig_texture_id);
+
+    pig_model_id = entityDefs[entity_id].model_kind;
+    if (pig_model_id < 0) pig_model_id = TC_ENTITY_MODEL_NONE;
+    if (pig_model_id >= TC_MAX_ENTITY_MODELS) pig_model_id = TC_ENTITY_MODEL_NONE;
+
+    entity_behavior_kind = entityDefs[entity_id].behavior_kind;
+    if (entity_behavior_kind <= TC_ENTITY_BEHAVIOR_NONE) entity_behavior_kind = TC_ENTITY_BEHAVIOR_CONTROLLER_PASSIVE_00;
+
+    pig_max_active = entityDefs[entity_id].max_active;
+    if (pig_max_active < 1) pig_max_active = 1;
+    if (pig_max_active > TC_MAX_ACTIVE_ENTITIES) pig_max_active = TC_MAX_ACTIVE_ENTITIES;
+
+    pig_spawn_group = entityDefs[entity_id].spawn_group;
+    if (pig_spawn_group < 0) pig_spawn_group = 0;
+    if (pig_spawn_group > pig_max_active) pig_spawn_group = pig_max_active;
+
+    pig_spawn_floor_block = entityDefs[entity_id].spawn_floor_block;
+    pig_spawn_light_min = entityDefs[entity_id].spawn_light_min;
+    pig_hitbox_x = entityDefs[entity_id].hitbox_x;
+    pig_hitbox_z = entityDefs[entity_id].hitbox_z;
+    pig_body_height = entityDefs[entity_id].height;
+    pig_eye_height = entityDefs[entity_id].eye_height;
+    pig_render_radius = entityDefs[entity_id].render_radius;
+    pig_lod_dist_sq = entityDefs[entity_id].lod_dist_sq;
+    pig_ai_tick_ms = entityDefs[entity_id].ai_tick_ms;
+    pig_move_speed = entityDefs[entity_id].move_speed;
+    pig_turn_speed = entityDefs[entity_id].turn_speed;
+    pig_head_turn_speed = entityDefs[entity_id].head_turn_speed;
+    pig_head_yaw_limit = entityDefs[entity_id].head_yaw_limit;
+    pig_head_pitch_limit = entityDefs[entity_id].head_pitch_limit;
+
+    if (pig_hitbox_x <= 0.0f) pig_hitbox_x = 0.45f;
+    if (pig_hitbox_z <= 0.0f) pig_hitbox_z = 0.70f;
+    if (pig_body_height <= 0.0f) pig_body_height = 0.95f;
+    if (pig_eye_height <= 0.0f) pig_eye_height = 0.72f;
+    if (pig_render_radius <= 0.0f) pig_render_radius = 1.45f;
+    if (pig_lod_dist_sq <= 0.0f) pig_lod_dist_sq = 100.0f;
+    if (pig_ai_tick_ms <= 0.0f) pig_ai_tick_ms = 96.0f;
+    if (pig_move_speed <= 0.0f) pig_move_speed = 0.00082f;
+    if (pig_turn_speed <= 0.0f) pig_turn_speed = 0.00235f;
+    if (pig_head_turn_speed <= 0.0f) pig_head_turn_speed = 0.0026f;
+    if (pig_head_yaw_limit <= 0.0f) pig_head_yaw_limit = 1.309f;
+    if (pig_head_pitch_limit <= 0.0f) pig_head_pitch_limit = 0.70f;
+    entity_runtime_applied_id = entity_id;
+}
+
+void applyPigEntityDefinition()
+{
+    applyEntityDefinitionToRuntime(TC_ENTITY_PIG);
+    entity_update_tick_ms = pig_ai_tick_ms;
+    if (entity_update_tick_ms <= 0.0f) entity_update_tick_ms = 96.0f;
+}

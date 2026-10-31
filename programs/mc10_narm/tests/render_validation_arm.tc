@@ -1,0 +1,34 @@
+/* Actual Thumb test of the production incremental surface guard, with the
+ * same host-free renderer service adapter as the existing target tests. */
+#define MC_RENDER_ARM_TEST 1
+#define MC10_PLAYER_FOUNDATION 1
+#include "render_validation_adapter.c"
+float mc_game_partial_tick(void){return 0;}
+void mc_hud_draw(void){}
+void mc_viewmodel_capture_frame(float partial){}
+void mc_viewmodel_draw(float partial){}
+int main(void)
+{
+ int i,result=0;
+ fixture_render_init(-33,-1);
+ fixture_blocks[64]=1;fixture_blocks[320]=1;fixture_blocks[4096]=200;
+ mc_render_cache_limit=1;
+ mc_render_rebuild_begin();
+ for(i=0;i<100&&result==0;i=i+1)result=mc_render_rebuild_step();
+ if(result!=1||mc_render_cache_ready!=0||mc_render_cache_error!=1)return 101;
+ if(mc_render_rebuild_bad_id!=200||mc_render_rebuild_bad_x!=-542||
+    mc_render_rebuild_bad_y!=0||mc_render_rebuild_bad_z!=-32)return 102;
+ if(mc_render_rebuild_block_error()!=1||mc_render_geometry_count!=0||
+    mc_render_capture!=0||mc_render_cached_standard!=0)return 103;
+ /* Same unique cell now has a registration but no reproduced shape. Both
+  * conditions must still be diagnosed AFTER the tiny surface pool overflow. */
+ mc_blocks[200].present=1;mc_blocks[200].render_type=99;
+ mc_render_rebuild_begin();result=0;
+ for(i=0;i<100&&result==0;i=i+1)result=mc_render_rebuild_step();
+ if(result!=1||mc_render_cache_error!=1||mc_render_cache_ready!=0)return 104;
+ if(mc_render_rebuild_bad_id!=200||mc_render_rebuild_bad_x!=-542||
+    mc_render_rebuild_bad_y!=0||mc_render_rebuild_bad_z!=-32)return 105;
+ mc_render_rebuild_cancel();
+ if(mc_render_rebuild_block_error()!=0||mc_render_rebuild_bad_id!=0)return 106;
+ return 0;
+}

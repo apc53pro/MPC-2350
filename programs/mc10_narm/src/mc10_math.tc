@@ -1,0 +1,26 @@
+/* Original MathHelper SIN_TABLE, exported on the host from the owned source. */
+uint mc_math_sine[65536];
+int mc_math_ready;
+uint mc_math_crc32(void)
+{
+    char *bytes=(char *)&mc_math_sine[0];uint crc=0xffffffff;int i,bit;
+    for(i=0;i<262144;i=i+1)
+    {crc=crc^((uint)bytes[i]&255);for(bit=0;bit<8;bit=bit+1)crc=(crc>>1)^((crc&1)?0xedb88320:0);}
+    return crc^0xffffffff;
+}
+int mc_math_init(void)
+{
+    uint header[4];
+    mc_math_ready=0;
+    if(narm_file_read("/MC10/math10.dat",&header[0],0,16,NARM_STORAGE_SD)!=16) return 0;
+    if(header[0]!=0x544d434d || header[1]!=1 || header[2]!=65536) return 0;
+    if(narm_file_read("/MC10/math10.dat",&mc_math_sine[0],16,262144,NARM_STORAGE_SD)!=262144) return 0;
+    if(mc_math_crc32()!=header[3])return 0;
+    mc_math_ready=1;return 1;
+}
+float mc_math_sin(float value)
+{uint bits=mc_math_sine[(int)(value*10430.378f)&65535];return *((float *)&bits);}
+float mc_math_cos(float value)
+{uint bits=mc_math_sine[(int)(value*10430.378f+16384.0f)&65535];return *((float *)&bits);}
+float mc_math_sqrt_float(float value)
+{return mc_fp_to_f32(mc_fp_sqrt(mc_fp_f32(value)));}

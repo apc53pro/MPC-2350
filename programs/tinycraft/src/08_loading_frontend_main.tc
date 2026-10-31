@@ -1,0 +1,1008 @@
+int loadingSectionShouldWarm(int cx, int cz, int section)
+{
+    /* Loading now covers the complete configured visible window. The previous
+       frustum-only warm-up left the back half missing and depended on a
+       low-FPS-sensitive gameplay streamer when the player turned around. */
+    return 1;
+}
+
+void setupLoadingTerrainBuild()
+{
+    updateViewVectors();
+    updateCamera();
+    buildRenderColumnCache();
+
+    render_radius_blocks = (render_chunks * 16) - 8;
+    if (render_radius_blocks < 8) render_radius_blocks = 8;
+    if (render_radius_blocks > 40) render_radius_blocks = 40;
+
+    rc_abs_player_x = (float)world_origin_x + player_x;
+    rc_abs_player_z = (float)world_origin_z + player_z;
+    render_visible_center_x = floorFloatToInt(((float)floorFloatToInt(rc_abs_player_x) + 8.0f) * 0.0625f) * 16;
+    render_visible_center_z = floorFloatToInt(((float)floorFloatToInt(rc_abs_player_z) + 8.0f) * 0.0625f) * 16;
+    render_visible_min_x = render_visible_center_x - render_radius_blocks;
+    render_visible_max_x = render_visible_center_x + render_radius_blocks;
+    render_visible_min_z = render_visible_center_z - render_radius_blocks;
+    render_visible_max_z = render_visible_center_z + render_radius_blocks;
+
+    gm_x0 = render_visible_min_x - render_cache_origin_x;
+    gm_x1 = render_visible_max_x - 1 - render_cache_origin_x;
+    gm_z0 = render_visible_min_z - render_cache_origin_z;
+    gm_z1 = render_visible_max_z - 1 - render_cache_origin_z;
+    if (gm_x0 < 0) gm_x0 = 0;
+    if (gm_z0 < 0) gm_z0 = 0;
+    if (gm_x1 >= render_cache_width) gm_x1 = render_cache_width - 1;
+    if (gm_z1 >= render_cache_width) gm_z1 = render_cache_width - 1;
+
+    gm_chunk_cx0 = gm_x0 / 8;
+    gm_chunk_cx1 = gm_x1 / 8;
+    gm_chunk_cz0 = gm_z0 / 8;
+    gm_chunk_cz1 = gm_z1 / 8;
+    if (gm_chunk_cx0 < 0) gm_chunk_cx0 = 0;
+    if (gm_chunk_cz0 < 0) gm_chunk_cz0 = 0;
+    if (gm_chunk_cx1 > 15) gm_chunk_cx1 = 15;
+    if (gm_chunk_cz1 > 15) gm_chunk_cz1 = 15;
+
+    gm_cam_block_x = cam_px / block_world_size;
+    gm_cam_block_y = cam_py / block_world_size;
+    gm_cam_block_z = cam_pz / block_world_size;
+    render_cached_tex_block = (uint)999;
+
+    gm_player_chunk_x = (floorFloatToInt(rc_abs_player_x) - render_cache_origin_x) / 8;
+    gm_player_chunk_z = (floorFloatToInt(rc_abs_player_z) - render_cache_origin_z) / 8;
+    if (gm_player_chunk_x < gm_chunk_cx0) gm_player_chunk_x = gm_chunk_cx0;
+    if (gm_player_chunk_x > gm_chunk_cx1) gm_player_chunk_x = gm_chunk_cx1;
+    if (gm_player_chunk_z < gm_chunk_cz0) gm_player_chunk_z = gm_chunk_cz0;
+    if (gm_player_chunk_z > gm_chunk_cz1) gm_player_chunk_z = gm_chunk_cz1;
+
+    /* Keep the exact 8-block mesh bounds derived above. render_chunks is a
+       16-block user-facing distance and must not be used directly as an
+       8-block mesh radius. */
+
+    loading_chunk_x = gm_chunk_cx0;
+    loading_chunk_z = gm_chunk_cz0;
+    loading_section = 0;
+    loading_progress = 0;
+    loading_total = 0;
+
+    rn_cz = gm_chunk_cz0;
+    while (rn_cz <= gm_chunk_cz1)
+    {
+        rn_cx = gm_chunk_cx0;
+        while (rn_cx <= gm_chunk_cx1)
+        {
+            rn_idx = (rn_cz * 16) + rn_cx;
+            rn_max_s = getNaturalMaxSectionForRenderChunk(rn_cx, rn_cz);
+            loading_scan_s = 0;
+            while (loading_scan_s <= rn_max_s)
+            {
+                if (loadingSectionShouldWarm(rn_cx, rn_cz, loading_scan_s) != 0) loading_total = loading_total + 1;
+                loading_scan_s = loading_scan_s + 1;
+            }
+            rn_cx = rn_cx + 1;
+        }
+        rn_cz = rn_cz + 1;
+    }
+    if (loading_total < 1) loading_total = 1;
+}
+
+void advanceLoadingTerrainCursor()
+{
+    rn_idx = (loading_chunk_z * 16) + loading_chunk_x;
+    loading_section = loading_section + 1;
+    if (loading_section > getNaturalMaxSectionForRenderChunk(loading_chunk_x, loading_chunk_z))
+    {
+        loading_section = 0;
+        loading_chunk_x = loading_chunk_x + 1;
+        if (loading_chunk_x > gm_chunk_cx1)
+        {
+            loading_chunk_x = gm_chunk_cx0;
+            loading_chunk_z = loading_chunk_z + 1;
+        }
+    }
+}
+
+void processOneLoadingTerrainSection()
+{
+    /* v53: build the closest not-yet-built chunk/section first. v53 warmed
+       row-major from the far corner of the visible square, so when render
+       distance was above minimum the player could stand in an unloaded chunk
+       while distant chunks were being built first. */
+    loading_best_x = -1;
+    loading_best_z = -1;
+    loading_best_s = 0;
+    loading_best_dist = 999999;
+
+    loading_scan_z = gm_chunk_cz0;
+    while (loading_scan_z <= gm_chunk_cz1)
+    {
+        loading_scan_x = gm_chunk_cx0;
+        while (loading_scan_x <= gm_chunk_cx1)
+        {
+            loading_scan_s = 0;
+            rn_idx = (loading_scan_z * 16) + loading_scan_x;
+            rn_max_s = getNaturalMaxSectionForRenderChunk(loading_scan_x, loading_scan_z);
+            while (loading_scan_s <= rn_max_s)
+            {
+                gm_chunk_id = (loading_scan_s * 256) + (loading_scan_z * 16) + loading_scan_x;
+                if (render_chunk_built[gm_chunk_id] == 0)
+                {
+                    if (loadingSectionShouldWarm(loading_scan_x, loading_scan_z, loading_scan_s) != 0)
+                    {
+                        gm_dx = loading_scan_x - gm_player_chunk_x;
+                        if (gm_dx < 0) gm_dx = 0 - gm_dx;
+                        gm_dz = loading_scan_z - gm_player_chunk_z;
+                        if (gm_dz < 0) gm_dz = 0 - gm_dz;
+                        loading_scan_dist = (gm_dx * gm_dx) + (gm_dz * gm_dz) + loading_scan_s;
+                        if (loading_scan_dist < loading_best_dist)
+                        {
+                            loading_best_dist = loading_scan_dist;
+                            loading_best_x = loading_scan_x;
+                            loading_best_z = loading_scan_z;
+                            loading_best_s = loading_scan_s;
+                        }
+                    }
+                }
+                loading_scan_s = loading_scan_s + 1;
+            }
+            loading_scan_x = loading_scan_x + 1;
+        }
+        loading_scan_z = loading_scan_z + 1;
+    }
+
+    if (loading_best_x < 0)
+    {
+        loading_progress = loading_total;
+        return;
+    }
+
+    loading_chunk_x = loading_best_x;
+    loading_chunk_z = loading_best_z;
+    loading_section = loading_best_s;
+    gm_chunk_id = (loading_section * 256) + (loading_chunk_z * 16) + loading_chunk_x;
+    rebuildRenderChunkAt(loading_chunk_x, loading_chunk_z, loading_section);
+
+    loading_progress = loading_progress + 1;
+}
+
+
+void processLoadingWorld()
+{
+    if (loading_phase == 0)
+    {
+        loading_ok = 0;
+        if (loading_mode == 1)
+        {
+            if (loadCurrentWorld() != 0) loading_ok = 1;
+        }
+        else if (loading_mode == 2)
+        {
+            startNewWorldFromName();
+            if (current_world_loaded != 0) loading_ok = 1;
+        }
+
+        if (loading_ok == 0)
+        {
+            loading_mode = 0;
+            loading_phase = 0;
+            app_state = 1;
+            refreshWorldList();
+            return;
+        }
+
+        setupLoadingTerrainBuild();
+        loading_phase = 1;
+        return;
+    }
+
+    if (loading_phase == 1)
+    {
+        loading_build_i = 0;
+        while (loading_build_i < 4)
+        {
+            if (loading_progress >= loading_total)
+            {
+                loading_phase = 2;
+                loading_build_i = 4;
+            }
+            else
+            {
+                processOneLoadingTerrainSection();
+                loading_build_i = loading_build_i + 1;
+            }
+        }
+        return;
+    }
+
+    render_dirty_chunk_count = 0;
+    loading_mode = 0;
+    loading_phase = 0;
+    app_state = 5;
+    menu_open = 0;
+    inventory_open = 0;
+    crafting_table_mode = 0;
+    last_ms = millis();
+}
+
+void moveFrontendCursor()
+{
+    up_now = millis();
+    if (last_ms == (uint)0) last_ms = up_now;
+    up_dt = up_now - last_ms;
+    last_ms = up_now;
+    if (up_dt > (uint)50) up_dt = (uint)50;
+    up_dtf = (float)up_dt;
+    ui_cursor_speed = up_dtf * 0.22f * cursor_sensitivity;
+
+    key(0x43, key_data, key_pressed);  /* I */
+    if (key_pressed != 0) ui_cursor_y = ui_cursor_y - ui_cursor_speed;
+    key(0x42, key_data, key_pressed);  /* K */
+    if (key_pressed != 0) ui_cursor_y = ui_cursor_y + ui_cursor_speed;
+    key(0x3B, key_data, key_pressed);  /* J */
+    if (key_pressed != 0) ui_cursor_x = ui_cursor_x - ui_cursor_speed;
+    key(0x4B, key_data, key_pressed);  /* L */
+    if (key_pressed != 0) ui_cursor_x = ui_cursor_x + ui_cursor_speed;
+
+    if (ui_cursor_x < 0.0f) ui_cursor_x = 0.0f;
+    if (ui_cursor_x > 319.0f) ui_cursor_x = 319.0f;
+    if (ui_cursor_y < 0.0f) ui_cursor_y = 0.0f;
+    if (ui_cursor_y > 239.0f) ui_cursor_y = 239.0f;
+    ui_cursor_ix = (int)ui_cursor_x;
+    ui_cursor_iy = (int)ui_cursor_y;
+}
+
+void clearNewWorldName()
+{
+    world_name_editing = 0;
+    new_world_name_len = 0;
+    world_tmp_i = 0;
+    while (world_tmp_i < 16)
+    {
+        new_world_name[world_tmp_i] = 0;
+        world_tmp_i = world_tmp_i + 1;
+    }
+}
+
+void appendNewWorldNameChar(int ch)
+{
+    if (new_world_name_len >= 15) return;
+    new_world_name[new_world_name_len] = (char)ch;
+    new_world_name_len = new_world_name_len + 1;
+    new_world_name[new_world_name_len] = 0;
+}
+
+void processNameKeyPresses()
+{
+    world_text_any_key = 0;
+    key(0x1C, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(65); }
+    key(0x32, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(66); }
+    key(0x21, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(67); }
+    key(0x23, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(68); }
+    key(0x24, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(69); }
+    key(0x2B, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(70); }
+    key(0x34, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(71); }
+    key(0x33, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(72); }
+    key(0x43, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(73); }
+    key(0x3B, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(74); }
+    key(0x42, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(75); }
+    key(0x4B, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(76); }
+    key(0x3A, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(77); }
+    key(0x31, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(78); }
+    key(0x44, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(79); }
+    key(0x4D, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(80); }
+    key(0x15, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(81); }
+    key(0x2D, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(82); }
+    key(0x1B, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(83); }
+    key(0x2C, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(84); }
+    key(0x3C, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(85); }
+    key(0x2A, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(86); }
+    key(0x1D, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(87); }
+    key(0x22, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(88); }
+    key(0x35, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(89); }
+    key(0x1A, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) appendNewWorldNameChar(90); }
+    key(0x66, key_data, key_pressed); if (key_pressed != 0) { world_text_any_key = 1; if (old_world_text_key == 0) { if (new_world_name_len > 0) { new_world_name_len = new_world_name_len - 1; new_world_name[new_world_name_len] = 0; } } }
+    if (world_text_any_key != 0) old_world_text_key = 1;
+    else old_world_text_key = 0;
+}
+
+int updateFrontendMenus()
+{
+    world_text_any_key = 0;
+
+    if ((app_state == 2) && (world_name_editing != 0))
+    {
+        processNameKeyPresses();
+
+        key(0x5A, key_data, key_pressed);  /* Enter: finish typing */
+        if (key_pressed != 0)
+        {
+            if (old_world_enter_key == 0)
+            {
+                world_name_editing = 0;
+                old_world_text_key = 0;
+            }
+            old_world_enter_key = 1;
+        }
+        else old_world_enter_key = 0;
+
+        return 0;
+    }
+
+    moveFrontendCursor();
+    old_world_text_key = 0;
+    old_world_enter_key = 0;
+
+    key(0x1C, key_data, key_pressed);  /* A click */
+    if (key_pressed != 0)
+    {
+        if (old_cursor_left_click == 0)
+        {
+            if (app_state == 0)
+            {
+                if (cursorInRect(86, 76, 234, 98) != 0) { refreshWorldList(); app_state = 1; }
+                else if (cursorInRect(86, 108, 234, 130) != 0) { syncPendingConfigFromActive(); app_state = 3; }
+                else if (cursorInRect(86, 140, 234, 162) != 0) app_state = 4;
+                else if (cursorInRect(86, 172, 234, 194) != 0) return 1;
+            }
+            else if (app_state == 1)
+            {
+                world_tmp_i = 0;
+                while (world_tmp_i < world_list_count)
+                {
+                    world_tmp_j = 44 + world_tmp_i * 12;
+                    if (cursorInRect(36, world_tmp_j - 2, 284, world_tmp_j + 10) != 0) world_selected = world_tmp_i;
+                    world_tmp_i = world_tmp_i + 1;
+                }
+                if (cursorInRect(28, 184, 82, 206) != 0) app_state = 0;
+                else if (cursorInRect(92, 184, 146, 206) != 0) { clearNewWorldName(); app_state = 2; }
+                else if (cursorInRect(156, 184, 210, 206) != 0) startSelectedWorld();
+                else if (cursorInRect(220, 184, 292, 206) != 0)
+                {
+                    if (world_list_count > 0)
+                    {
+                        copySelectedNameToCurrent();
+                        buildWorldPathFromCurrentName();
+                        sdFileDelete(world_path);
+                        refreshWorldList();
+                    }
+                }
+            }
+            else if (app_state == 2)
+            {
+                if (cursorInRect(104, 94, 216, 110) != 0)
+                {
+                    world_name_editing = 1;
+                    old_world_text_key = 1;
+                }
+                else if (cursorInRect(76, 148, 152, 170) != 0)
+                {
+                    world_name_editing = 0;
+                    app_state = 1;
+                }
+                else if (cursorInRect(168, 148, 244, 170) != 0) beginWorldLoading(2);
+            }
+            else if (app_state == 3)
+            {
+                if ((ui_cursor_ix >= 82) && (ui_cursor_ix <= 96) && (ui_cursor_iy >= 48) && (ui_cursor_iy <= 60))
+                {
+                    pending_camera_sensitivity_percent = pending_camera_sensitivity_percent - 10;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 176) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 48) && (ui_cursor_iy <= 60))
+                {
+                    pending_camera_sensitivity_percent = pending_camera_sensitivity_percent + 10;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 82) && (ui_cursor_ix <= 96) && (ui_cursor_iy >= 72) && (ui_cursor_iy <= 84))
+                {
+                    pending_cursor_sensitivity_percent = pending_cursor_sensitivity_percent - 10;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 176) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 72) && (ui_cursor_iy <= 84))
+                {
+                    pending_cursor_sensitivity_percent = pending_cursor_sensitivity_percent + 10;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 220) && (ui_cursor_ix <= 234) && (ui_cursor_iy >= 48) && (ui_cursor_iy <= 60))
+                {
+                    pending_render_chunks = pending_render_chunks - 1;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 282) && (ui_cursor_ix <= 296) && (ui_cursor_iy >= 48) && (ui_cursor_iy <= 60))
+                {
+                    pending_render_chunks = pending_render_chunks + 1;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 82) && (ui_cursor_ix <= 96) && (ui_cursor_iy >= 96) && (ui_cursor_iy <= 108))
+                {
+                    pending_cloud_area_blocks = pending_cloud_area_blocks - 32;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 176) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 96) && (ui_cursor_iy <= 108))
+                {
+                    pending_cloud_area_blocks = pending_cloud_area_blocks + 32;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 82) && (ui_cursor_ix <= 96) && (ui_cursor_iy >= 122) && (ui_cursor_iy <= 134))
+                {
+                    pending_day_cycle_speed_percent = pending_day_cycle_speed_percent - 25;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 176) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 122) && (ui_cursor_iy <= 134))
+                {
+                    pending_day_cycle_speed_percent = pending_day_cycle_speed_percent + 25;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 126) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 136) && (ui_cursor_iy <= 152))
+                {
+                    if (pending_clouds_enabled == 0) pending_clouds_enabled = 1; else pending_clouds_enabled = 0;
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 126) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 154) && (ui_cursor_iy <= 170))
+                {
+                    if (pending_stars_enabled == 0) pending_stars_enabled = 1; else pending_stars_enabled = 0;
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 126) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 172) && (ui_cursor_iy <= 188))
+                {
+                    if (pending_aimed_outline_enabled == 0) pending_aimed_outline_enabled = 1; else pending_aimed_outline_enabled = 0;
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 266) && (ui_cursor_ix <= 296) && (ui_cursor_iy >= 154) && (ui_cursor_iy <= 170))
+                {
+                    if (pending_autosave_enabled == 0) pending_autosave_enabled = 1; else pending_autosave_enabled = 0;
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 24) && (ui_cursor_ix <= 86) && (ui_cursor_iy >= 204) && (ui_cursor_iy <= 220))
+                {
+                    syncPendingConfigFromActive();
+                    app_state = 0;
+                }
+                else if ((ui_cursor_ix >= 108) && (ui_cursor_ix <= 286) && (ui_cursor_iy >= 204) && (ui_cursor_iy <= 220))
+                {
+                    applyPendingConfigValues();
+                    saveConfigFile();
+                }
+            }
+            else if (app_state == 4)
+            {
+                if ((ui_cursor_ix >= 24) && (ui_cursor_ix <= 86) && (ui_cursor_iy >= 202) && (ui_cursor_iy <= 222)) app_state = 0;
+            }
+        }
+        old_cursor_left_click = 1;
+    }
+    else old_cursor_left_click = 0;
+
+    key(0x23, key_data, key_pressed);  /* D: right click; no longer acts as Back in menus */
+    if (key_pressed != 0) old_cursor_right_click = 1;
+    else old_cursor_right_click = 0;
+
+    return 0;
+}
+
+void drawFrontendMenus()
+{
+    if (app_state == 0) drawStartMenu();
+    else if (app_state == 1) drawWorldSelectMenu();
+    else if (app_state == 2) drawCreateWorldMenu();
+    else if (app_state == 3) { menu_page = 1; drawPauseMenu(); }
+    else if (app_state == 4) { menu_page = 2; drawPauseMenu(); }
+}
+
+void drawPauseMenu()
+{
+    clearBuffer((uint)36);
+    ui_cursor_ix = (int)ui_cursor_x;
+    ui_cursor_iy = (int)ui_cursor_y;
+
+    drawMenuWordTinyCraft(133, 8, 1, (uint)255);
+
+    /* Larger menu panel: the old box wasted screen space and clipped recipe diagrams. */
+    fillRect2D(20, 24, 300, 224, (uint)0);
+    fillRect2D(24, 28, 296, 220, (uint)73);
+
+    if (menu_page == 0)
+    {
+        drawUIButton(86, 62, 234, 84, 1, 116);
+        drawUIButton(86, 94, 234, 116, 2, 119);
+        drawUIButton(86, 126, 234, 148, 9, 131);
+    }
+    else if (menu_page == 1)
+    {
+        drawMenuWordSettings(116, 32, 1, (uint)255);
+
+        drawMenuWordCamera(48, 38, 1, (uint)255);
+        drawMenuWordSens(94, 38, 1, (uint)255);
+        fillRect2D(82, 48, 96, 60, (uint)0); drawLine(85, 54, 93, 54, (uint)255);
+        fillRect2D(116, 48, 154, 60, (uint)0); drawNumberAt(122, 50, pending_camera_sensitivity_percent, (uint)255);
+        fillRect2D(176, 48, 190, 60, (uint)0); drawLine(179, 54, 187, 54, (uint)255); drawLine(183, 50, 183, 58, (uint)255);
+
+        drawMenuWordCursor(48, 62, 1, (uint)255);
+        drawMenuWordSens(94, 62, 1, (uint)255);
+        fillRect2D(82, 72, 96, 84, (uint)0); drawLine(85, 78, 93, 78, (uint)255);
+        fillRect2D(116, 72, 154, 84, (uint)0); drawNumberAt(122, 74, pending_cursor_sensitivity_percent, (uint)255);
+        fillRect2D(176, 72, 190, 84, (uint)0); drawLine(179, 78, 187, 78, (uint)255); drawLine(183, 74, 183, 82, (uint)255);
+
+        text_x = 202; text_x = text_x + drawSmallCharAt(text_x, 38, 82, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 38, 69, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 38, 78, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 38, 68, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 38, 69, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 38, 82, (uint)255);
+        fillRect2D(220, 48, 234, 60, (uint)0); drawLine(223, 54, 231, 54, (uint)255);
+        fillRect2D(252, 48, 270, 60, (uint)0); drawNumberAt(258, 50, pending_render_chunks, (uint)255);
+        fillRect2D(282, 48, 296, 60, (uint)0); drawLine(285, 54, 293, 54, (uint)255); drawLine(289, 50, 289, 58, (uint)255);
+
+        text_x = 48; text_x = text_x + drawSmallCharAt(text_x, 86, 67, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 86, 76, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 86, 79, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 86, 85, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 86, 68, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 86, 32, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 86, 65, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 86, 82, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 86, 69, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 86, 65, (uint)255);
+        fillRect2D(82, 96, 96, 108, (uint)0); drawLine(85, 102, 93, 102, (uint)255);
+        fillRect2D(116, 96, 154, 108, (uint)0); drawNumberAt(122, 98, pending_cloud_area_blocks, (uint)255);
+        fillRect2D(176, 96, 190, 108, (uint)0); drawLine(179, 102, 187, 102, (uint)255); drawLine(183, 98, 183, 106, (uint)255);
+
+        text_x = 48; text_x = text_x + drawSmallCharAt(text_x, 112, 68, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 112, 65, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 112, 89, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 112, 32, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 112, 83, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 112, 80, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 112, 69, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 112, 69, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 112, 68, (uint)255);
+        fillRect2D(82, 122, 96, 134, (uint)0); drawLine(85, 128, 93, 128, (uint)255);
+        fillRect2D(116, 122, 154, 134, (uint)0); drawNumberAt(122, 124, pending_day_cycle_speed_percent, (uint)255);
+        fillRect2D(176, 122, 190, 134, (uint)0); drawLine(179, 128, 187, 128, (uint)255); drawLine(183, 124, 183, 132, (uint)255);
+
+        drawLabelText(48, 142, 12, (uint)255);
+        drawToggleValue(126, 136, 190, 152, pending_clouds_enabled);
+
+        text_x = 48; text_x = text_x + drawSmallCharAt(text_x, 160, 83, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 160, 84, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 160, 65, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 160, 82, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 160, 83, (uint)255);
+        drawToggleValue(126, 154, 190, 170, pending_stars_enabled);
+
+        text_x = 48; text_x = text_x + drawSmallCharAt(text_x, 178, 79, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 178, 85, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 178, 84, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 178, 76, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 178, 73, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 178, 78, (uint)255); text_x = text_x + drawSmallCharAt(text_x, 178, 69, (uint)255);
+        drawToggleValue(126, 172, 190, 188, pending_aimed_outline_enabled);
+
+        drawLabelText(202, 160, 15, (uint)255);
+        drawToggleValue(266, 154, 296, 170, pending_autosave_enabled);
+
+        drawUIButton(24, 204, 86, 220, 7, 43);
+        drawUIButton(108, 204, 286, 220, 18, 128);
+        if (config_dirty != 0) drawSmallGlyph(218, 207, 42, (uint)252);
+    }
+    else
+    {
+        drawMenuWordRecipes(119, 36, 1, (uint)255);
+
+        /* Compact grid diagrams: all recipes use crafting-grid shapes now. */
+        drawMiniRecipe(32, 58, (uint)0, (uint)0, (uint)0, (uint)0, (uint)4, (uint)0, (uint)0, (uint)0, (uint)0, (uint)6, 4);
+        drawMiniRecipe(122, 58, (uint)6, (uint)6, (uint)0, (uint)6, (uint)6, (uint)0, (uint)0, (uint)0, (uint)0, (uint)7, 1);
+        drawMiniRecipe(212, 58, (uint)0, (uint)6, (uint)0, (uint)0, (uint)6, (uint)0, (uint)0, (uint)0, (uint)0, ITEM_STICK, 4);
+
+        drawMiniRecipe(32, 118, (uint)6, (uint)6, (uint)6, (uint)0, ITEM_STICK, (uint)0, (uint)0, ITEM_STICK, (uint)0, ITEM_WOODEN_PICKAXE, 1);
+        drawMiniRecipe(122, 118, (uint)0, (uint)6, (uint)0, (uint)0, (uint)6, (uint)0, (uint)0, ITEM_STICK, (uint)0, ITEM_WOODEN_SWORD, 1);
+        drawMiniRecipe(212, 118, (uint)0, (uint)6, (uint)0, (uint)0, ITEM_STICK, (uint)0, (uint)0, ITEM_STICK, (uint)0, ITEM_WOODEN_SHOVEL, 1);
+
+        drawMiniRecipe(32, 178, (uint)6, (uint)6, (uint)0, (uint)6, ITEM_STICK, (uint)0, (uint)0, ITEM_STICK, (uint)0, ITEM_WOODEN_AXE, 1);
+        drawMiniRecipe(122, 178, (uint)0, (uint)6, (uint)6, (uint)0, ITEM_STICK, (uint)6, (uint)0, ITEM_STICK, (uint)0, ITEM_WOODEN_AXE, 1);
+        drawUIButton(24, 202, 86, 222, 7, 43);
+    }
+
+    drawUICursor();
+}
+
+void processMenuToggleKey()
+{
+    key(0x3A, key_data, key_pressed);  /* M */
+    if (key_pressed != 0)
+    {
+        if (old_menu_key == 0)
+        {
+            if (menu_open == 0)
+            {
+                menu_open = 1;
+                menu_page = 0;
+                syncPendingConfigFromActive();
+                inventory_open = 0;
+                crafting_table_mode = 0;
+                ui_cursor_x = 160.0f;
+                ui_cursor_y = 104.0f;
+                last_ms = millis();
+                resetMining();
+                air_hit_anim_ms = (uint)0;
+                place_anim_ms = (uint)0;
+            }
+            else
+            {
+                menu_open = 0;
+            }
+        }
+        old_menu_key = 1;
+    }
+    else
+    {
+        old_menu_key = 0;
+    }
+}
+
+
+void updatePauseMenuControls()
+{
+    if (menu_open == 0) return;
+
+    up_now = millis();
+    if (last_ms == (uint)0) last_ms = up_now;
+    up_dt = up_now - last_ms;
+    last_ms = up_now;
+    if (up_dt > (uint)50) up_dt = (uint)50;
+    up_dtf = (float)up_dt;
+
+    ui_cursor_speed = up_dtf * 0.22f * cursor_sensitivity;
+
+    key(0x43, key_data, key_pressed);  /* I */
+    if (key_pressed != 0) ui_cursor_y = ui_cursor_y - ui_cursor_speed;
+
+    key(0x42, key_data, key_pressed);  /* K */
+    if (key_pressed != 0) ui_cursor_y = ui_cursor_y + ui_cursor_speed;
+
+    key(0x3B, key_data, key_pressed);  /* J */
+    if (key_pressed != 0) ui_cursor_x = ui_cursor_x - ui_cursor_speed;
+
+    key(0x4B, key_data, key_pressed);  /* L */
+    if (key_pressed != 0) ui_cursor_x = ui_cursor_x + ui_cursor_speed;
+
+    if (ui_cursor_x < 0.0f) ui_cursor_x = 0.0f;
+    if (ui_cursor_x > 319.0f) ui_cursor_x = 319.0f;
+    if (ui_cursor_y < 0.0f) ui_cursor_y = 0.0f;
+    if (ui_cursor_y > 239.0f) ui_cursor_y = 239.0f;
+
+    ui_cursor_ix = (int)ui_cursor_x;
+    ui_cursor_iy = (int)ui_cursor_y;
+
+    key(0x1C, key_data, key_pressed);  /* A: left click */
+    if (key_pressed != 0)
+    {
+        if (old_cursor_left_click == 0)
+        {
+            if (menu_page == 0)
+            {
+                if ((ui_cursor_ix >= 86) && (ui_cursor_ix <= 234) && (ui_cursor_iy >= 62) && (ui_cursor_iy <= 84)) menu_page = 1;
+                else if ((ui_cursor_ix >= 86) && (ui_cursor_ix <= 234) && (ui_cursor_iy >= 94) && (ui_cursor_iy <= 116)) menu_page = 2;
+                else if ((ui_cursor_ix >= 86) && (ui_cursor_ix <= 234) && (ui_cursor_iy >= 126) && (ui_cursor_iy <= 148))
+                {
+                    saveCurrentWorld();
+                    menu_open = 0;
+                    inventory_open = 0;
+                    crafting_table_mode = 0;
+                    app_state = 0;
+                    ui_cursor_x = 160.0f;
+                    ui_cursor_y = 87.0f;
+                    refreshWorldList();
+                    last_ms = millis();
+                }
+            }
+            else if (menu_page == 1)
+            {
+                if ((ui_cursor_ix >= 82) && (ui_cursor_ix <= 96) && (ui_cursor_iy >= 48) && (ui_cursor_iy <= 60))
+                {
+                    pending_camera_sensitivity_percent = pending_camera_sensitivity_percent - 10;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 176) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 48) && (ui_cursor_iy <= 60))
+                {
+                    pending_camera_sensitivity_percent = pending_camera_sensitivity_percent + 10;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 82) && (ui_cursor_ix <= 96) && (ui_cursor_iy >= 72) && (ui_cursor_iy <= 84))
+                {
+                    pending_cursor_sensitivity_percent = pending_cursor_sensitivity_percent - 10;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 176) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 72) && (ui_cursor_iy <= 84))
+                {
+                    pending_cursor_sensitivity_percent = pending_cursor_sensitivity_percent + 10;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 220) && (ui_cursor_ix <= 234) && (ui_cursor_iy >= 48) && (ui_cursor_iy <= 60))
+                {
+                    pending_render_chunks = pending_render_chunks - 1;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 282) && (ui_cursor_ix <= 296) && (ui_cursor_iy >= 48) && (ui_cursor_iy <= 60))
+                {
+                    pending_render_chunks = pending_render_chunks + 1;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 82) && (ui_cursor_ix <= 96) && (ui_cursor_iy >= 96) && (ui_cursor_iy <= 108))
+                {
+                    pending_cloud_area_blocks = pending_cloud_area_blocks - 32;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 176) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 96) && (ui_cursor_iy <= 108))
+                {
+                    pending_cloud_area_blocks = pending_cloud_area_blocks + 32;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 82) && (ui_cursor_ix <= 96) && (ui_cursor_iy >= 122) && (ui_cursor_iy <= 134))
+                {
+                    pending_day_cycle_speed_percent = pending_day_cycle_speed_percent - 25;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 176) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 122) && (ui_cursor_iy <= 134))
+                {
+                    pending_day_cycle_speed_percent = pending_day_cycle_speed_percent + 25;
+                    clampPendingConfigValues();
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 126) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 136) && (ui_cursor_iy <= 152))
+                {
+                    if (pending_clouds_enabled == 0) pending_clouds_enabled = 1; else pending_clouds_enabled = 0;
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 126) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 154) && (ui_cursor_iy <= 170))
+                {
+                    if (pending_stars_enabled == 0) pending_stars_enabled = 1; else pending_stars_enabled = 0;
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 126) && (ui_cursor_ix <= 190) && (ui_cursor_iy >= 172) && (ui_cursor_iy <= 188))
+                {
+                    if (pending_aimed_outline_enabled == 0) pending_aimed_outline_enabled = 1; else pending_aimed_outline_enabled = 0;
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 266) && (ui_cursor_ix <= 296) && (ui_cursor_iy >= 154) && (ui_cursor_iy <= 170))
+                {
+                    if (pending_autosave_enabled == 0) pending_autosave_enabled = 1; else pending_autosave_enabled = 0;
+                    config_dirty = 1;
+                }
+                else if ((ui_cursor_ix >= 24) && (ui_cursor_ix <= 86) && (ui_cursor_iy >= 204) && (ui_cursor_iy <= 220))
+                {
+                    syncPendingConfigFromActive();
+                    menu_page = 0;
+                }
+                else if ((ui_cursor_ix >= 108) && (ui_cursor_ix <= 286) && (ui_cursor_iy >= 204) && (ui_cursor_iy <= 220))
+                {
+                    applyPendingConfigValues();
+                    saveConfigFile();
+                }
+            }
+            else if (menu_page == 2)
+            {
+                if ((ui_cursor_ix >= 24) && (ui_cursor_ix <= 86) && (ui_cursor_iy >= 202) && (ui_cursor_iy <= 222)) menu_page = 0;
+            }
+        }
+        old_cursor_left_click = 1;
+    }
+    else old_cursor_left_click = 0;
+
+    key(0x23, key_data, key_pressed);  /* D: right click; no longer acts as Back in menus */
+    if (key_pressed != 0) old_cursor_right_click = 1;
+    else old_cursor_right_click = 0;
+}
+
+void initPlayer()
+{
+    player_x = 8.5f;
+    player_z = 8.5f;
+    player_foot_y = 4.0f;
+    player_vy = 0.0f;
+    player_on_ground = 1;
+    cam_bob_phase = 0.0f;
+    cam_bob_x = 0.0f;
+    cam_bob_y = 0.0f;
+    cam_bob_wave = 0.0f;
+    cam_bob_wave_abs = 0.0f;
+    hand_walk_x = 0.0f;
+    hand_walk_y = 0.0f;
+    hand_sway_x = 0.0f;
+    hand_sway_y = 0.0f;
+    hand_sway_target_x = 0.0f;
+    hand_sway_target_y = 0.0f;
+    air_hit_anim_ms = (uint)0;
+    place_anim_ms = (uint)0;
+    land_anim_ms = (uint)0;
+    air_hit_t = 0.0f;
+    air_hit_fold = 0.0f;
+    place_anim_t = 0.0f;
+    place_anim_fold = 0.0f;
+    land_anim_t = 0.0f;
+    land_anim_fold = 0.0f;
+    land_cam_y = 0.0f;
+    land_hand_y = 0.0f;
+    mine_anim_t = 0.0f;
+    mine_anim_fold = 0.0f;
+    mine_anim_wave = 0.0f;
+    mine_anim_punch = 0.0f;
+    mine_anim_phase_ms = (uint)0;
+    last_jump_ms = 0;
+    old_render_inc_key = 0;
+    old_render_dec_key = 0;
+    render_cache_valid = 0;
+    resetMining();
+    initRuntimeAssetTables();
+    selected_slot = 0;
+    inventory_open = 0;
+    held_id = (uint)0;
+    held_count = 0;
+
+    inv_add_i = 0;
+    while (inv_add_i < 36)
+    {
+        inv_id[inv_add_i] = (uint)0;
+        inv_count[inv_add_i] = 0;
+        inv_add_i = inv_add_i + 1;
+    }
+    crafting_table_mode = 0;
+    craft_slot_i = 0;
+    while (craft_slot_i < 9)
+    {
+        craft_id[craft_slot_i] = (uint)0;
+        craft_count[craft_slot_i] = 0;
+        craft_slot_i = craft_slot_i + 1;
+    }
+    craft_output_id = (uint)0;
+    craft_output_count = 0;
+    drop_active_count = 0;
+    drop_i = 0;
+    while (drop_i < 64)
+    {
+        drop_active[drop_i] = 0;
+        drop_block[drop_i] = (uint)0;
+        drop_count[drop_i] = 0;
+        drop_x[drop_i] = 0.0f;
+        drop_y[drop_i] = 0.0f;
+        drop_z[drop_i] = 0.0f;
+        drop_vy[drop_i] = 0.0f;
+        drop_vx[drop_i] = 0.0f;
+        drop_vz[drop_i] = 0.0f;
+        drop_resting[drop_i] = 0;
+        drop_ground_base[drop_i] = 0.0f;
+        drop_age_ms[drop_i] = (uint)0;
+        drop_pickup_delay_ms[drop_i] = (uint)0;
+        drop_spin_speed[drop_i] = 1;
+        drop_spin_angle[drop_i] = 0.0f;
+        drop_spin_rate[drop_i] = 0.00035f;
+        drop_i = drop_i + 1;
+    }
+    updateSelectedBlock();
+    old_slot1_key = 0;
+    old_slot2_key = 0;
+    old_slot3_key = 0;
+    old_slot4_key = 0;
+    old_slot5_key = 0;
+    old_slot6_key = 0;
+    old_slot7_key = 0;
+    old_slot8_key = 0;
+    old_slot9_key = 0;
+    old_inventory_key = 0;
+    old_menu_key = 0;
+    old_stats_key = 0;
+    render_stats_enabled = 0;
+    menu_open = 0;
+    menu_page = 0;
+    camera_sensitivity = 1.0f;
+    camera_sensitivity_percent = 100;
+    cursor_sensitivity = 1.0f;
+    cursor_sensitivity_percent = 100;
+    day_cycle_speed_percent = 100;
+    pending_day_cycle_speed_percent = 100;
+    day_last_ms = (uint)0;
+    day_elapsed_ms = (uint)0;
+    day_tick_units = (uint)0;
+    day_time_tick = (uint)0;
+    game_tick_accum_ms = (uint)0;
+    game_tick_count = (uint)0;
+    tick_jump_request = 0;
+    tick_jump_started = 0;
+    stars_enabled = 1;
+    aimed_outline_enabled = 0;
+    pending_stars_enabled = 1;
+    pending_aimed_outline_enabled = 0;
+    player_health = 20;
+    player_dead = 0;
+    player_hurt_ms = 0.0f;
+    player_invuln_ms = 0.0f;
+    player_last_damage_taken = 0.0f;
+    player_attack_cooldown_ms = 0.0f;
+    fall_tracking = 0;
+    fall_highest_foot_y = player_foot_y;
+    player_y = 5.62f;
+    yaw_angle = 0.0f;
+    pitch_angle = 0.0f;
+    updateViewVectors();
+    syncPlayerToGround();
+    initPigs();
+    initRenderMeshTextureTables();
+}
+
+int main()
+{
+    initCamera();
+    initHandCamera();
+    initPlayer();
+    loadConfigFile();
+    refreshWorldList();
+    app_state = 0;
+    renderStats((uint)0);
+    fps_last_ms = millis();
+    fps_frame_count = 0;
+    fps_value = 0;
+    last_ms = fps_last_ms;
+
+    while (1)
+    {
+        processStatsToggleKey();
+
+        if (app_state == 6)
+        {
+            drawLoadingScreen();
+            present();
+            updateFPSCounter();
+            processLoadingWorld();
+        }
+        else if (app_state != 5)
+        {
+            if (updateFrontendMenus() != 0) return 0;
+            drawFrontendMenus();
+            present();
+            updateFPSCounter();
+        }
+        else
+        {
+            if (player_dead != 0)
+            {
+                updateDeathScreenControls();
+                drawDeathScreen();
+                present();
+                updateFPSCounter();
+            }
+            else
+            {
+                processMenuToggleKey();
+
+                if (menu_open != 0)
+                {
+                    updatePauseMenuControls();
+                    drawPauseMenu();
+                    present();
+                    updateFPSCounter();
+                }
+                else
+                {
+                    updatePlayer();
+                updateCamera();
+
+                updateDayNightCycle();
+                updatePigs();
+                clearBuffer(sky_color_current);
+                drawSun();
+                drawClouds();
+                renderWorld();
+                drawPigs();
+                drawDrops();
+                drawBreakingOverlay();
+                drawAimedBlockOutline();
+                drawHand();
+                drawMiningProgress();
+                drawHotbar();
+                drawHealthHud();
+                drawInventoryWindow();
+                if (inventory_open == 0) drawCrosshair();
+                drawRenderStatsOverlay();
+                drawSaveHudIndicators();
+                present();
+                updateFPSCounter();
+                processQueuedRenderRemesh();
+                processBackgroundGreedyRemesh();
+                processRenderMeshCompaction();
+                processBackgroundRenderPrefetch();
+                processWorldAutosave();
+                }
+            }
+        }
+    }
+
+    return 0;
+}

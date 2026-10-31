@@ -1,0 +1,148 @@
+/* Binary64 Perlin/Octaves generation primitive, Minecraft 1.0 behavior.
+ * Compact permutations use one byte per entry; the second 256-entry copy is
+ * represented by an index mask. Exact PRNG consumption is unchanged.
+ * Noise is not a complete generated chunk: carving, structures, population,
+ * lighting and persistence must not be replaced by approximate fallbacks.
+ */
+#ifdef MC10_WORLD_SYSTEMS
+struct MCGenPerlin {
+    char permutations[256];
+    struct MCJDouble x;struct MCJDouble y;struct MCJDouble z;
+};
+void mc_gen_perlin_init(struct MCGenPerlin *generator,struct MCJavaRandom *random)
+{
+    int i;int swap;int temporary;struct MCJDouble next;
+    mc_java_random_next_double_bits(random,&next);mc_java_double_multiply_pow2(&generator->x,&next,8);
+    mc_java_random_next_double_bits(random,&next);mc_java_double_multiply_pow2(&generator->y,&next,8);
+    mc_java_random_next_double_bits(random,&next);mc_java_double_multiply_pow2(&generator->z,&next,8);
+    for(i=0;i<256;i=i+1)generator->permutations[i]=(char)i;
+    for(i=0;i<256;i=i+1)
+    {
+        swap=mc_java_random_next_int_bound(random,256-i)+i;
+        temporary=generator->permutations[i]&255;
+        generator->permutations[i]=generator->permutations[swap];generator->permutations[swap]=(char)temporary;
+    }
+}
+int mc_gen_permutation(struct MCGenPerlin *generator,int index)
+{return generator->permutations[index&255]&255;}
+int mc_gen_load(struct MCJDouble *value){return mc_fp_bits(value->lo,value->hi);}
+void mc_gen_store(struct MCJDouble *out,int value){out->lo=mc_fp_values[value].lo;out->hi=mc_fp_values[value].hi;}
+int mc_gen_lerp(int t,int a,int b){return mc_fp_add(a,mc_fp_mul(t,mc_fp_sub(b,a)));}
+int mc_gen_fade(int t)
+{
+    return mc_fp_mul(mc_fp_mul(mc_fp_mul(t,t),t),
+        mc_fp_add(mc_fp_mul(t,mc_fp_sub(mc_fp_mul(t,mc_fp_i32(6)),mc_fp_i32(15))),mc_fp_i32(10)));
+}
+int mc_gen_grad(int hash,int x,int y,int z)
+{
+    int h=hash&15;int a=h<8?x:y;int b=h<4?y:((h==12 || h==14)?x:z);
+    return mc_fp_add((h&1)?mc_fp_neg(a):a,(h&2)?mc_fp_neg(b):b);
+}
+int mc_gen_grad2(int hash,int x,int z)
+{
+    int h=hash&15;int a=mc_fp_mul(mc_fp_i32(1-((h&8)>>3)),x);
+    int b=h<4?D0:((h==12 || h==14)?x:z);
+    return mc_fp_add((h&1)?mc_fp_neg(a):a,(h&2)?mc_fp_neg(b):b);
+}
+void mc_gen_perlin_add(struct MCGenPerlin *generator,struct MCJDouble *out,
+    struct MCJDouble *origins,int width,int height,int depth,struct MCJDouble *scales,
+    struct MCJDouble *divisor)
+{
+    int xi;int zi;int yi;int at=0;int x;int y;int z;int fx;int fy;int fz;
+    int ix;int iy;int iz;int last_y=-1;int a;int aa;int ab;int b;int ba;int bb;
+    int t0;int t1;int t2;int t3;int noise;int inverse;int x1;int y1;int z1;
+    struct MCJDouble cached[4];
+    for(xi=0;xi<width;xi=xi+1)for(zi=0;zi<depth;zi=zi+1)for(yi=0;yi<height;yi=yi+1)
+    {
+        mc_fp_reset();
+        inverse=mc_fp_div(D1,mc_gen_load(divisor));
+        x=mc_fp_add(mc_fp_add(mc_gen_load(origins),mc_fp_mul(mc_fp_i32(xi),mc_gen_load(scales))),mc_gen_load(&generator->x));
+        z=mc_fp_add(mc_fp_add(mc_gen_load(origins+2),mc_fp_mul(mc_fp_i32(zi),mc_gen_load(scales+2))),mc_gen_load(&generator->z));
+        ix=mc_fp_floor(x);iz=mc_fp_floor(z);
+        x=mc_fp_sub(x,mc_fp_i32(ix));z=mc_fp_sub(z,mc_fp_i32(iz));ix=ix&255;iz=iz&255;
+        fx=mc_gen_fade(x);fz=mc_gen_fade(z);x1=mc_fp_sub(x,D1);z1=mc_fp_sub(z,D1);
+        if(height==1)
+        {
+            a=mc_gen_permutation(generator,ix);aa=mc_gen_permutation(generator,a)+iz;
+            b=mc_gen_permutation(generator,ix+1);ba=mc_gen_permutation(generator,b)+iz;
+            t0=mc_gen_lerp(fx,mc_gen_grad2(mc_gen_permutation(generator,aa),x,z),mc_gen_grad(mc_gen_permutation(generator,ba),x1,D0,z));
+            t1=mc_gen_lerp(fx,mc_gen_grad(mc_gen_permutation(generator,aa+1),x,D0,z1),mc_gen_grad(mc_gen_permutation(generator,ba+1),x1,D0,z1));
+            noise=mc_gen_lerp(fz,t0,t1);
+        }
+        else
+        {
+            y=mc_fp_add(mc_fp_add(mc_gen_load(origins+1),mc_fp_mul(mc_fp_i32(yi),mc_gen_load(scales+1))),mc_gen_load(&generator->y));
+            iy=mc_fp_floor(y);y=mc_fp_sub(y,mc_fp_i32(iy));iy=iy&255;fy=mc_gen_fade(y);y1=mc_fp_sub(y,D1);
+            /* Source caches gradients until the integer Y permutation changes,
+             * even though their Y input is fractional. Keep that behavior. */
+            if(yi==0 || iy!=last_y)
+            {
+                last_y=iy;a=mc_gen_permutation(generator,ix)+iy;
+                aa=mc_gen_permutation(generator,a)+iz;ab=mc_gen_permutation(generator,a+1)+iz;
+                b=mc_gen_permutation(generator,ix+1)+iy;
+                ba=mc_gen_permutation(generator,b)+iz;bb=mc_gen_permutation(generator,b+1)+iz;
+                t0=mc_gen_lerp(fx,mc_gen_grad(mc_gen_permutation(generator,aa),x,y,z),mc_gen_grad(mc_gen_permutation(generator,ba),x1,y,z));
+                t1=mc_gen_lerp(fx,mc_gen_grad(mc_gen_permutation(generator,ab),x,y1,z),mc_gen_grad(mc_gen_permutation(generator,bb),x1,y1,z));
+                t2=mc_gen_lerp(fx,mc_gen_grad(mc_gen_permutation(generator,aa+1),x,y,z1),mc_gen_grad(mc_gen_permutation(generator,ba+1),x1,y,z1));
+                t3=mc_gen_lerp(fx,mc_gen_grad(mc_gen_permutation(generator,ab+1),x,y1,z1),mc_gen_grad(mc_gen_permutation(generator,bb+1),x1,y1,z1));
+                mc_gen_store(cached,t0);mc_gen_store(cached+1,t1);mc_gen_store(cached+2,t2);mc_gen_store(cached+3,t3);
+            }
+            noise=mc_gen_lerp(fz,mc_gen_lerp(fy,mc_gen_load(cached),mc_gen_load(cached+1)),
+                                   mc_gen_lerp(fy,mc_gen_load(cached+2),mc_gen_load(cached+3)));
+        }
+        mc_gen_store(out+at,mc_fp_add(mc_gen_load(out+at),mc_fp_mul(noise,inverse)));at=at+1;
+    }
+}
+void mc_gen_octaves_init(struct MCGenPerlin *collection,int count,struct MCJavaRandom *random)
+{int i;for(i=0;i<count;i=i+1)mc_gen_perlin_init(collection+i,random);}
+/* Finite floor-to-long, preserving signed modulo for the Octaves 2^24 wrap.
+ * Coordinates in the 1.0 world border remain below 2^53, as tested by oracle. */
+void mc_gen_floor_long(int value,struct MCU64 *result)
+{
+    int e;int shift;int negative;int fractional;struct MCU64 mant;uint borrow;
+    negative=mc_fp_values[value].hi>>31;e=mc_fp_mant(value,&mant);shift=52-e;fractional=0;
+    if(shift>=64){fractional=mant.lo!=0 || mant.hi!=0;mant.lo=0;mant.hi=0;}
+    else if(shift>32)
+    {fractional=mant.lo!=0 || (mant.hi<<(64-shift))!=0;mant.lo=mant.hi>>(shift-32);mant.hi=0;}
+    else if(shift==32){fractional=mant.lo!=0;mant.lo=mant.hi;mant.hi=0;}
+    else if(shift>0)
+    {fractional=(mant.lo<<(32-shift))!=0;mant.lo=(mant.lo>>shift)|(mant.hi<<(32-shift));mant.hi=mant.hi>>shift;}
+    else if(shift<0)mc_u64_shift_left(&mant,&mant,-shift);
+    if(negative)
+    {
+        mant.lo=~mant.lo+1;borrow=mant.lo==0;mant.hi=~mant.hi+borrow;
+        if(fractional){borrow=mant.lo==0;mant.lo=mant.lo-1;mant.hi=mant.hi-borrow;}
+    }
+    result->lo=mant.lo;result->hi=mant.hi;
+}
+int mc_gen_signed_long_double(struct MCU64 *value)
+{
+    return mc_fp_add(mc_fp_mul(mc_fp_i32((int)value->hi),mc_fp_bits(0,0x41f00000)),
+        mc_fp_add(mc_fp_mul(mc_fp_i32((int)(value->lo>>16)),mc_fp_i32(65536)),mc_fp_i32((int)(value->lo&65535))));
+}
+int mc_gen_wrap_origin(int value)
+{
+    struct MCU64 integral;int remainder;
+    mc_gen_floor_long(value,&integral);
+    remainder=(integral.hi&0x80000000)?-(int)((~integral.lo+1)&0xffffff):(int)(integral.lo&0xffffff);
+    return mc_fp_add(mc_fp_sub(value,mc_gen_signed_long_double(&integral)),mc_fp_i32(remainder));
+}
+void mc_gen_octaves(struct MCGenPerlin *collection,int count,struct MCJDouble *out,
+    int x,int y,int z,int width,int height,int depth,struct MCJDouble *scales)
+{
+    int i;int k;int fraction;int t;struct MCJDouble origins[3];struct MCJDouble scaled[3];struct MCJDouble amplitude;
+    for(i=0;i<width*height*depth;i=i+1){out[i].lo=0;out[i].hi=0;}
+    amplitude.lo=0;amplitude.hi=0x3ff00000;
+    for(i=0;i<count;i=i+1)
+    {
+        mc_fp_reset();fraction=mc_gen_load(&amplitude);
+        t=mc_fp_mul(mc_fp_mul(mc_fp_i32(x),fraction),mc_gen_load(scales));mc_gen_store(origins,mc_gen_wrap_origin(t));
+        t=mc_fp_mul(mc_fp_mul(mc_fp_i32(y),fraction),mc_gen_load(scales+1));mc_gen_store(origins+1,t);
+        t=mc_fp_mul(mc_fp_mul(mc_fp_i32(z),fraction),mc_gen_load(scales+2));mc_gen_store(origins+2,mc_gen_wrap_origin(t));
+        for(k=0;k<3;k=k+1)mc_gen_store(scaled+k,mc_fp_mul(mc_gen_load(scales+k),fraction));
+        mc_gen_perlin_add(collection+i,out,origins,width,height,depth,scaled,&amplitude);
+        mc_java_double_multiply_pow2(&amplitude,&amplitude,-1);
+    }
+}
+#endif
+

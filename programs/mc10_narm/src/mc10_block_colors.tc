@@ -1,0 +1,95 @@
+/* Owned RGB888 colorizers plus Minecraft 1.0's exact single-column biome tint.
+ * This release does NOT use later-version 3x3 biome color averaging. Climate
+ * values are exact Q16 floats from the original GenLayer output; integer
+ * products below reproduce Colorizer's finite-double lookup indices exactly.
+ * Color preparation is cooperative, outside physics/render FP expressions. */
+#ifdef MC10_WORLD_SYSTEMS
+#define MC_BLOCK_COLOR_COLUMNS 2304
+#define MC_BLOCK_COLOR_TILES 9
+char mc_block_color_path[23]={'/','M','C','1','0','/','b','i','o','m','e','c','o','l','o','r','1','0','.','d','a','t',0};
+uint mc_block_column_grass[MC_BLOCK_COLOR_COLUMNS];
+uint mc_block_column_foliage[MC_BLOCK_COLOR_COLUMNS];
+uint mc_block_color_tiles[MC_BLOCK_COLOR_TILES*256];
+int mc_block_colors_ready,mc_block_colors_state,mc_block_colors_error;
+int mc_block_colors_x,mc_block_colors_z,mc_block_colors_chunk;
+uint mc_block_colors_tile_offset;
+
+uint mc_block_color_index(uint temperature,uint rainfall)
+{
+    uint px,py;struct MCU64 a,b,p;
+    if(temperature>65536)temperature=65536;
+    if(rainfall>65536)rainfall=65536;
+    px=((65536-temperature)*255)>>16;
+    mc_u64_set(&a,temperature,0);mc_u64_set(&b,rainfall,0);
+    mc_u64_multiply(&p,&a,&b);mc_u64_set(&b,255,0);
+    mc_u64_multiply(&p,&p,&b);
+    py=255-p.hi-(p.lo!=0);
+    return(py<<8)|px;
+}
+uint mc_block_color_swamp(uint rgb)
+{return((rgb&0xfefefe)+5115470)/2;}
+int mc_block_colors_open(void)
+{
+    char header[32];uint size;
+    mc_block_colors_ready=0;mc_block_colors_state=0;mc_block_colors_error=0;
+    if(narm_file_size(mc_block_color_path,NARM_STORAGE_SD,&size)<0)return 0;
+    if(narm_file_read(mc_block_color_path,header,0,32,NARM_STORAGE_SD)!=32)return 0;
+    if(header[0]!='M'||header[1]!='C'||header[2]!='B'||header[3]!='C'||header[4]!='1'||header[5]!='0'||header[6]||header[7])return 0;
+    if(mc_asset_read_u32(header,8)!=1||mc_asset_read_u32(header,12)!=65536||mc_asset_read_u32(header,16)!=6||mc_asset_read_u32(header,20)!=32||mc_asset_read_u32(header,24)!=MC_BLOCK_COLOR_TILES)return 0;
+    mc_block_colors_tile_offset=mc_asset_read_u32(header,28);
+    if(mc_block_colors_tile_offset!=393248||size!=mc_block_colors_tile_offset+MC_BLOCK_COLOR_TILES*1024)return 0;
+    if(narm_file_read(mc_block_color_path,mc_block_color_tiles,mc_block_colors_tile_offset,MC_BLOCK_COLOR_TILES*1024,NARM_STORAGE_SD)!=MC_BLOCK_COLOR_TILES*1024)return 0;
+    return 1;
+}
+void mc_block_colors_begin(int center_x,int center_z)
+{
+    if(mc_block_colors_ready&&mc_block_colors_x==(center_x-1)*16&&mc_block_colors_z==(center_z-1)*16)return;
+    mc_block_colors_ready=0;mc_block_colors_state=1;mc_block_colors_error=0;
+    mc_block_colors_x=(center_x-1)*16;mc_block_colors_z=(center_z-1)*16;mc_block_colors_chunk=0;
+}
+/* -1 error, 0 still preparing, 1 all 48x48 source colors ready. */
+int mc_block_colors_pump(void)
+{
+    struct MCBiomeSample sample;int x,z,cx,cz,index;uint lookup,grass,foliage;
+    char colors[6];uint temperature,rainfall;
+    if(mc_block_colors_ready)return 1;
+    if(mc_block_colors_state!=1)return -1;
+    cx=mc_block_colors_x+(mc_block_colors_chunk%3)*16;
+    cz=mc_block_colors_z+(mc_block_colors_chunk/3)*16;
+    for(z=cz;z<cz+16;z=z+1)for(x=cx;x<cx+16;x=x+1)
+    {
+        if(!mc_biome_query(x,z,&sample)){mc_block_colors_error=1;mc_block_colors_state=0;return -1;}
+        temperature=(uint)(sample.temperature*65536.0f);rainfall=(uint)(sample.rainfall*65536.0f);
+        lookup=mc_block_color_index(temperature,rainfall);
+        if(narm_file_read(mc_block_color_path,colors,32+lookup*6,6,NARM_STORAGE_SD)!=6){mc_block_colors_error=2;mc_block_colors_state=0;return -1;}
+        grass=(((uint)colors[0]&255)<<16)|(((uint)colors[1]&255)<<8)|((uint)colors[2]&255);
+        foliage=(((uint)colors[3]&255)<<16)|(((uint)colors[4]&255)<<8)|((uint)colors[5]&255);
+        if(sample.biome==6){grass=mc_block_color_swamp(grass);foliage=mc_block_color_swamp(foliage);}
+        index=(z-mc_block_colors_z)*48+x-mc_block_colors_x;
+        mc_block_column_grass[index]=grass;mc_block_column_foliage[index]=foliage;
+    }
+    mc_block_colors_chunk=mc_block_colors_chunk+1;
+    if(mc_block_colors_chunk==9){mc_block_colors_ready=1;mc_block_colors_state=0;return 1;}
+    return 0;
+}
+int mc_block_color_at(uint id,uint metadata,int x,int z)
+{
+    int index;
+    if(id==18){if(metadata&1)return 6396257;if(metadata&2)return 8431445;}
+    if(id==31&&metadata==0)return 0xffffff;
+    if(id!=2&&id!=18&&id!=31&&id!=106)return 0xffffff;
+    if(!mc_block_colors_ready||x<mc_block_colors_x||x>=mc_block_colors_x+48||z<mc_block_colors_z||z>=mc_block_colors_z+48)return -1;
+    index=(z-mc_block_colors_z)*48+x-mc_block_colors_x;
+    return(int)((id==18||id==106)?mc_block_column_foliage[index]:mc_block_column_grass[index]);
+}
+int mc_block_color_tile_index(int tile)
+{
+    if(tile==0)return 0;if(tile==38)return 1;if(tile==39)return 2;
+    if(tile==56)return 3;if(tile==52)return 4;if(tile==53)return 5;
+    if(tile==132)return 6;if(tile==133)return 7;if(tile==143)return 8;
+    return -1;
+}
+uint *mc_block_color_tile(int tile)
+{int index=mc_block_color_tile_index(tile);return index<0?0:&mc_block_color_tiles[index*256];}
+#endif
+

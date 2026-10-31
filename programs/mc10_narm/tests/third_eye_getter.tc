@@ -1,0 +1,12 @@
+/* Insert in mc10_third_person.tc after mc_tp_old_position/tick_position.
+ * Returns an mc_fp slot; caller resets temporary pool before invocation.
+ * EntityLiving.getPosition has a current-position shortcut at partial==1. */
+int mc_third_interpolated_eye_y(float partial)
+{
+    int old,current;
+    current=mc_fp_bits(mc_tp_tick_position[1].lo,mc_tp_tick_position[1].hi);
+    if(partial==1.0f)return current;
+    old=mc_fp_bits(mc_tp_old_position[1].lo,mc_tp_old_position[1].hi);
+    return mc_fp_add(old,mc_fp_mul(mc_fp_sub(current,old),mc_fp_f32(partial)));
+}
+

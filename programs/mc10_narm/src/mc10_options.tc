@@ -1,0 +1,869 @@
+/* Minecraft 1.0 GameSettings, GuiOptions, GuiVideoSettings and GuiControls.
+ * The source's LWJGL key codes remain in options.txt; the NARM keyboard
+ * adapter translates USB HID events at the controls-screen boundary. */
+
+#define MC_OPTIONS_LABEL_BYTES 2048
+#define MC_OPTIONS_FILE_BYTES 4096
+#define MC_OPTIONS_BUTTONS 14
+#define MC_OPTIONS_KEYS 13
+#define MC_OPTIONS_MAIN 0
+#define MC_OPTIONS_VIDEO 1
+#define MC_OPTIONS_CONTROLS 2
+#define MC_OPTIONS_KIND_ACTION 0
+#define MC_OPTIONS_KIND_CYCLE 1
+#define MC_OPTIONS_KIND_SLIDER 2
+#define MC_OPTIONS_KIND_KEY 3
+
+#define MC_OPT_MUSIC 0
+#define MC_OPT_SOUND 1
+#define MC_OPT_INVERT_MOUSE 2
+#define MC_OPT_SENSITIVITY 3
+#define MC_OPT_FOV 4
+#define MC_OPT_GAMMA 5
+#define MC_OPT_RENDER_DISTANCE 6
+#define MC_OPT_VIEW_BOBBING 7
+#define MC_OPT_ANAGLYPH 8
+#define MC_OPT_ADVANCED_OPENGL 9
+#define MC_OPT_FRAMERATE_LIMIT 10
+#define MC_OPT_DIFFICULTY 11
+#define MC_OPT_GRAPHICS 12
+#define MC_OPT_AMBIENT_OCCLUSION 13
+#define MC_OPT_GUI_SCALE 14
+#define MC_OPT_RENDER_CLOUDS 15
+#define MC_OPT_PARTICLES 16
+/* Explicit NARM presentation/performance extensions, not Minecraft enum IDs. */
+#define MC_OPT_CURSOR_SPEED 17
+#define MC_OPT_OCCLUSION_CULLING 18
+
+void mc_menu_set_cursor_speed(float value);
+
+struct MCGameSettings {
+    float music_volume; float sound_volume; float mouse_sensitivity;
+    float fov_setting; float gamma_setting; float cursor_speed;
+    int invert_mouse; int render_distance; int gui_scale; int particles;
+    int view_bobbing; int anaglyph; int advanced_opengl;
+    int limit_framerate; int difficulty; int fancy_graphics;
+    int ambient_occlusion; int clouds; int occlusion_culling;
+    int key_codes[MC_OPTIONS_KEYS];
+};
+
+struct MCGameSettings mc_options;
+struct MCMenuButton mc_options_buttons[MC_OPTIONS_BUTTONS];
+int mc_options_button_kind[MC_OPTIONS_BUTTONS];
+int mc_options_button_option[MC_OPTIONS_BUTTONS];
+char mc_options_button_text[MC_OPTIONS_BUTTONS][64];
+char mc_options_labels[MC_OPTIONS_LABEL_BYTES];
+char mc_options_file[MC_OPTIONS_FILE_BYTES];
+uint mc_options_background[256];
+uint mc_options_slider_knob[40];
+uint mc_options_label_bytes;
+int mc_options_button_count;
+int mc_options_screen;
+int mc_options_capture_key;
+int mc_options_ready;
+int mc_options_dirty;
+int mc_options_fallback_labels;
+int mc_options_drag_slider=-1;
+int mc_options_drag_changed;
+int mc_options_enter_blocked;
+char mc_options_path[18] = {'/','M','C','1','0','/','o','p','t','i','o','n','s','.','t','x','t',0};
+
+char *mc_options_fallback_label(int index)
+{
+    if (index==0) return "Options";
+    if (index==1) return "Music";
+    if (index==2) return "Sound";
+    if (index==3) return "Invert Mouse";
+    if (index==4) return "Sensitivity";
+    if (index==5) return "FOV";
+    if (index==6) return "Difficulty";
+    if (index==7) return "Video Settings...";
+    if (index==8) return "Controls...";
+    if (index==9) return "Done";
+    if (index==10) return "Video Settings";
+    if (index==11) return "Graphics";
+    if (index==12) return "Render Distance";
+    if (index==13) return "Smooth Lighting";
+    if (index==14) return "Performance";
+    if (index==15) return "3D Anaglyph";
+    if (index==16) return "View Bobbing";
+    if (index==17) return "GUI Scale";
+    if (index==18) return "Advanced OpenGL";
+    if (index==19) return "Brightness";
+    if (index==20) return "Clouds";
+    if (index==21) return "Particles";
+    if (index==22) return "ON";
+    if (index==23) return "OFF";
+    if (index==24) return "*yawn*";
+    if (index==25) return "HYPERSPEED!!!";
+    if (index==26) return "Normal";
+    if (index==27) return "Quake Pro";
+    if (index==28) return "Moody";
+    if (index==29) return "Bright";
+    if (index==30) return "Far";
+    if (index==31) return "Normal";
+    if (index==32) return "Short";
+    if (index==33) return "Tiny";
+    if (index==34) return "Peaceful";
+    if (index==35) return "Easy";
+    if (index==36) return "Normal";
+    if (index==37) return "Hard";
+    if (index==38) return "Auto";
+    if (index==39) return "Small";
+    if (index==40) return "Normal";
+    if (index==41) return "Large";
+    if (index==42) return "All";
+    if (index==43) return "Decreased";
+    if (index==44) return "Minimal";
+    if (index==45) return "Max FPS";
+    if (index==46) return "Balanced";
+    if (index==47) return "Power saver";
+    if (index==48) return "Fancy";
+    if (index==49) return "Fast";
+    if (index==50) return "Controls";
+    if (index==51) return "Attack";
+    if (index==52) return "Use Item";
+    if (index==53) return "Forward";
+    if (index==54) return "Left";
+    if (index==55) return "Back";
+    if (index==56) return "Right";
+    if (index==57) return "Jump";
+    if (index==58) return "Sneak";
+    if (index==59) return "Drop";
+    if (index==60) return "Inventory";
+    if (index==61) return "Chat";
+    if (index==62) return "List Players";
+    if (index==63) return "Pick Block";
+    if (index==64) return "Button %1$s";
+    if (index==65) return "A 64 bit Java installation is recommended";
+    if (index==66) return "for 'Far' render distance (you have 32 bit)";
+    return "";
+}
+
+char *mc_options_label(int wanted)
+{
+    int index = 0;
+    int offset = 0;
+    /* These two port additions are not entries in the owned 1.0 language pack. */
+    if(wanted==67)return "Cursor Speed";
+    if(wanted==68)return "Occlusion Culling";
+    if (mc_options_fallback_labels) return mc_options_fallback_label(wanted);
+    while (index < wanted && offset < (int)mc_options_label_bytes)
+    {
+        while (offset < (int)mc_options_label_bytes &&
+               mc_options_labels[offset] != 0) offset = offset + 1;
+        offset = offset + 1;
+        index = index + 1;
+    }
+    if (offset >= (int)mc_options_label_bytes) return "";
+    return &mc_options_labels[offset];
+}
+
+char *mc_options_key_id(int index)
+{
+    if (index == 0) return "key.attack";
+    if (index == 1) return "key.use";
+    if (index == 2) return "key.forward";
+    if (index == 3) return "key.left";
+    if (index == 4) return "key.back";
+    if (index == 5) return "key.right";
+    if (index == 6) return "key.jump";
+    if (index == 7) return "key.sneak";
+    if (index == 8) return "key.drop";
+    if (index == 9) return "key.inventory";
+    if (index == 10) return "key.chat";
+    if (index == 11) return "key.playerlist";
+    return "key.pickItem";
+}
+
+void mc_options_defaults(void)
+{
+    mc_options.music_volume = 1.0f; mc_options.sound_volume = 1.0f;
+    mc_options.mouse_sensitivity = 0.5f; mc_options.fov_setting = 0.0f;
+    mc_options.gamma_setting = 0.0f; mc_options.invert_mouse = 0;
+    mc_options.render_distance = 0; mc_options.gui_scale = 0;
+    mc_options.particles = 0; mc_options.view_bobbing = 1;
+    mc_options.anaglyph = 0; mc_options.advanced_opengl = 0;
+    mc_options.limit_framerate = 1; mc_options.difficulty = 2;
+    mc_options.fancy_graphics = 1; mc_options.ambient_occlusion = 1;
+    mc_options.clouds = 1;
+    mc_options.cursor_speed = .5f; mc_options.occlusion_culling = 0;
+    mc_menu_set_cursor_speed(mc_options.cursor_speed);
+    mc_options.key_codes[0] = -100; mc_options.key_codes[1] = -99;
+    mc_options.key_codes[2] = 17; mc_options.key_codes[3] = 30;
+    mc_options.key_codes[4] = 31; mc_options.key_codes[5] = 32;
+    mc_options.key_codes[6] = 57; mc_options.key_codes[7] = 42;
+    mc_options.key_codes[8] = 16; mc_options.key_codes[9] = 18;
+    mc_options.key_codes[10] = 20; mc_options.key_codes[11] = 15;
+    mc_options.key_codes[12] = -98;
+}
+
+int mc_options_parse_int(char *text)
+{
+    int sign = 1;
+    int value = 0;
+    int index = 0;
+    if (text[0] == '-') { sign = -1; index = 1; }
+    while (text[index] >= '0' && text[index] <= '9')
+    {
+        value = value * 10 + text[index] - '0';
+        index = index + 1;
+    }
+    return value * sign;
+}
+
+float mc_options_parse_float(char *text)
+{
+    float value = 0.0f;
+    float place = 0.1f;
+    int index = 0;
+    int negative = 0;
+    if (mc_menu_text_equals(text, "true")) return 1.0f;
+    if (mc_menu_text_equals(text, "false")) return 0.0f;
+    if (text[index] == '-') { negative = 1; index = index + 1; }
+    while (text[index] >= '0' && text[index] <= '9')
+    {
+        value = value * 10.0f + (float)(text[index] - '0');
+        index = index + 1;
+    }
+    if (text[index] == '.')
+    {
+        index = index + 1;
+        while (text[index] >= '0' && text[index] <= '9')
+        {
+            value = value + (float)(text[index] - '0') * place;
+            place = place * 0.1f;
+            index = index + 1;
+        }
+    }
+    return negative ? 0.0f - value : value;
+}
+
+int mc_options_prefix(char *text, char *prefix)
+{
+    int i = 0;
+    while (prefix[i] != 0)
+    {
+        if (text[i] != prefix[i]) return 0;
+        i = i + 1;
+    }
+    return 1;
+}
+
+void mc_options_apply_line(char *key, char *value)
+{
+    int i;
+    if (mc_menu_text_equals(key,"music")) mc_options.music_volume=mc_options_parse_float(value);
+    else if (mc_menu_text_equals(key,"sound")) mc_options.sound_volume=mc_options_parse_float(value);
+    else if (mc_menu_text_equals(key,"invertYMouse")) mc_options.invert_mouse=mc_menu_text_equals(value,"true");
+    else if (mc_menu_text_equals(key,"mouseSensitivity")) mc_options.mouse_sensitivity=mc_options_parse_float(value);
+    else if (mc_menu_text_equals(key,"cursorSpeed")) mc_options.cursor_speed=mc_options_parse_float(value);
+    else if (mc_menu_text_equals(key,"occlusionCulling")) mc_options.occlusion_culling=mc_menu_text_equals(value,"true");
+    else if (mc_menu_text_equals(key,"fov")) mc_options.fov_setting=mc_options_parse_float(value);
+    else if (mc_menu_text_equals(key,"gamma")) mc_options.gamma_setting=mc_options_parse_float(value);
+    else if (mc_menu_text_equals(key,"viewDistance")) mc_options.render_distance=mc_options_parse_int(value);
+    else if (mc_menu_text_equals(key,"guiScale")) mc_options.gui_scale=mc_options_parse_int(value);
+    else if (mc_menu_text_equals(key,"particles")) mc_options.particles=mc_options_parse_int(value);
+    else if (mc_menu_text_equals(key,"bobView")) mc_options.view_bobbing=mc_menu_text_equals(value,"true");
+    else if (mc_menu_text_equals(key,"anaglyph3d")) mc_options.anaglyph=mc_menu_text_equals(value,"true");
+    else if (mc_menu_text_equals(key,"advancedOpengl")) mc_options.advanced_opengl=mc_menu_text_equals(value,"true");
+    else if (mc_menu_text_equals(key,"fpsLimit")) mc_options.limit_framerate=mc_options_parse_int(value);
+    else if (mc_menu_text_equals(key,"difficulty")) mc_options.difficulty=mc_options_parse_int(value);
+    else if (mc_menu_text_equals(key,"fancyGraphics")) mc_options.fancy_graphics=mc_menu_text_equals(value,"true");
+    else if (mc_menu_text_equals(key,"ao")) mc_options.ambient_occlusion=mc_menu_text_equals(value,"true");
+    else if (mc_menu_text_equals(key,"clouds")) mc_options.clouds=mc_menu_text_equals(value,"true");
+    else if (mc_options_prefix(key,"key_"))
+        for (i=0;i<MC_OPTIONS_KEYS;i=i+1)
+            if (mc_menu_text_equals(&key[4],mc_options_key_id(i)))
+                mc_options.key_codes[i]=mc_options_parse_int(value);
+}
+
+void mc_options_clamp_loaded(void)
+{
+    if (mc_options.music_volume<0) mc_options.music_volume=0;
+    if (mc_options.music_volume>1) mc_options.music_volume=1;
+    if (mc_options.sound_volume<0) mc_options.sound_volume=0;
+    if (mc_options.sound_volume>1) mc_options.sound_volume=1;
+    if (mc_options.mouse_sensitivity<0) mc_options.mouse_sensitivity=0;
+    if (mc_options.mouse_sensitivity>1) mc_options.mouse_sensitivity=1;
+    if (!(mc_options.cursor_speed==mc_options.cursor_speed)) mc_options.cursor_speed=.5f;
+    if (mc_options.cursor_speed<0) mc_options.cursor_speed=0;
+    if (mc_options.cursor_speed>1) mc_options.cursor_speed=1;
+    mc_options.occlusion_culling=mc_options.occlusion_culling!=0;
+    mc_menu_set_cursor_speed(mc_options.cursor_speed);
+    if (mc_options.fov_setting<0) mc_options.fov_setting=0;
+    if (mc_options.fov_setting>1) mc_options.fov_setting=1;
+    if (mc_options.gamma_setting<0) mc_options.gamma_setting=0;
+    if (mc_options.gamma_setting>1) mc_options.gamma_setting=1;
+    mc_options.render_distance=mc_options.render_distance&3;
+    mc_options.gui_scale=mc_options.gui_scale&3;
+    if (mc_options.particles<0 || mc_options.particles>2) mc_options.particles=0;
+    if (mc_options.limit_framerate<0 || mc_options.limit_framerate>2) mc_options.limit_framerate=1;
+    mc_options.difficulty=mc_options.difficulty&3;
+}
+
+void mc_options_load(void)
+{
+    uint size;
+    int got;
+    int line=0;
+    int colon;
+    int end;
+    mc_options_defaults();
+    if (!narm_file_exists(&mc_options_path[0],NARM_STORAGE_SD)) return;
+    if (narm_file_size(&mc_options_path[0],NARM_STORAGE_SD,&size)<0 ||
+        size==0 || size>=MC_OPTIONS_FILE_BYTES) return;
+    got=narm_file_read(&mc_options_path[0],&mc_options_file[0],0,size,NARM_STORAGE_SD);
+    if (got!=(int)size) return;
+    mc_options_file[size]=0;
+    while (mc_options_file[line]!=0)
+    {
+        colon=line;
+        while (mc_options_file[colon]!=0 && mc_options_file[colon]!=':' &&
+               mc_options_file[colon]!='\n' && mc_options_file[colon]!='\r') colon=colon+1;
+        if (mc_options_file[colon]==':')
+        {
+            int terminal;
+            mc_options_file[colon]=0;
+            end=colon+1;
+            while (mc_options_file[end]!=0 && mc_options_file[end]!='\n' &&
+                   mc_options_file[end]!='\r') end=end+1;
+            terminal=mc_options_file[end]==0;
+            if (mc_options_file[end]!=0) mc_options_file[end]=0;
+            mc_options_apply_line(&mc_options_file[line],&mc_options_file[colon+1]);
+            if (terminal) break;
+            line=end+1;
+            if (mc_options_file[line-1]=='\r' && mc_options_file[line]=='\n') line=line+1;
+        }
+        else
+        {
+            while (mc_options_file[line]!=0 && mc_options_file[line]!='\n') line=line+1;
+            if (mc_options_file[line]=='\n') line=line+1;
+        }
+    }
+    mc_options_clamp_loaded();
+}
+
+void mc_options_append(char *text)
+{
+    int out=0; int in=0;
+    while (out<MC_OPTIONS_FILE_BYTES-1 && mc_options_file[out]!=0) out=out+1;
+    while (out<MC_OPTIONS_FILE_BYTES-1 && text[in]!=0) mc_options_file[out++]=text[in++];
+    mc_options_file[out]=0;
+}
+
+void mc_options_append_int(int value)
+{
+    char digits[12]; int count=0; uint magnitude;
+    if (value<0) { mc_options_append("-"); magnitude=(uint)(-(value+1))+1; }
+    else magnitude=(uint)value;
+    if (magnitude==0) { mc_options_append("0"); return; }
+    while (magnitude!=0) { digits[count++]=(char)('0'+magnitude%10); magnitude=magnitude/10; }
+    while (count>0) { char one[2]; one[0]=digits[--count]; one[1]=0; mc_options_append(one); }
+}
+
+void mc_options_append_bool(int value) { mc_options_append(value?"true":"false"); }
+
+void mc_options_append_float(float value)
+{
+    int whole;
+    int fraction;
+    int digits=6;
+    char temporary[8];
+    if (value<0) { mc_options_append("-"); value=0.0f-value; }
+    whole=(int)value; mc_options_append_int(whole); mc_options_append(".");
+    fraction=(int)((value-(float)whole)*1000000.0f+0.5f);
+    if (fraction>=1000000) fraction=999999;
+    temporary[6]=0;
+    while (digits>0) { digits=digits-1; temporary[digits]=(char)('0'+fraction%10); fraction=fraction/10; }
+    digits=6; while (digits>1 && temporary[digits-1]=='0') digits=digits-1;
+    temporary[digits]=0; mc_options_append(temporary);
+}
+
+void mc_options_line(char *key)
+{
+    mc_options_append(key); mc_options_append(":");
+}
+
+int mc_options_save(void)
+{
+    int i; int size; int wrote;
+    mc_options_file[0]=0;
+#define MC_SAVE_FLOAT(k,v) mc_options_line(k); mc_options_append_float(v); mc_options_append("\n")
+#define MC_SAVE_INT(k,v) mc_options_line(k); mc_options_append_int(v); mc_options_append("\n")
+#define MC_SAVE_BOOL(k,v) mc_options_line(k); mc_options_append_bool(v); mc_options_append("\n")
+    MC_SAVE_FLOAT("music",mc_options.music_volume);
+    MC_SAVE_FLOAT("sound",mc_options.sound_volume);
+    MC_SAVE_BOOL("invertYMouse",mc_options.invert_mouse);
+    MC_SAVE_FLOAT("mouseSensitivity",mc_options.mouse_sensitivity);
+    MC_SAVE_FLOAT("cursorSpeed",mc_options.cursor_speed);
+    MC_SAVE_BOOL("occlusionCulling",mc_options.occlusion_culling);
+    MC_SAVE_FLOAT("fov",mc_options.fov_setting);
+    MC_SAVE_FLOAT("gamma",mc_options.gamma_setting);
+    MC_SAVE_INT("viewDistance",mc_options.render_distance);
+    MC_SAVE_INT("guiScale",mc_options.gui_scale);
+    MC_SAVE_INT("particles",mc_options.particles);
+    MC_SAVE_BOOL("bobView",mc_options.view_bobbing);
+    MC_SAVE_BOOL("anaglyph3d",mc_options.anaglyph);
+    MC_SAVE_BOOL("advancedOpengl",mc_options.advanced_opengl);
+    MC_SAVE_INT("fpsLimit",mc_options.limit_framerate);
+    MC_SAVE_INT("difficulty",mc_options.difficulty);
+    MC_SAVE_BOOL("fancyGraphics",mc_options.fancy_graphics);
+    MC_SAVE_BOOL("ao",mc_options.ambient_occlusion);
+    MC_SAVE_BOOL("clouds",mc_options.clouds);
+    mc_options_append("skin:Default\nlastServer:\n");
+    for (i=0;i<MC_OPTIONS_KEYS;i=i+1)
+    {
+        mc_options_append("key_"); mc_options_append(mc_options_key_id(i));
+        mc_options_append(":"); mc_options_append_int(mc_options.key_codes[i]);
+        mc_options_append("\n");
+    }
+    size=0; while (mc_options_file[size]!=0) size=size+1;
+    if (narm_file_exists(&mc_options_path[0],NARM_STORAGE_SD))
+        if (narm_file_delete(&mc_options_path[0],NARM_STORAGE_SD)<0) return 0;
+    if (narm_file_create(&mc_options_path[0],NARM_STORAGE_SD)<=0) return 0;
+    wrote=narm_file_write(&mc_options_path[0],&mc_options_file[0],0,size,NARM_STORAGE_SD);
+    return wrote==size;
+}
+
+float mc_options_float_value(int option)
+{
+    if (option==MC_OPT_MUSIC) return mc_options.music_volume;
+    if (option==MC_OPT_SOUND) return mc_options.sound_volume;
+    if (option==MC_OPT_SENSITIVITY) return mc_options.mouse_sensitivity;
+    if (option==MC_OPT_CURSOR_SPEED) return mc_options.cursor_speed;
+    if (option==MC_OPT_FOV) return mc_options.fov_setting;
+    return mc_options.gamma_setting;
+}
+
+void mc_options_set_float(int option,float value)
+{
+    if(option==MC_OPT_CURSOR_SPEED&&!(value==value))value=.5f;
+    if (value<0) value=0; if (value>1) value=1;
+    if (option==MC_OPT_MUSIC) mc_options.music_volume=value;
+    else if (option==MC_OPT_SOUND) mc_options.sound_volume=value;
+    else if (option==MC_OPT_SENSITIVITY) mc_options.mouse_sensitivity=value;
+    else if (option==MC_OPT_CURSOR_SPEED)
+    { mc_options.cursor_speed=value; mc_menu_set_cursor_speed(value); }
+    else if (option==MC_OPT_FOV) mc_options.fov_setting=value;
+    else if (option==MC_OPT_GAMMA) mc_options.gamma_setting=value;
+}
+
+void mc_options_cycle(int option)
+{
+    if (option==MC_OPT_INVERT_MOUSE) mc_options.invert_mouse=!mc_options.invert_mouse;
+    else if (option==MC_OPT_RENDER_DISTANCE) mc_options.render_distance=(mc_options.render_distance+1)&3;
+    else if (option==MC_OPT_GUI_SCALE) mc_options.gui_scale=(mc_options.gui_scale+1)&3;
+    else if (option==MC_OPT_PARTICLES) mc_options.particles=(mc_options.particles+1)%3;
+    else if (option==MC_OPT_VIEW_BOBBING) mc_options.view_bobbing=!mc_options.view_bobbing;
+    else if (option==MC_OPT_RENDER_CLOUDS) mc_options.clouds=!mc_options.clouds;
+    else if (option==MC_OPT_ADVANCED_OPENGL) mc_options.advanced_opengl=!mc_options.advanced_opengl;
+    else if (option==MC_OPT_ANAGLYPH) mc_options.anaglyph=!mc_options.anaglyph;
+    else if (option==MC_OPT_FRAMERATE_LIMIT) mc_options.limit_framerate=(mc_options.limit_framerate+1)%3;
+    else if (option==MC_OPT_DIFFICULTY) mc_options.difficulty=(mc_options.difficulty+1)&3;
+    else if (option==MC_OPT_GRAPHICS) mc_options.fancy_graphics=!mc_options.fancy_graphics;
+    else if (option==MC_OPT_AMBIENT_OCCLUSION) mc_options.ambient_occlusion=!mc_options.ambient_occlusion;
+    else if (option==MC_OPT_OCCLUSION_CULLING) mc_options.occlusion_culling=!mc_options.occlusion_culling;
+}
+
+void mc_options_text_value(int option,char *out)
+{
+    float value=mc_options_float_value(option);
+    int number;
+    int boolean=-1;
+    out[0]=0;
+    if (option==MC_OPT_MUSIC || option==MC_OPT_SOUND)
+    { if (value==0) mc_world_append(out,64,mc_options_label(23)); else { number=(int)(value*100); mc_world_append_int(out,64,number); mc_world_append(out,64,"%"); } }
+    else if (option==MC_OPT_SENSITIVITY)
+    { if (value==0) mc_world_append(out,64,mc_options_label(24)); else if (value==1) mc_world_append(out,64,mc_options_label(25)); else { mc_world_append_int(out,64,(int)(value*200)); mc_world_append(out,64,"%"); } }
+    else if (option==MC_OPT_CURSOR_SPEED)
+    {
+        number=value<=.5f?(int)(25.0f+value*150.0f+.5f):(int)(value*200.0f+.5f);
+        mc_world_append_int(out,64,number);mc_world_append(out,64,"%");
+    }
+    else if (option==MC_OPT_FOV)
+    { if (value==0) mc_world_append(out,64,mc_options_label(26)); else if (value==1) mc_world_append(out,64,mc_options_label(27)); else mc_world_append_int(out,64,(int)(70+value*40)); }
+    else if (option==MC_OPT_GAMMA)
+    { if (value==0) mc_world_append(out,64,mc_options_label(28)); else if (value==1) mc_world_append(out,64,mc_options_label(29)); else { mc_world_append(out,64,"+"); mc_world_append_int(out,64,(int)(value*100)); mc_world_append(out,64,"%"); } }
+    else if (option==MC_OPT_INVERT_MOUSE) boolean=mc_options.invert_mouse;
+    else if (option==MC_OPT_VIEW_BOBBING) boolean=mc_options.view_bobbing;
+    else if (option==MC_OPT_ANAGLYPH) boolean=mc_options.anaglyph;
+    else if (option==MC_OPT_ADVANCED_OPENGL) boolean=mc_options.advanced_opengl;
+    else if (option==MC_OPT_AMBIENT_OCCLUSION) boolean=mc_options.ambient_occlusion;
+    else if (option==MC_OPT_RENDER_CLOUDS) boolean=mc_options.clouds;
+    else if (option==MC_OPT_OCCLUSION_CULLING) boolean=mc_options.occlusion_culling;
+    else if (option==MC_OPT_RENDER_DISTANCE) mc_world_append(out,64,mc_options_label(30+mc_options.render_distance));
+    else if (option==MC_OPT_DIFFICULTY) mc_world_append(out,64,mc_options_label(34+mc_options.difficulty));
+    else if (option==MC_OPT_GUI_SCALE) mc_world_append(out,64,mc_options_label(38+mc_options.gui_scale));
+    else if (option==MC_OPT_PARTICLES) mc_world_append(out,64,mc_options_label(42+mc_options.particles));
+    else if (option==MC_OPT_FRAMERATE_LIMIT) mc_world_append(out,64,mc_options_label(45+mc_options.limit_framerate));
+    else if (option==MC_OPT_GRAPHICS) mc_world_append(out,64,mc_options_label(mc_options.fancy_graphics?48:49));
+    if (boolean>=0) mc_world_append(out,64,mc_options_label(boolean?22:23));
+}
+
+int mc_options_label_for_option(int option)
+{
+    if(option==MC_OPT_CURSOR_SPEED)return 67;
+    if(option==MC_OPT_OCCLUSION_CULLING)return 68;
+    if (option<=MC_OPT_FOV) return option+1;
+    if (option==MC_OPT_DIFFICULTY) return 6;
+    if (option==MC_OPT_GAMMA) return 19;
+    if (option==MC_OPT_RENDER_DISTANCE) return 12;
+    if (option==MC_OPT_VIEW_BOBBING) return 16;
+    if (option==MC_OPT_ANAGLYPH) return 15;
+    if (option==MC_OPT_ADVANCED_OPENGL) return 18;
+    if (option==MC_OPT_FRAMERATE_LIMIT) return 14;
+    if (option==MC_OPT_GRAPHICS) return 11;
+    if (option==MC_OPT_AMBIENT_OCCLUSION) return 13;
+    if (option==MC_OPT_GUI_SCALE) return 17;
+    if (option==MC_OPT_RENDER_CLOUDS) return 20;
+    return 21;
+}
+
+void mc_options_format_option(int option,char *out)
+{
+    char value[64];
+    mc_options_text_value(option,&value[0]);
+    out[0]=0; mc_world_append(out,64,mc_options_label(mc_options_label_for_option(option)));
+    mc_world_append(out,64,": "); mc_world_append(out,64,&value[0]);
+}
+
+void mc_options_set_button(int index,int id,int x,int y,int width,int kind,int option)
+{
+    mc_options_buttons[index].id=id; mc_options_buttons[index].x_position=x;
+    mc_options_buttons[index].y_position=y; mc_options_buttons[index].width=width;
+    mc_options_buttons[index].height=20; mc_options_buttons[index].enabled=1;
+    mc_options_buttons[index].draw_button=1;
+    mc_options_buttons[index].display_string=&mc_options_button_text[index][0];
+    mc_options_button_kind[index]=kind; mc_options_button_option[index]=option;
+}
+
+void mc_options_build_screen(int screen)
+{
+    int i; int option; int options_main[6]; int options_video[11];
+    mc_options_screen=screen; mc_options_button_count=0; mc_options_capture_key=-1;
+    mc_options_drag_slider=-1;mc_options_drag_changed=0;
+    mc_options_enter_blocked=narm_key_down(NARM_KEY_ENTER)>0;
+    options_main[0]=0; options_main[1]=1; options_main[2]=2;
+    options_main[3]=3; options_main[4]=4; options_main[5]=11;
+    options_video[0]=12; options_video[1]=6; options_video[2]=13;
+    options_video[3]=10; options_video[4]=8; options_video[5]=7;
+    options_video[6]=14; options_video[7]=9; options_video[8]=5;
+    options_video[9]=15; options_video[10]=16;
+    if (screen==MC_OPTIONS_MAIN)
+    {
+        for (i=0;i<6;i=i+1)
+        { option=options_main[i]; mc_options_set_button(i,option,5+(i%2)*160,40+24*(i>>1),150,(option==0||option==1||option==3||option==4)?MC_OPTIONS_KIND_SLIDER:MC_OPTIONS_KIND_CYCLE,option); }
+        mc_options_set_button(6,101,60,148,200,MC_OPTIONS_KIND_ACTION,0);
+        mc_options_set_button(7,100,60,172,200,MC_OPTIONS_KIND_ACTION,0);
+        mc_options_set_button(8,200,60,208,200,MC_OPTIONS_KIND_ACTION,0);
+        /* Keep every original slot/position; use the otherwise empty fourth row. */
+        mc_options_set_button(9,MC_OPT_CURSOR_SPEED,5,112,150,MC_OPTIONS_KIND_SLIDER,MC_OPT_CURSOR_SPEED);
+        mc_options_button_count=10;
+    }
+    else if (screen==MC_OPTIONS_VIDEO)
+    {
+        for (i=0;i<11;i=i+1)
+        { option=options_video[i]; mc_options_set_button(i,option,5+(i%2)*160,40+24*(i>>1),150,option==5?MC_OPTIONS_KIND_SLIDER:MC_OPTIONS_KIND_CYCLE,option); }
+        mc_options_set_button(11,200,60,208,200,MC_OPTIONS_KIND_ACTION,0);
+        /* Original Particles occupies the left half of this row. */
+        mc_options_set_button(12,MC_OPT_OCCLUSION_CULLING,165,160,150,MC_OPTIONS_KIND_CYCLE,MC_OPT_OCCLUSION_CULLING);
+        mc_options_button_count=13;
+    }
+    else
+    {
+        for (i=0;i<MC_OPTIONS_KEYS;i=i+1)
+            mc_options_set_button(i,1000+i,5+(i%2)*160,40+24*(i>>1),70,MC_OPTIONS_KIND_KEY,i);
+        mc_options_set_button(13,200,60,208,200,MC_OPTIONS_KIND_ACTION,0);
+        mc_options_button_count=14;
+    }
+    mc_options_dirty=1;
+}
+
+void mc_options_append_key_name(char *out,int code)
+{
+    char one[2];
+    if (code<0) { mc_world_append(out,64,"Button "); mc_world_append_int(out,64,code+101); return; }
+    if (code>=16 && code<=25) { char *q="QWERTYUIOP"; one[0]=q[code-16]; one[1]=0; mc_world_append(out,64,one); return; }
+    if (code>=30 && code<=38) { char *a="ASDFGHJKL"; one[0]=a[code-30]; one[1]=0; mc_world_append(out,64,one); return; }
+    if (code>=44 && code<=50) { char *z="ZXCVBNM"; one[0]=z[code-44]; one[1]=0; mc_world_append(out,64,one); return; }
+    if (code==57) mc_world_append(out,64,"SPACE");
+    else if (code==42) mc_world_append(out,64,"LSHIFT");
+    else if (code==15) mc_world_append(out,64,"TAB");
+    else if (code==1) mc_world_append(out,64,"ESCAPE");
+    else if (code==28) mc_world_append(out,64,"RETURN");
+    else { mc_world_append(out,64,"KEY "); mc_world_append_int(out,64,code); }
+}
+
+int mc_options_narm_to_lwjgl(uint key)
+{
+    if (key>=NARM_KEY_A && key<=NARM_KEY_Z)
+    {
+        int map[26]={30,48,46,32,18,33,34,35,23,36,37,38,50,49,24,25,16,19,31,20,22,47,17,45,21,44};
+        return map[key-NARM_KEY_A];
+    }
+    if (key>=0x1e && key<=0x26) return 2+(int)(key-0x1e);
+    if (key==0x27) return 11;
+    if (key==NARM_KEY_ESCAPE) return 1;
+    if (key==NARM_KEY_BACKSPACE) return 14;
+    if (key==NARM_KEY_TAB) return 15;
+    if (key==NARM_KEY_ENTER) return 28;
+    if (key==NARM_KEY_LEFT_CONTROL) return 29;
+    if (key==NARM_KEY_LEFT_SHIFT) return 42;
+    if (key==NARM_KEY_SPACE) return 57;
+    if (key>=NARM_KEY_F1 && key<=NARM_KEY_F10) return 59+(int)(key-NARM_KEY_F1);
+    if (key==NARM_KEY_F11) return 87; if (key==NARM_KEY_F12) return 88;
+    if (key==NARM_KEY_RIGHT_SHIFT) return 54;
+    if (key==NARM_KEY_RIGHT_CONTROL) return 157;
+    if (key==NARM_KEY_LEFT_ALT) return 56; if (key==NARM_KEY_RIGHT_ALT) return 184;
+    if (key==0x39) return 58; /* Caps Lock is not LWJGL Space (57). */
+    if (key==NARM_KEY_UP) return 200; if (key==NARM_KEY_LEFT) return 203;
+    if (key==NARM_KEY_RIGHT) return 205; if (key==NARM_KEY_DOWN) return 208;
+    /* USB HID and LWJGL numeric codes are not interchangeable. */
+    return 0;
+}
+
+void mc_options_refresh_text(void)
+{
+    int i;
+    for (i=0;i<mc_options_button_count;i=i+1)
+    {
+        mc_options_button_text[i][0]=0;
+        if (mc_options_button_kind[i]==MC_OPTIONS_KIND_CYCLE || mc_options_button_kind[i]==MC_OPTIONS_KIND_SLIDER)
+            mc_options_format_option(mc_options_button_option[i],&mc_options_button_text[i][0]);
+        else if (mc_options_button_kind[i]==MC_OPTIONS_KIND_KEY)
+        {
+            if (mc_options_capture_key==i) mc_world_append(&mc_options_button_text[i][0],64,"> ??? <");
+            else mc_options_append_key_name(&mc_options_button_text[i][0],mc_options.key_codes[i]);
+        }
+        else if (mc_options_buttons[i].id==101) mc_world_append(&mc_options_button_text[i][0],64,mc_options_label(7));
+        else if (mc_options_buttons[i].id==100) mc_world_append(&mc_options_button_text[i][0],64,mc_options_label(8));
+        else mc_world_append(&mc_options_button_text[i][0],64,mc_options_label(9));
+    }
+}
+
+void mc_options_draw_background(void)
+{
+    int x,y;
+    for (y=0;y<MC_SCREEN_HEIGHT;y=y+32)
+        for (x=0;x<MC_SCREEN_WIDTH;x=x+32)
+            narm_half_blit(x,y,32,32,&mc_options_background[0]);
+}
+
+int mc_options_key_duplicate(int index)
+{
+    int i; for (i=0;i<MC_OPTIONS_KEYS;i=i+1)
+        if (i!=index && mc_options.key_codes[i]==mc_options.key_codes[index]) return 1;
+    return 0;
+}
+
+void mc_options_draw(void)
+{
+    int i; int knob_x; uint color;
+    mc_options_refresh_text(); mc_options_draw_background();
+    mc_menu_draw_centered_string(mc_options_label(mc_options_screen==0?0:(mc_options_screen==1?10:50)),160,20,0xffffff);
+    if (mc_options_screen==MC_OPTIONS_VIDEO && mc_options.render_distance==0)
+    {
+        mc_menu_draw_centered_string(mc_options_label(65),160,184,0xaf0000);
+        mc_menu_draw_centered_string(mc_options_label(66),160,196,0xaf0000);
+    }
+    for (i=0;i<mc_options_button_count;i=i+1)
+    {
+        if (mc_options_button_kind[i]==MC_OPTIONS_KIND_SLIDER)
+        {
+            narm_half_blit(mc_options_buttons[i].x_position,mc_options_buttons[i].y_position,150,20,
+                           mc_menu_button_pixels(&mc_options_buttons[i],0));
+            knob_x=mc_options_buttons[i].x_position+(int)(mc_options_float_value(mc_options_button_option[i])*142.0f);
+            narm_half_blit(knob_x,mc_options_buttons[i].y_position,8,20,&mc_options_slider_knob[0]);
+            color=mc_menu_button_hovered(&mc_options_buttons[i])?0xffffa0:0xe0e0e0;
+            mc_menu_draw_centered_string(mc_options_button_text[i],mc_options_buttons[i].x_position+75,mc_options_buttons[i].y_position+6,color);
+        }
+        else if (mc_options_screen==MC_OPTIONS_CONTROLS && i<MC_OPTIONS_KEYS)
+        {
+            int state=mc_menu_button_hovered(&mc_options_buttons[i])?2:1;
+            int center=mc_options_buttons[i].x_position+35;
+            narm_half_blit(mc_options_buttons[i].x_position,mc_options_buttons[i].y_position,70,20,
+                           mc_menu_button_pixels(&mc_options_buttons[i],state));
+            if (mc_options_capture_key==i)
+            {
+                int start=center-mc_menu_font_width("> ??? <")/2;
+                mc_menu_draw_string("> ",start,mc_options_buttons[i].y_position+6,0xffffff);
+                start=start+mc_menu_font_width("> ");
+                mc_menu_draw_string("???",start,mc_options_buttons[i].y_position+6,0xffff55);
+                start=start+mc_menu_font_width("???");
+                mc_menu_draw_string(" <",start,mc_options_buttons[i].y_position+6,0xffffff);
+            }
+            else
+            {
+                color=mc_options_key_duplicate(i)?0xff5555:(mc_menu_button_hovered(&mc_options_buttons[i])?0xffffa0:0xe0e0e0);
+                mc_menu_draw_centered_string(mc_options_button_text[i],center,mc_options_buttons[i].y_position+6,color);
+            }
+        }
+        else mc_menu_draw_button(&mc_options_buttons[i]);
+        if (mc_options_screen==MC_OPTIONS_CONTROLS && i<MC_OPTIONS_KEYS)
+            mc_menu_draw_string(mc_options_label(51+i),mc_options_buttons[i].x_position+76,mc_options_buttons[i].y_position+7,0xffffff);
+    }
+    mc_menu_draw_pointer(); narm_half_present();
+}
+
+void mc_options_activate(int index)
+{
+    int id=mc_options_buttons[index].id;
+    if (mc_options_button_kind[index]==MC_OPTIONS_KIND_SLIDER)
+    {
+        float value=(float)(mc_menu_pointer_x-(mc_options_buttons[index].x_position+4))/142.0f;
+        mc_options_set_float(mc_options_button_option[index],value);
+        mc_options_dirty=1; return;
+    }
+    if (mc_options_button_kind[index]==MC_OPTIONS_KIND_CYCLE)
+    { mc_options_cycle(mc_options_button_option[index]); mc_options_save(); mc_options_dirty=1; return; }
+    if (mc_options_button_kind[index]==MC_OPTIONS_KIND_KEY)
+    { mc_options_capture_key=mc_options_button_option[index]; mc_options_dirty=1; return; }
+    if (id==101) { mc_options_save(); mc_options_build_screen(MC_OPTIONS_VIDEO); }
+    else if (id==100) { mc_options_save(); mc_options_build_screen(MC_OPTIONS_CONTROLS); }
+    else if (id==200)
+    { mc_options_save(); if (mc_options_screen==MC_OPTIONS_MAIN) mc_options_screen=-1; else mc_options_build_screen(MC_OPTIONS_MAIN); }
+}
+
+void mc_options_release_enter(void)
+{
+    int save=mc_options_drag_slider>=0&&mc_options_drag_changed;
+    mc_options_drag_slider=-1;mc_options_drag_changed=0;mc_options_enter_blocked=0;
+    if(save)mc_options_save();
+}
+
+void mc_options_press_enter(void)
+{
+    int i;float previous;
+    if(mc_options_enter_blocked)return;
+    mc_options_enter_blocked=1;
+    for(i=0;i<mc_options_button_count;i=i+1)
+        if(mc_options_buttons[i].enabled&&mc_menu_button_hovered(&mc_options_buttons[i]))
+        {
+            if(mc_options_button_kind[i]==MC_OPTIONS_KIND_SLIDER)
+            {
+                previous=mc_options_float_value(mc_options_button_option[i]);
+                mc_options_activate(i);mc_options_drag_slider=i;
+                mc_options_drag_changed=previous!=mc_options_float_value(mc_options_button_option[i]);
+            }
+            else mc_options_activate(i);
+            break;
+        }
+}
+
+void mc_options_drag_step(void)
+{
+    int index=mc_options_drag_slider;float value;
+    if(index<0)return;
+    if(narm_key_down(NARM_KEY_ENTER)<=0){mc_options_release_enter();return;}
+    value=(float)(mc_menu_pointer_x-(mc_options_buttons[index].x_position+4))/142.0f;
+    if(value<0)value=0;if(value>1)value=1;
+    if(value==mc_options_float_value(mc_options_button_option[index]))return;
+    mc_options_set_float(mc_options_button_option[index],value);
+    mc_options_drag_changed=1;mc_options_dirty=1;
+}
+
+int mc_options_labels_valid(void)
+{
+    int index,offset=0,start;
+    if(mc_options_label_bytes>MC_OPTIONS_LABEL_BYTES)return 0;
+    /* All 67 source labels must be present, nonempty and terminated inside the
+     * bounded payload. A successful read alone does not establish usable text. */
+    for(index=0;index<67;index=index+1)
+    {
+        if(offset>=(int)mc_options_label_bytes)return 0;
+        start=offset;
+        while(offset<(int)mc_options_label_bytes&&mc_options_labels[offset])offset=offset+1;
+        if(offset==start||offset>=(int)mc_options_label_bytes)return 0;
+        offset=offset+1;
+    }
+    return 1;
+}
+
+int mc_options_init(void)
+{
+    uint bytes; int i,index; char *pixels; char *background_source;
+    mc_options_ready=0;
+    mc_options_fallback_labels=0;
+    if (!mc_asset_read_payload("mc10/options/labels",&mc_options_labels[0],MC_OPTIONS_LABEL_BYTES,&mc_options_label_bytes)||!mc_options_labels_valid())
+    { mc_options_fallback_labels=1; mc_options_label_bytes=0; }
+    pixels=(char *)&mc_options_background[0];
+    if (mc_asset_load_image("gui/background.png") &&
+        mc_asset_loaded_width==mc_asset_loaded_height &&
+        (mc_asset_loaded_width==16 || mc_asset_loaded_width==32))
+    {
+        /* GuiScreen.drawBackground repeats the complete owned texture every
+         * 32 screen pixels. The original 1.0 image is 16x16, so nearest
+         * sampling expands each source texel twice; accept 32x32 packs too. */
+        background_source=(char *)&mc_asset_pixels[0];
+        for (i=0;i<1024;i=i+1)
+        {
+            index=mc_asset_loaded_width==16?(i>>6)*16+((i&31)>>1):i;
+            uint c=(uint)background_source[index]&255;
+            pixels[i]=(char)((((c>>5)>>2)<<5)|((((c>>2)&7)>>2)<<2)|((c&3)>>2));
+        }
+    }
+    else
+        for (i=0;i<1024;i=i+1) pixels[i]=(char)MC_COLOR_DARK;
+    if (!mc_asset_read_payload("mc10/options/slider_knob_8x20",&mc_options_slider_knob[0],160,&bytes) || bytes!=160)
+    {
+        char *source=(char *)&mc_menu_button_200[MC_MENU_BUTTON_200_WORDS];
+        char *knob=(char *)&mc_options_slider_knob[0];
+        int y,x;
+        for (y=0;y<20;y=y+1)
+            for (x=0;x<4;x=x+1)
+            {
+                knob[y*8+x]=source[y*200+x];
+                knob[y*8+4+x]=source[y*200+196+x];
+            }
+    }
+    mc_options_load(); mc_options_ready=1; return 1;
+}
+
+int mc_options_self_test(void)
+{
+    if (!mc_options_ready || (!mc_options_fallback_labels && mc_options_label_bytes==0)) return 0;
+    if (!mc_menu_text_equals(mc_options_label(0),"Options")) return 0;
+    if (!mc_menu_text_equals(mc_options_label(10),"Video Settings")) return 0;
+    if (mc_options.key_codes[2]==0 || mc_options.render_distance<0 || mc_options.render_distance>3) return 0;
+    return 1;
+}
+
+void mc_options_run(void)
+{
+    unsigned key,action,mods,character,now; int event; int i;
+    if (!mc_options_ready) return;
+    mc_options_build_screen(MC_OPTIONS_MAIN);
+    while (mc_options_screen>=0)
+    {
+        now=narm_millis(); if (mc_menu_update_pointer_held(now)) mc_options_dirty=1;
+        if(narm_key_down(NARM_KEY_ENTER)<=0)mc_options_enter_blocked=0;
+        while (narm_next_key_event(&key,&action,&mods,&character)>0)
+        {
+            if(key==NARM_KEY_ENTER&&action==NARM_KEY_ACTION_RELEASE)
+            {mc_options_release_enter();continue;}
+            if (action!=NARM_KEY_ACTION_PRESS) continue;
+            if (mc_options_screen==MC_OPTIONS_CONTROLS && mc_options_capture_key>=0)
+            {
+                mc_options.key_codes[mc_options_capture_key]=mc_options_narm_to_lwjgl(key);
+                mc_options_capture_key=-1; mc_options_save(); mc_options_dirty=1; continue;
+            }
+            if (key==NARM_KEY_ESCAPE)
+            {
+                mc_options_save();
+                mc_options_drag_slider=-1;mc_options_drag_changed=0;
+                if (mc_options_screen==MC_OPTIONS_MAIN) mc_options_screen=-1;
+                else mc_options_build_screen(MC_OPTIONS_MAIN);
+            }
+            else if (key==NARM_KEY_ENTER)
+                mc_options_press_enter();
+        }
+        mc_options_drag_step();
+        event=narm_poll_system_event();
+        if(event==NARM_EVENT_FOCUS_LOST)
+        {mc_options_release_enter();mc_options_enter_blocked=1;}
+        if(event==NARM_EVENT_CLOSE_REQUESTED){mc_options_release_enter();return;}
+        if (mc_options_dirty && mc_options_screen>=0) { mc_options_draw(); mc_options_dirty=0; }
+        narm_sleep_ms(2);
+    }
+}

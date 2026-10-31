@@ -1,0 +1,34 @@
+/* Standalone MC10 platform and storage constants. */
+
+#define MC_SCREEN_WIDTH 320
+#define MC_SCREEN_HEIGHT 240
+
+#define MC_CHUNK_WIDTH 16
+#define MC_CHUNK_DEPTH 16
+#define MC_WORLD_HEIGHT 128
+#define MC_CHUNK_BLOCK_COUNT 32768
+#define MC_CHUNK_NIBBLE_BYTES 16384
+
+#define MC_COLOR_BLACK 0x00
+#define MC_COLOR_DARK 0x24
+#define MC_COLOR_PANEL 0x49
+#define MC_COLOR_PANEL_HI 0x6d
+#define MC_COLOR_SKY 0x3f
+#define MC_COLOR_GRASS 0x1c
+#define MC_COLOR_DIRT 0x84
+#define MC_COLOR_WHITE 0xff
+#define MC_COLOR_YELLOW 0xfc
+#define MC_COLOR_GREEN 0x3c
+#define MC_COLOR_RED 0xe0
+
+int mc_boot_random_ok = 0;
+int mc_boot_u64_ok = 0;
+int mc_boot_chunk_ok = 0;
+int mc_boot_assets_ok = 0;
+int mc_boot_perlin_ok = 0;
+int mc_boot_menu_ok = 0;
+int mc_boot_nbt_ok = 0;
+int mc_boot_blocks_ok = 0;
+int mc_boot_options_ok = 0;
+
+
