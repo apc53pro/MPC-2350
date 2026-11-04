@@ -1,5 +1,5 @@
 param(
-    [string]$Compiler = (Join-Path $PSScriptRoot '..\..\..\..\Compiler_For_NARM\narmcc.exe'),
+    [string]$Compiler = (Join-Path $PSScriptRoot '..\..\..\Compiler_For_NARM\narmcc.exe'),
     [string]$Python = 'python',
     [string]$MinecraftJar = (Join-Path $env:APPDATA '.minecraft\versions\1.0\1.0.jar'),
     [string]$ResourceRoot = (Join-Path $env:APPDATA '.minecraft\versions\1.0\minecraft\src'),
@@ -16,7 +16,8 @@ param(
     [switch]$GeometryProfile,
     [switch]$PreparationProfile,
     [switch]$CullProfile,
-    [switch]$Interactive
+    [switch]$Interactive,
+    [switch]$KeyboardOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,7 +28,9 @@ if ($Interactive) {
     # Retain the proven ordered tiled renderer without entering benchmark_main.
     $TileProfile = $true
     $LegacyFont = $true
-    if (-not $PSBoundParameters.ContainsKey('BuildName')) { $BuildName = 'mc10_narm_build29_world_systems' }
+    if (-not $PSBoundParameters.ContainsKey('BuildName')) {
+        $BuildName = if ($KeyboardOnly) { 'mc10_narm_build31_keyboard' } else { 'mc10_narm_build31_mouse' }
+    }
 }
 if ($CullProfile) { $PreparationProfile = $true }
 if ($PreparationProfile) { $GeometryProfile = $true }
@@ -164,7 +167,10 @@ if (-not $SkipAssets) {
 }
 
 $profileCompilerFlags = @()
-if ($Interactive) { $profileCompilerFlags += @('-DMC10_INTERACTIVE=1', '-DMC10_PLAYER_FOUNDATION=1', '-DMC10_WORLD_SYSTEMS=1') }
+if ($Interactive) {
+    $profileCompilerFlags += @('-DMC10_INTERACTIVE=1', '-DMC10_PLAYER_FOUNDATION=1', '-DMC10_WORLD_SYSTEMS=1')
+    if (-not $KeyboardOnly) { $profileCompilerFlags += '-DMC10_MOUSE=1' }
+}
 if ($AutoProfile) { $profileCompilerFlags = @('-DMC10_AUTOPROFILE=1') }
 if ($StartupDiagnostic) {
     $profileCompilerFlags = @('-DMC10_AUTOPROFILE=1', '-DMC10_STARTUP_DIAGNOSTIC=1')

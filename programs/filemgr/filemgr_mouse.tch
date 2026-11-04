@@ -1,0 +1,451 @@
+/* FILEMGR mouse interaction. Uses the public NARM mouse v1.0 interface only.
+ * The firmware owns/composites the cursor. Menu overlays redraw only on hover
+ * changes, and closing them requests a complete repaint of the obscured area.
+ */
+struct NarmMouseState fmMouseState;
+struct NarmMouseEvent fmMouseEvent;
+int fmMenuOpen = 0;
+int fmMenuDirty = 0;
+int fmMenuX = 0;
+int fmMenuY = 0;
+int fmMenuWidth = 184;
+int fmMenuHeight = 0;
+int fmMenuCount = 0;
+int fmMenuHover = -1;
+int fmMenuArmed = -1;
+int fmMenuActions[9];
+int fmMenuTarget = -1;
+int fmMenuTargetKind = 0;
+uint fmMenuStorage = 0;
+char fmMenuDirectory[96];
+char fmMenuName[48];
+int fmMouseGesture = 0; /* 1 item click, 2 scrollbar, 3 image pan, 4 menu */
+int fmMouseDownRow = -1;
+int fmMouseDownX = 0;
+int fmMouseDownY = 0;
+int fmMouseCenterX = 0;
+int fmMouseCenterY = 0;
+int fmMouseLastRow = -1;
+int fmMouseLastX = 0;
+int fmMouseLastY = 0;
+uint fmMouseLastTime = 0;
+int fmMouseNeedsInit = 1;
+uint fmMouseSuppressed = 0;
+
+int fmInside(int x, int y, int left, int top, int right, int bottom)
+{
+    return x >= left && x <= right && y >= top && y <= bottom;
+}
+
+void fmDismissMenu()
+{
+    if (fmMenuOpen != 0)
+    {
+        fmMenuOpen = 0; fmMenuDirty = 0; fmMenuArmed = -1;
+        quickMoveDirty = 0; nameEditQuickDirty = 0; dirty = 1;
+    }
+}
+
+void fmCancelMouse()
+{
+    fmMouseGesture = 0; fmMouseDownRow = -1; fmMouseLastRow = -1;
+    fmDismissMenu();
+}
+
+void fmResetMouse()
+{
+    fmCancelMouse();
+    fmMouseNeedsInit = 1;
+    fmMouseSuppressed = 0;
+}
+
+int fmSameText(char first[], char second[], int limit)
+{
+    int i;
+    for (i = 0; i < limit; i = i + 1)
+    {
+        if (first[i] != second[i]) return 0;
+        if (first[i] == 0) return 1;
+    }
+    return 0;
+}
+
+int fmRowAt(int x, int y)
+{
+    int row;
+    if (fmInside(x, y, 17, LIST_Y - 1, 422, LIST_Y + VISIBLE_ROWS * ROW_H - 2) == 0) return -1;
+    if (cacheStart != scrollIndex) return -1;
+    row = (y - LIST_Y + 1) / ROW_H;
+    if (row < 0 || row >= VISIBLE_ROWS || cacheStatuses[row] == 0) return -1;
+    /* Truncated names cannot safely identify an entry for file operations. */
+    if (cacheStatuses[row] != 1) return -1;
+    return cacheStart + row;
+}
+
+void fmSelectMouseRow(int index)
+{
+    int old;
+    int allowQuick;
+    if (index < 0 || index == selectedIndex) return;
+    old = selectedIndex;
+    allowQuick = dirty == 0 && fmMenuOpen == 0;
+    selectedIndex = index; confirmDelete = 0;
+    if (statusCode == 3) statusCode = 0;
+    selectedInfoDirty = 1;
+    loadSelectedInfo();
+    quickMoveDirty = 0;
+    if (allowQuick != 0 && selectedInfoDirty == 0)
+    {
+        quickOldSlot = old - scrollIndex; quickNewSlot = index - scrollIndex;
+        quickMoveDirty = 1;
+    }
+    dirty = 1;
+}
+
+int fmMenuTargetValid()
+{
+    if (mode != 0 || activeStorage != fmMenuStorage ||
+        fmSameText(cwd, fmMenuDirectory, 96) == 0) return 0;
+    if (fmMenuTarget < 0) return 1;
+    if (selectedIndex != fmMenuTarget || getSelectedCachedEntry() == 0 || entryStatus != 1) return 0;
+    return entryType == fmMenuTargetKind && fmSameText(entryName, fmMenuName, 48) != 0;
+}
+
+void fmPlaceMenu(int x, int y)
+{
+    fmMenuHeight = 25 + fmMenuCount * 15;
+    fmMenuX = x; fmMenuY = y;
+    if (fmMenuX + fmMenuWidth + 3 > SCREEN_W) fmMenuX = SCREEN_W - fmMenuWidth - 3;
+    if (fmMenuY + fmMenuHeight + 3 > SCREEN_H) fmMenuY = SCREEN_H - fmMenuHeight - 3;
+    if (fmMenuX < 2) fmMenuX = 2;
+    if (fmMenuY < 2) fmMenuY = 2;
+    fmMenuHover = -1; fmMenuArmed = -1;
+    fmMenuOpen = 1; fmMenuDirty = 1;
+    quickMoveDirty = 0; dirty = 1;
+}
+
+void fmOpenContextMenu(int x, int y)
+{
+    int row;
+    if (mode != 0) return;
+    fmDismissMenu();
+    confirmDelete = 0;
+    if (statusCode == 3) statusCode = 0;
+    fmMouseLastRow = -1; fmMouseGesture = 0;
+    row = fmRowAt(x, y);
+    if (row >= 0) fmSelectMouseRow(row);
+    fmMenuTarget = row;
+    fmMenuStorage = activeStorage;
+    copyBuffer(fmMenuDirectory, cwd, 96);
+    clearChars(fmMenuName, 48);
+    fmMenuCount = 0;
+    if (row >= 0 && getSelectedCachedEntry() != 0)
+    {
+        fmMenuTargetKind = entryType;
+        copyBuffer(fmMenuName, entryName, 48);
+        fmMenuActions[fmMenuCount] = 1; fmMenuCount = fmMenuCount + 1;
+        if (entryType != 1) { fmMenuActions[fmMenuCount] = 2; fmMenuCount = fmMenuCount + 1; }
+        fmMenuActions[fmMenuCount] = 3; fmMenuCount = fmMenuCount + 1;
+        fmMenuActions[fmMenuCount] = 4; fmMenuCount = fmMenuCount + 1;
+    }
+    fmMenuActions[fmMenuCount] = 5; fmMenuCount = fmMenuCount + 1;
+    fmMenuActions[fmMenuCount] = 6; fmMenuCount = fmMenuCount + 1;
+    fmMenuActions[fmMenuCount] = 7; fmMenuCount = fmMenuCount + 1;
+    fmMenuActions[fmMenuCount] = 8; fmMenuCount = fmMenuCount + 1;
+    fmMenuActions[fmMenuCount] = 9; fmMenuCount = fmMenuCount + 1;
+    fmPlaceMenu(x, y);
+}
+
+int fmMenuRowAt(int x, int y)
+{
+    int row;
+    if (fmInside(x, y, fmMenuX + 3, fmMenuY + 20,
+        fmMenuX + fmMenuWidth - 4, fmMenuY + 19 + fmMenuCount * 15) == 0) return -1;
+    row = (y - fmMenuY - 20) / 15;
+    if (row >= fmMenuCount) return -1;
+    return row;
+}
+
+void fmActivateMenu(int row)
+{
+    int action;
+    int x;
+    int y;
+    if (row < 0 || row >= fmMenuCount) return;
+    if (fmMenuTargetValid() == 0) { fmDismissMenu(); return; }
+    action = fmMenuActions[row]; x = fmMenuX; y = fmMenuY;
+    fmDismissMenu(); fmMouseGesture = 0; fmMouseLastRow = -1;
+    /* Mouse deletion always gets a separate target-bound confirmation menu. */
+    if (action == 4)
+    {
+        fmMenuActions[0] = 10; fmMenuActions[1] = 11; fmMenuCount = 2;
+        fmPlaceMenu(x, y); fmMenuHover = 1;
+        return;
+    }
+    if (action == 1) openSelected();
+    else if (action == 2)
+    {
+        buildPathFromName(selectedPath, entryName, entryLen);
+        buildRelPathFromName(selectedRelPath, entryName, entryLen);
+        copyBuffer(fileViewName, entryName, 48);
+        viewOffset = 0; mode = 1; statusCode = 0; startFilePageLoad();
+    }
+    else if (action == 3) startRenameEdit();
+    else if (action == 5) startNameEdit(1);
+    else if (action == 6) startNameEdit(2);
+    else if (action == 7) { mountActiveStorage(); confirmDelete = 0; statusCode = 10; startRefresh(); }
+    else if (action == 8) { goParent(); startRefresh(); }
+    else if (action == 9) toggleStorage();
+    else if (action == 10) { confirmDelete = 1; deleteSelected(); }
+}
+
+int fmApplyMenuKeyboard()
+{
+    if (fmMenuOpen == 0) return 0;
+    if (fmMenuTargetValid() == 0) { fmDismissMenu(); clearHits(); return 1; }
+    if (hitBack != 0 || hitCancel != 0) fmDismissMenu();
+    else if (hitUp != 0 || hitDown != 0)
+    {
+        if (hitDown != 0) fmMenuHover = (fmMenuHover + 1) % fmMenuCount;
+        else if (fmMenuHover <= 0) fmMenuHover = fmMenuCount - 1;
+        else fmMenuHover = fmMenuHover - 1;
+        fmMenuDirty = 1;
+    }
+    else if (hitOpen != 0) fmActivateMenu(fmMenuHover);
+    else if (hitRefresh != 0 || hitStorage != 0 || hitDelete != 0 || hitRename != 0 || hitFile != 0 || hitDir != 0 || hitPageDown != 0 || hitPageUp != 0)
+        fmDismissMenu();
+    clearHits();
+    return 1;
+}
+
+void fmScrollBrowser(int delta)
+{
+    int old;
+    int slot;
+    int maximum;
+    if (entryCount <= VISIBLE_ROWS) return;
+    old = scrollIndex; slot = selectedIndex - old;
+    maximum = entryCount - VISIBLE_ROWS;
+    scrollIndex = scrollIndex + delta;
+    if (scrollIndex < 0) scrollIndex = 0;
+    if (scrollIndex > maximum) scrollIndex = maximum;
+    if (scrollIndex == old) return;
+    selectedIndex = scrollIndex + slot;
+    if (selectedIndex < scrollIndex) selectedIndex = scrollIndex;
+    if (selectedIndex >= scrollIndex + VISIBLE_ROWS) selectedIndex = scrollIndex + VISIBLE_ROWS - 1;
+    selectedInfoDirty = 1; confirmDelete = 0;
+    if (statusCode == 3) statusCode = 0;
+    quickMoveDirty = 0; dirty = 1;
+    requestVisibleCache();
+    fmMouseLastRow = -1;
+}
+
+void fmScrollbarTo(int y)
+{
+    int position;
+    int target;
+    int maximum;
+    if (entryCount <= VISIBLE_ROWS) return;
+    maximum = entryCount - VISIBLE_ROWS;
+    position = y - 99;
+    if (position < 0) position = 0;
+    if (position > 256) position = 256;
+    target = (maximum / 256) * position + ((maximum % 256) * position) / 256;
+    fmScrollBrowser(target - scrollIndex);
+}
+
+void fmMouseWheel(int wheel)
+{
+    int steps;
+    if (wheel > 8) wheel = 8;
+    if (wheel < -8) wheel = -8;
+    if (fmMenuOpen != 0)
+    {
+        if (fmMenuHover < 0) fmMenuHover = 0;
+        fmMenuHover = fmMenuHover - wheel;
+        if (fmMenuHover < 0) fmMenuHover = 0;
+        if (fmMenuHover >= fmMenuCount) fmMenuHover = fmMenuCount - 1;
+        fmMenuDirty = 1; return;
+    }
+    if (mode == 0) fmScrollBrowser(-wheel * 3);
+    else if (mode == 1)
+    {
+        if (wheel > 0) { hitUp = 1; steps = wheel; } else { hitDown = 1; steps = -wheel; }
+        while (steps > 0) { applyFileViewInput(); steps = steps - 1; }
+        clearHits();
+    }
+    else if (mode == 4 && imageCacheReady != 0)
+    {
+        if (wheel > 0) { hitZoomIn = 1; steps = wheel; } else { hitZoomOut = 1; steps = -wheel; }
+        while (steps > 0) { applyImageViewInput(); steps = steps - 1; }
+        clearHits();
+    }
+}
+
+void fmMouseImageDrag(int x, int y)
+{
+    int cx;
+    int cy;
+    if (imageScale < 1) return;
+    cx = imageCenterX; cy = imageCenterY;
+    imageCenterX = fmMouseCenterX - (x - fmMouseDownX) * 256 / imageScale;
+    imageCenterY = fmMouseCenterY - (y - fmMouseDownY) * 256 / imageScale;
+    clampImageView();
+    if (imageCenterX != cx || imageCenterY != cy)
+    {
+        imageLookupValid = 0; invalidateImageRowCaches(); dirty = 1;
+    }
+}
+
+void fmMouseBack()
+{
+    fmCancelMouse();
+    if (mode == 2) cancelNameEdit();
+    else if (mode == 0 || mode == 1 || mode == 4)
+    {
+        hitBack = 1;
+        if (mode == 0) applyBrowserInput();
+        else if (mode == 1) applyFileViewInput();
+        else applyImageViewInput();
+        clearHits();
+    }
+}
+
+void fmMouseLeftPress(int x, int y)
+{
+    int row;
+    uint frame;
+    if (fmMenuOpen != 0)
+    {
+        row = fmMenuRowAt(x, y);
+        if (row < 0) fmDismissMenu();
+        else { fmMenuArmed = row; fmMouseGesture = 4; }
+        return; /* Dismissal never clicks through to the file underneath. */
+    }
+    fmMouseDownX = x; fmMouseDownY = y;
+    if (mode == 2)
+    {
+        if (fmInside(x, y, 82, 261, 187, 278) != 0) finishNameEdit();
+        else if (fmInside(x, y, 202, 261, 307, 278) != 0) cancelNameEdit();
+        return;
+    }
+    if (mode == 3) return;
+    if (fmInside(x, y, 20, 386, 47, 413) != 0) { toggleAudioPause(); return; }
+    if (audioLoaded != 0 && fmInside(x, y, 58, 400, 499, 415) != 0)
+    {
+        frame = (audioTotalFrames / (uint)440) * (uint)(x - 58) +
+            ((audioTotalFrames % (uint)440) * (uint)(x - 58)) / (uint)440;
+        audioSeekTo(frame); return;
+    }
+    if (fmInside(x, y, 552, 10, 626, 27) != 0 && mode == 0) { fmMouseLastRow = -1; toggleStorage(); return; }
+    if (fmInside(x, y, 12, 46, 65, 68) != 0 && (mode == 0 || mode == 1)) { fmMouseBack(); return; }
+    if (mode == 0)
+    {
+        if (fmInside(x, y, 423, 98, 432, 356) != 0)
+        { fmMouseGesture = 2; fmScrollbarTo(y); return; }
+        row = fmRowAt(x, y);
+        if (row >= 0)
+        {
+            fmSelectMouseRow(row); fmMouseDownRow = row; fmMouseGesture = 1;
+        }
+        else fmMouseLastRow = -1;
+    }
+    else if (mode == 4 && imageCacheReady != 0 && fmInside(x, y, 0, IMAGE_TOP, 639, IMAGE_TOP + IMAGE_HEIGHT - 1) != 0)
+    {
+        fmMouseGesture = 3; fmMouseCenterX = imageCenterX; fmMouseCenterY = imageCenterY;
+    }
+}
+
+void fmMouseLeftRelease(int x, int y, uint timestamp)
+{
+    int row;
+    int dx;
+    int dy;
+    if (fmMouseGesture == 3) fmMouseImageDrag(x, y);
+    if (fmMouseGesture == 2) fmScrollbarTo(y);
+    if (fmMouseGesture == 4)
+    {
+        row = fmMenuRowAt(x, y);
+        if (row >= 0 && row == fmMenuArmed) fmActivateMenu(row);
+        fmMenuArmed = -1;
+    }
+    else if (fmMouseGesture == 1 && mode == 0)
+    {
+        row = fmRowAt(x, y);
+        dx = x - fmMouseDownX; dy = y - fmMouseDownY;
+        if (row == fmMouseDownRow && row >= 0 && dx >= -4 && dx <= 4 && dy >= -4 && dy <= 4)
+        {
+            dx = x - fmMouseLastX; dy = y - fmMouseLastY;
+            if (fmMouseLastRow == row && timestamp - fmMouseLastTime <= (uint)400000 && dx >= -4 && dx <= 4 && dy >= -4 && dy <= 4)
+            {
+                fmMouseLastRow = -1; openSelected();
+            }
+            else
+            {
+                fmMouseLastRow = row; fmMouseLastX = x; fmMouseLastY = y; fmMouseLastTime = timestamp;
+            }
+        }
+        else fmMouseLastRow = -1;
+    }
+    fmMouseGesture = 0;
+}
+
+void fmUpdateMouse()
+{
+    int count;
+    int row;
+    uint presses;
+    uint releases;
+    if (fmMenuOpen != 0 && fmMenuTargetValid() == 0) fmDismissMenu();
+    if (fmMouseNeedsInit != 0)
+    {
+        narm_mouse_set_relative_mode(0);
+        narm_mouse_set_cursor_visible(1);
+        fmMouseNeedsInit = 0;
+    }
+    if (narm_mouse_get_state(&fmMouseState) < 0 ||
+        (fmMouseState.flags & (NARM_MOUSE_CONNECTED | NARM_MOUSE_FOCUSED)) != (NARM_MOUSE_CONNECTED | NARM_MOUSE_FOCUSED))
+    { fmCancelMouse(); return; }
+    count = 0;
+    while (count < 32 && narm_mouse_poll_event(&fmMouseEvent) == 1)
+    {
+        count = count + 1;
+        if ((fmMouseEvent.type & (NARM_MOUSE_EVENT_RESYNC | NARM_MOUSE_EVENT_DISCONNECT | NARM_MOUSE_EVENT_CONNECT)) != 0)
+        { fmCancelMouse(); fmMouseSuppressed = fmMouseEvent.buttons; continue; }
+        if (fmMouseEvent.x < 0 || fmMouseEvent.x >= SCREEN_W || fmMouseEvent.y < 0 || fmMouseEvent.y >= SCREEN_H) { fmCancelMouse(); continue; }
+        fmMouseSuppressed = fmMouseSuppressed & fmMouseEvent.buttons;
+        presses = fmMouseEvent.changed_buttons & fmMouseEvent.buttons & ~fmMouseSuppressed;
+        releases = fmMouseEvent.changed_buttons & ~fmMouseEvent.buttons;
+        if ((fmMouseEvent.type & NARM_MOUSE_EVENT_PRESS) != 0 && (presses & NARM_MOUSE_BUTTON_BACK) != 0)
+        { fmMouseBack(); continue; }
+        if ((fmMouseEvent.type & NARM_MOUSE_EVENT_PRESS) != 0 && (presses & NARM_MOUSE_BUTTON_RIGHT) != 0)
+        { fmOpenContextMenu(fmMouseEvent.x, fmMouseEvent.y); continue; }
+        if (fmMenuOpen != 0 && (fmMouseEvent.type & NARM_MOUSE_EVENT_MOVE) != 0)
+        {
+            row = fmMenuRowAt(fmMouseEvent.x, fmMouseEvent.y);
+            if (row != fmMenuHover) { fmMenuHover = row; fmMenuDirty = 1; }
+        }
+        if ((fmMouseEvent.type & NARM_MOUSE_EVENT_PRESS) != 0 && (presses & NARM_MOUSE_BUTTON_LEFT) != 0)
+            fmMouseLeftPress(fmMouseEvent.x, fmMouseEvent.y);
+        if ((fmMouseEvent.type & NARM_MOUSE_EVENT_MOVE) != 0 && (fmMouseEvent.buttons & NARM_MOUSE_BUTTON_LEFT) != 0)
+        {
+            if (fmMouseGesture == 1 &&
+                (fmMouseEvent.x < fmMouseDownX - 4 || fmMouseEvent.x > fmMouseDownX + 4 ||
+                 fmMouseEvent.y < fmMouseDownY - 4 || fmMouseEvent.y > fmMouseDownY + 4))
+            { fmMouseDownRow = -1; fmMouseLastRow = -1; }
+            if (fmMouseGesture == 2) fmScrollbarTo(fmMouseEvent.y);
+            else if (fmMouseGesture == 3) fmMouseImageDrag(fmMouseEvent.x, fmMouseEvent.y);
+        }
+        if ((fmMouseEvent.type & NARM_MOUSE_EVENT_RELEASE) != 0 && (releases & NARM_MOUSE_BUTTON_LEFT) != 0)
+            fmMouseLeftRelease(fmMouseEvent.x, fmMouseEvent.y, fmMouseEvent.timestamp_us);
+        if ((fmMouseEvent.type & NARM_MOUSE_EVENT_WHEEL) != 0)
+        {
+            if (fmMouseGesture != 0) fmMouseGesture = 0;
+            fmMouseWheel(fmMouseEvent.wheel);
+        }
+        if (narm_has_focus() == 0) { fmResetMouse(); return; }
+    }
+    /* A RESYNC may omit a release; never leave a phantom drag or menu press. */
+    if (fmMouseGesture != 0 && (fmMouseState.buttons & NARM_MOUSE_BUTTON_LEFT) == 0 && count == 0)
+    { fmMouseGesture = 0; fmMenuArmed = -1; }
+}

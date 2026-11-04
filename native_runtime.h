@@ -51,6 +51,15 @@ bool native_request_toggle_mode();
 void native_scheduler_begin();
 void native_scheduler_poll();
 void native_scheduler_print_diagnostics();
+void native_memory_trace_enable(bool enabled);
+enum NativeCore1Stage : uint32_t
+{
+  NARM_CORE1_FLASH = 1u, NARM_CORE1_KEYBOARD = 2u,
+  NARM_CORE1_AUDIO_BEGIN = 3u, NARM_CORE1_AUDIO_FIRST = 4u,
+  NARM_CORE1_GRAPHICS = 5u, NARM_CORE1_AUDIO_LAST = 6u,
+  NARM_CORE1_IDLE = 7u
+};
+void native_core1_checkpoint(NativeCore1Stage stage);
 bool native_focus_next();
 bool native_toggle_focused_mode();
 bool native_close_focused();

@@ -1,7 +1,7 @@
 # FILEMGR 640
 
 Native NARM file manager using the firmware-owned 640x480, 4-bit VGA framebuffer.
-Requires firmware API **1.11** or newer; updating only the `.narm` file on older
+Requires firmware API **1.13** or newer; updating only the `.narm` file on older
 firmware is insufficient. Existing applications remain compatible with the new
 firmware.
 
@@ -10,7 +10,8 @@ firmware.
 - `filemgr640.tc`: filesystem operations, normalized input, image decoding,
   child program launch, audio state, and application loop.
 - `filemgr_graphics.tch`: drawing primitives and batched bitmap text.
-- `filemgr_ui.tch`: browser, details, player, viewer, and dialogs.
+- `filemgr_ui.tch`: browser, details, player, viewer, dialogs and small-font context menus.
+- `filemgr_mouse.tch`: interaction through the existing NARM mouse v1.0 API.
 - `narm.tch`: matching public runtime declarations/constants.
 
 Application drawing helpers use names such as `fmFillRect`. Do not rename this
@@ -103,7 +104,7 @@ resolution; there is no delayed duplicate preview redraw. Storage failures latch
 until the viewer is reopened, avoiding one failed retry per pixel.
 
 The implementation uses the existing filename-based file API. It keeps no file
-handle open, adds no compiler builtins, and still requires only firmware API 1.11.
+handle open, adds no compiler builtins, and still requires firmware API 1.13 (the existing mouse interface).
 The 16-color palette and lack of dithering are unchanged.
 
 
@@ -149,3 +150,35 @@ I/O and pixels, not physical board timing.
 Format references: [PNG specification](https://www.w3.org/TR/png-3/),
 [DEFLATE RFC 1951](https://www.rfc-editor.org/rfc/rfc1951), and
 [JPEG ITU-T T.81](https://www.w3.org/Graphics/JPEG/itu-t81.pdf).
+
+
+## Mouse controls (existing NARM mouse API)
+
+FILEMGR uses `narm_mouse_get_state`, `narm_mouse_poll_event`,
+`narm_mouse_set_relative_mode(0)` and `narm_mouse_set_cursor_visible(1)` from the
+existing public mouse v1.0 interface in firmware API 1.13. The firmware owns the
+cursor; moving it does not force FILEMGR to redraw. No runtime/compiler/ABI
+changes are required. Keyboard controls remain available.
+
+- Left click selects a file/folder; double click within 400 ms opens/runs/plays it.
+- Right click selects the item and opens a compact 5x7-font menu: Open/Run/Play,
+  Inspect Bytes (files), Rename, Delete, New File, New Folder, Refresh, Parent
+  Folder and Switch Flash/SD. Blank-area right click shows folder actions.
+- Delete opens a separate confirmation menu with Cancel selected by default.
+  Actions verify the original directory/storage/index/name before executing.
+- Hover highlights a menu row. Left press and release on the same row activate
+  it. An outside click or Escape/Backspace dismisses without clicking through.
+  Up/Down and Enter also work within the menu.
+- The wheel scrolls the browser three rows per detent; clicking/dragging the
+  narrow scrollbar changes the visible page. The UP path button visits parent;
+  the top-right drive chip switches Flash/SD.
+- In the image viewer, left drag pans and the wheel zooms. In the file inspector,
+  the wheel pages through bytes. A mouse Back button returns to files/parent.
+- Click the audio play/pause button or timeline to control playback. The name
+  editor has clickable Save and Cancel buttons; typing still uses the keyboard.
+
+Menus stay within the 640x480 screen. Hover changes repaint only the menu;
+closing it restores the full underlying view. Background storage/audio updates
+keep overlays visible. Focus loss, disconnect and mouse queue RESYNC cancel
+pending clicks/drags/menus; buttons held during RESYNC are ignored until released.
+The application remains usable with the keyboard when no mouse is connected.

@@ -1,5 +1,5 @@
 /*
-    FILEMGR 640 - NARM API 1.11
+    FILEMGR 640 - NARM API 1.13
     --------------------
     Tiny-C SD card / internal-flash file manager for the RP2350/Pico NARM runtime.
 
@@ -321,6 +321,7 @@ char imageScreenRows[1280];
 int imageScreenRowValid[2];
 int imageScreenRowSrcY[2];
 
+void fmCancelMouse();
 int startCompressedDecode();
 void serviceCompressedDecode();
 void cancelCompressedDecode();
@@ -1809,6 +1810,7 @@ void clampSelectionAndScroll()
 
 void startRefresh()
 {
+    fmCancelMouse();
     entryCount = 0;
     scanIndex = 0;
     scanActive = 1;
@@ -3164,8 +3166,14 @@ void applyImageViewInput()
     }
 }
 
+#include "filemgr_mouse.tch"
+
 void applyInput()
 {
+    if (fmApplyMenuKeyboard() != 0) return;
+    if (hitUp || hitDown || hitPageUp || hitPageDown || hitOpen || hitBack ||
+        hitStorage || hitRefresh || hitRename || hitDelete || hitFile || hitDir || hitZoomIn || hitZoomOut)
+    { fmMouseLastRow = -1; fmMouseGesture = 0; }
     if (mode != 2)
     {
         if (hitAudioPause != 0) toggleAudioPause();
@@ -3197,8 +3205,10 @@ int handleSystemEvents()
     while (event != NARM_EVENT_NONE)
     {
         if (event == NARM_EVENT_CLOSE_REQUESTED) return 0;
+        if (event == NARM_EVENT_FOCUS_LOST) fmResetMouse();
         if (event == NARM_EVENT_FOCUS_GAINED)
         {
+            fmResetMouse();
             dirty = 1;
             quickMoveDirty = 0;
             nameEditQuickDirty = 0;
@@ -3216,6 +3226,7 @@ void main()
     initImagePalette();
     initRoot();
     initKeys();
+    fmResetMouse();
     selectedIndex = 0;
     scrollIndex = 0;
     mode = 0;
@@ -3227,11 +3238,13 @@ void main()
         serviceAudio();
         if (narm_has_focus() == 0)
         {
+            fmResetMouse();
             narm_sleep_ms(40);
             continue;
         }
         updateInput();
         applyInput();
+        if (narm_has_focus() != 0) fmUpdateMouse();
         render();
         serviceImageCacheBuild();
         serviceFileViewLoad();

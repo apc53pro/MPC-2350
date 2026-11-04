@@ -1,0 +1,441 @@
+/* Sinclair ZX80 (4K ROM) emulator for GP-PICO-OS NARM on RP2350.
+ * Original emulator implementation; requires user-supplied 4096-byte zx80.rom.
+ * Build: narmcc zx80_narm.tc -I . -O2 --stack-bytes 12288 -o zx80.narm
+ * Run in firmware with SELECT_PROG_SD "zx80.narm" / RUN.
+ */
+#include "narm.tch"
+#include "z80_cpu.tc"
+
+/* Glyph image: 8x8 RGB332, 4 pixels per 32-bit word (16 words/glyph). */
+unsigned zx_glyphs[128][16];
+int zx_rom_ok=0,zx_rom_storage=1,zx_paused=0,zx_help=0,zx_quit=0;
+int zx_debug=0,zx_rendered_chars=0,zx_has_display=0;
+/* ON by default; F9 restores the old always-on framebuffer as a fallback. */
+int zx_authentic_video=1,zx_video_locked=0;
+unsigned zx_video_last_irqs=0,zx_video_last_gap=0,zx_video_last_m1=0;
+int zx_cycle_overshoot=0;
+int zx_selftest_active=0,zx_test_ram_bad=0,zx_test_djnz_bad=0,zx_test_djnz_halt=0;
+unsigned zx_rom_crc=0;int zx_glyph_test=0,zx_pixel_mode=0;
+/* A second independent NARM SD read, in small chunks, checks ROM I/O. */
+unsigned char zx_rom_verify_block[256];
+int zx_rom_readback_bad=0;
+int verify_rom_readback(const char *path,unsigned storage){
+ int offset,j,n;
+ for(offset=0;offset<4096;offset+=256){
+  n=narm_file_read(path,zx_rom_verify_block,(unsigned)offset,256,storage);
+  if(n!=256)return -1;
+  for(j=0;j<256;j++)if(zx_rom_verify_block[j]!=zx_rom[offset+j])return offset+j+1;
+ }
+ return 0;
+}
+unsigned crc32_rom(void){
+ unsigned crc=0xffffffffu;int i,b;
+ for(i=0;i<4096;i++){
+  crc ^= (unsigned)zx_rom[i];
+  for(b=0;b<8;b++)crc=(crc>>1) ^ ((crc&1u)?0xedb88320u:0u);
+ }
+ return ~crc;
+}
+
+/* Small 5x7 overlay font (rows packed MSB-first); intended only for shell UI. */
+char ui_ascii[]=" ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./:-?";
+unsigned char ui_font[][7]={
+ {0,0,0,0,0,0,0},
+ {14,17,17,31,17,17,17}, /* A */
+ {30,17,17,30,17,17,30},
+ {14,17,16,16,16,17,14},
+ {30,17,17,17,17,17,30},
+ {31,16,16,30,16,16,31},
+ {31,16,16,30,16,16,16},
+ {14,17,16,23,17,17,15},
+ {17,17,17,31,17,17,17},
+ {31,4,4,4,4,4,31},
+ {7,2,2,2,18,18,12},
+ {17,18,20,24,20,18,17},
+ {16,16,16,16,16,16,31},
+ {17,27,21,21,17,17,17},
+ {17,25,21,19,17,17,17},
+ {14,17,17,17,17,17,14},
+ {30,17,17,30,16,16,16},
+ {14,17,17,17,21,18,13},
+ {30,17,17,30,20,18,17},
+ {15,16,16,14,1,1,30},
+ {31,4,4,4,4,4,4},
+ {17,17,17,17,17,17,14},
+ {17,17,17,17,17,10,4},
+ {17,17,17,21,21,21,10},
+ {17,17,10,4,10,17,17},
+ {17,17,10,4,4,4,4},
+ {31,1,2,4,8,16,31},
+ {14,17,19,21,25,17,14},
+ {4,12,4,4,4,4,14},
+ {14,17,1,2,4,8,31},
+ {30,1,1,14,1,1,30},
+ {2,6,10,18,31,2,2},
+ {31,16,16,30,1,1,30},
+ {14,16,16,30,17,17,14},
+ {31,1,2,4,8,8,8},
+ {14,17,17,14,17,17,14},
+ {14,17,17,15,1,1,14},
+ {0,0,0,0,0,4,4}, /* . */
+ {1,1,2,4,8,16,16}, /* / */
+ {0,4,4,0,4,4,0}, /* : */
+ {0,0,0,31,0,0,0}, /* - */
+ {14,17,1,2,4,0,4} /* ? */
+};
+void ui_text(int x,int y,const char* s,int foreground){
+ int ch,idx,k,j,bit;
+ while(*s){ch=(unsigned char)*s;idx=0;
+  if(ch>='a'&&ch<='z')ch-=32;
+  for(k=1;ui_ascii[k];k++)if((unsigned char)ui_ascii[k]==ch){idx=k;break;}
+  for(j=0;j<7;j++){
+   int m=ui_font[idx][j];
+   for(bit=0;bit<5;bit++)if(m & (16>>bit))narm_half_pixel((y+j)*320+x+bit,foreground);
+  }
+  x+=6;s++;
+ }
+}
+
+int load_rom(void){
+ unsigned sz=0;
+ int n;
+ const char* candidate;
+ int i,s;
+ for(s=1;s>=0;s--){
+  if(!narm_storage_mount(s))continue;
+  for(i=0;i<4;i++){
+   if(i==0)candidate="/zx80.rom";
+   else if(i==1)candidate="zx80.rom";
+   else if(i==2)candidate="/roms/zx80.rom";
+   else candidate="roms/zx80.rom";
+   if(narm_file_size(candidate,s,&sz)!=0 || sz!=4096)continue;
+   n=narm_file_read(candidate,zx_rom,0,4096,s);
+   if(n==4096){
+    zx_rom_storage=s;zx_rom_ok=1;
+    zx_rom_crc=crc32_rom();
+    zx_rom_readback_bad=verify_rom_readback(candidate,(unsigned)s);
+    return 1;
+   }
+  }
+ }
+ return 0;
+}
+
+void build_zx80_glyphs(void){
+ int id,scan,x,v,ink,reverse;
+ unsigned acc;
+ for(id=0;id<128;id++){
+  reverse=(id&64)?1:0;
+  for(scan=0;scan<8;scan++){
+   int line=zx_rom[0xe00+((id&63)<<3)+scan];
+   for(x=0;x<2;x++){
+    acc=0;
+    for(v=0;v<4;v++){
+     int on=(line&(0x80>>(x*4+v)))?1:0;
+     ink=(on^reverse)?0:255;
+     acc |= ((unsigned)ink)<<(v*8);
+    }
+    zx_glyphs[id][scan*2+x]=acc;
+   }
+  }
+ }
+}
+/* Debug renderer that bypasses the firmware texture blitter entirely. */
+void draw_zx_pixel_glyph(int px,int py,int ch){
+ int r,c,pattern,isblack,invert=(ch&128)?1:0;
+ int glyph=ch&63;
+ for(r=0;r<8;r++){
+  pattern=zx_rom[0xe00+glyph*8+r];
+  for(c=0;c<8;c++){
+   isblack=((pattern&(0x80>>c))?1:0)^invert;
+   narm_half_pixel((unsigned)((py+r)*320+px+c),isblack?0u:255u);
+  }
+ }
+}
+/* ZX80 video: 25 newline/HALT markers, with variable-length rows to save RAM.
+   D_FILE pointer lives in ZX80 system vars 0x400C, NOT necessarily fixed. */
+void render_screen(void){
+ unsigned pos,base;int x,y,code;
+ narm_half_clear(255);
+ zx_rendered_chars=0;
+ base=rw(0x400c);
+ zx_has_display=(base>=0x4000 && base<(0x4000+zx_ram_bytes));
+ if(!zx_has_display)return;
+ pos=base;
+ if(rb(pos)==0x76)pos=(pos+1)&65535;
+ for(y=0;y<24;y++){
+  for(x=0;x<32;x++){
+   code=rb(pos);
+   if(code==0x76)break;
+   if(code&0x40)break;
+   /* DFILE displays character bits 0-5, bit 7 is inverse. */
+   if(code!=0){
+    if(zx_pixel_mode)draw_zx_pixel_glyph(32+x*8,24+y*8,code);
+    else narm_half_blit(32+x*8,24+y*8,8,8,zx_glyphs[(code&63)|((code&128)?64:0)]);
+    zx_rendered_chars++;
+   }
+   pos=(pos+1)&65535;
+  }
+  if(rb(pos)==0x76)pos=(pos+1)&65535;
+  else if(x==32 && rb(pos)==0x76)pos=(pos+1)&65535;
+  if(pos<0x4000 || pos>=0x8000)break;
+ }
+}
+
+/* Keyboard rows match the 8x5 ZX80 matrix. Active-low bits 0..4. */
+void key_hit(int row,int bit,unsigned hid){if(narm_key_down(hid)>0)zx_keys[row] &=~(1u<<bit);}
+void update_keyboard(void){
+ int i;
+ for(i=0;i<8;i++)zx_keys[i]=31;
+ /* row 0, SHIFT Z X C V */
+ if(narm_key_down(NARM_KEY_LEFT_SHIFT)>0||narm_key_down(NARM_KEY_RIGHT_SHIFT)>0)zx_keys[0]&=~1u;
+ key_hit(0,1,NARM_KEY_Z);key_hit(0,2,NARM_KEY_X);key_hit(0,3,NARM_KEY_C);key_hit(0,4,NARM_KEY_V);
+ /* row 1, A S D F G */
+ key_hit(1,0,NARM_KEY_A);key_hit(1,1,NARM_KEY_S);key_hit(1,2,NARM_KEY_D);key_hit(1,3,NARM_KEY_F);key_hit(1,4,NARM_KEY_G);
+ /* row 2, Q W E R T */
+ key_hit(2,0,NARM_KEY_Q);key_hit(2,1,NARM_KEY_W);key_hit(2,2,NARM_KEY_E);key_hit(2,3,NARM_KEY_R);key_hit(2,4,NARM_KEY_T);
+ /* row 3, 1 2 3 4 5 */
+ for(i=0;i<5;i++)key_hit(3,i,0x1e + i);
+ /* row 4, 0 9 8 7 6 */
+ key_hit(4,0,0x27);key_hit(4,1,0x26);key_hit(4,2,0x25);key_hit(4,3,0x24);key_hit(4,4,0x23);
+ /* row 5, P O I U Y */
+ key_hit(5,0,NARM_KEY_P);key_hit(5,1,NARM_KEY_O);key_hit(5,2,NARM_KEY_I);key_hit(5,3,NARM_KEY_U);key_hit(5,4,NARM_KEY_Y);
+ /* row 6, ENTER L K J H */
+ key_hit(6,0,NARM_KEY_ENTER);key_hit(6,1,NARM_KEY_L);key_hit(6,2,NARM_KEY_K);key_hit(6,3,NARM_KEY_J);key_hit(6,4,NARM_KEY_H);
+ /* row 7, SPACE . M N B */
+ key_hit(7,0,NARM_KEY_SPACE);key_hit(7,1,0x37);key_hit(7,2,NARM_KEY_M);key_hit(7,3,NARM_KEY_N);key_hit(7,4,NARM_KEY_B);
+ /* Modern keyboard convenience keys: arrows and backspace map to SHIFT+5..8, SHIFT+0. */
+ if(narm_key_down(NARM_KEY_LEFT)>0){zx_keys[0]&=~1u;zx_keys[3]&=~(1u<<4);}
+ if(narm_key_down(NARM_KEY_DOWN)>0){zx_keys[0]&=~1u;zx_keys[4]&=~(1u<<4);}
+ if(narm_key_down(NARM_KEY_UP)>0){zx_keys[0]&=~1u;zx_keys[4]&=~(1u<<3);}
+ if(narm_key_down(NARM_KEY_RIGHT)>0){zx_keys[0]&=~1u;zx_keys[4]&=~(1u<<2);}
+ if(narm_key_down(NARM_KEY_BACKSPACE)>0){zx_keys[0]&=~1u;zx_keys[4]&=~1u;}
+ /* Most common ZX80 shifted punctuation, convenient on a PC keyboard. */
+ if(narm_key_down(0x2d)>0){zx_keys[0]&=~1u;zx_keys[6]&=~(1u<<3);} /* - SHIFT+J */
+ if(narm_key_down(0x2e)>0){zx_keys[0]&=~1u;zx_keys[6]&=~(1u<<2);} /* = SHIFT+K (approx) */
+ if(narm_key_down(0x36)>0){zx_keys[0]&=~1u;zx_keys[7]&=~(1u<<3);} /* , SHIFT+N */
+ if(narm_key_down(0x38)>0){zx_keys[0]&=~1u;zx_keys[0]&=~(1u<<4);} /* / SHIFT+V */
+}
+/* Four hexadecimal digits using the tiny shell font, for on-device diagnostics. */
+void ui_hex4(int x,int y,unsigned value,int color){
+ char s[5];int j,n;
+ for(j=0;j<4;j++){
+  n=(value >> ((3-j)*4))&15;
+  s[j]=(n<10)?('0'+n):('A'+n-10);
+ }
+ s[4]=0;ui_text(x,y,s,color);
+}
+/* Render a byte dump as 16 hex digits plus spaces, without printf. */
+void ui_hex2(int x,int y,unsigned value,int color){
+ char h[3];int n;
+ n=(value>>4)&15;h[0]=n<10?('0'+n):('A'+n-10);
+ n=value&15;h[1]=n<10?('0'+n):('A'+n-10);
+ h[2]=0;ui_text(x,y,h,color);
+}
+void ui_hex8(int x,int y,unsigned value,int color){
+ ui_hex4(x,y,value>>16,color);ui_hex4(x+24,y,value&65535u,color);
+}
+void ui_dump8(int x,int y,unsigned addr,int color){
+ int i;
+ for(i=0;i<8;i++) ui_hex2(x+i*27,y,rb((addr+i)&65535),color);
+}
+void render_status(void){
+ unsigned df=rw(0x400c);int i,nonhalt=0,first=-1,second=-1,third=-1;
+ /* Header and diagnostic UI are drawn from ROM-independent built-in font. */
+ ui_text(32,7,"ZX80 4K  F1 HELP  F2 STATUS",0);
+ if(!zx_has_display)ui_text(32,217,"INITIALIZING ZX80 ROM",0);
+ if(!zx_debug)return;
+ narm_half_fill_rect(19,16,301,215,255);
+ narm_half_fill_rect(21,18,299,213,0);
+ ui_text(27,21,"ZX80 EMULATOR STATUS",255);
+ ui_text(27,33,"PC",255);ui_hex4(52,33,zpc,255);
+ ui_text(108,33,"SP",255);ui_hex4(133,33,zsp,255);
+ ui_text(193,33,"IRQ",255);ui_hex4(224,33,(unsigned)zirq_counter,255);
+ ui_text(27,45,"DF",255);ui_hex4(52,45,df,255);
+ ui_text(108,45,"CHARS",255);ui_hex4(146,45,zx_rendered_chars,255);
+ ui_text(192,45,"RAM",255);ui_hex4(221,45,zx_ram_bytes,255);
+ ui_text(27,57,"ROM CRC",255);ui_hex8(85,57,zx_rom_crc,255);
+ ui_text(155,57,"REF 4C7FC597",255);
+ ui_text(27,65,"SD READBACK",255);ui_hex4(120,65,(unsigned)zx_rom_readback_bad,255);
+ if(df>=0x4000 && df<0x8000){
+  ui_text(27,73,"DF 00",255);ui_dump8(80,73,df,255);
+  ui_text(27,85,"DF 08",255);ui_dump8(80,85,df+8,255);
+  ui_text(27,97,"DF 16",255);ui_dump8(80,97,df+16,255);
+  ui_text(27,109,"DF 24",255);ui_dump8(80,109,df+24,255);
+  /* First non-space character locations within first 128 DFILE bytes. */
+  for(i=0;i<128;i++){
+   unsigned c=rb((df+i)&65535);
+   if(c!=0x76 && c!=0){
+    if(first<0)first=i;
+    else if(second<0)second=i;
+    else if(third<0)third=i;
+    nonhalt++;
+   }
+  }
+  ui_text(27,125,"NONHALT 128",255);ui_hex4(108,125,nonhalt,255);
+  ui_text(27,138,"FIRST  OFFSET BYTE",255);
+  if(first>=0){ui_hex4(32,150,(unsigned)first,255);ui_hex2(80,150,rb(df+first),255);}
+  if(second>=0){ui_hex4(110,150,(unsigned)second,255);ui_hex2(158,150,rb(df+second),255);}
+  if(third>=0){ui_hex4(198,150,(unsigned)third,255);ui_hex2(246,150,rb(df+third),255);}
+ }
+ ui_text(27,166,"F3 ROM GLYPH GRID",255);
+ ui_text(27,177,"F9 RASTER",255);
+ if(!zx_authentic_video)ui_text(84,177,"STEADY",255);
+ else if(zx_video_locked)ui_text(84,177,"SYNC",255);
+ else ui_text(84,177,"NO SYNC",255);
+ ui_text(161,177,"LINES",255);ui_hex4(204,177,zx_video_last_irqs,255);
+ ui_text(27,190,"FIELDS",255);ui_hex4(77,190,(unsigned)zx_vframes,255);
+ ui_text(142,190,"FETCH",255);ui_hex4(176,190,(unsigned)zx_vlast_fetches,255);
+ ui_text(236,190,"F4 PIX",255);
+ ui_text(27,204,"D SEEN",255);ui_hex4(76,204,zx_djnz_seen,255);
+ ui_text(128,204,"TAKEN",255);ui_hex4(170,204,zx_djnz_taken,255);
+ ui_text(223,204,"BAD",255);ui_hex4(252,204,zx_djnz_wrong,255);
+}
+void clear_zx_ram(void);
+/* F8 destructive CPU/RAM test. It runs a known 12-byte synthetic Z80 ROM,
+   checks real emulated RAM writes and a 24-iteration DJNZ loop, then restores
+   the original ROM bytes and restarts BASIC from reset. */
+void run_selftest(void){
+ int i,k,v;unsigned char saved[12];
+ zx_test_ram_bad=0;zx_test_djnz_bad=0;zx_test_djnz_halt=0;
+ for(i=0;i<12;i++)saved[i]=zx_rom[i];
+ clear_zx_ram();
+ for(i=0;i<64;i++)wb(0x4200u+i,(i*37+11)&255);
+ for(i=0;i<64;i++){
+  v=(i*37+11)&255;
+  if(rb(0x4200u+i)!=v || zx_ram[0x200+i]!=v)zx_test_ram_bad++;
+ }
+ clear_zx_ram();
+ /* LD B,24; LD A,0x76; LD DE,0x4200; LD (DE),A; INC DE;
+    DJNZ -4; HALT. Exact boot-time loop structure used by ZX80 ROM. */
+ zx_rom[0]=0x06;zx_rom[1]=0x18;
+ zx_rom[2]=0x3e;zx_rom[3]=0x76;
+ zx_rom[4]=0x11;zx_rom[5]=0x00;zx_rom[6]=0x42;
+ zx_rom[7]=0x12;zx_rom[8]=0x13;
+ zx_rom[9]=0x10;zx_rom[10]=0xfc;zx_rom[11]=0x76;
+ z80_reset();
+ for(k=0;k<200 && !zhalt;k++)z80_step();
+ for(i=0;i<24;i++)if(rb(0x4200u+i)!=0x76)zx_test_djnz_bad++;
+ if(!zhalt || zpc!=12 || zb!=0 || de()!=0x4218u)zx_test_djnz_halt=1;
+ for(i=0;i<12;i++)zx_rom[i]=saved[i];
+ clear_zx_ram();z80_reset();
+}
+void selftest_screen(void){
+ narm_half_clear(0);
+ ui_text(23,16,"ZX80 CPU AND RAM SELFTEST",255);
+ ui_text(23,38,"ROM CRC",255);ui_hex8(100,38,zx_rom_crc,255);
+ ui_text(23,60,"RAM BYTE ERRORS",255);ui_hex4(159,60,(unsigned)zx_test_ram_bad,255);
+ ui_text(23,82,"DJNZ COPY ERRORS",255);ui_hex4(159,82,(unsigned)zx_test_djnz_bad,255);
+ ui_text(23,104,"DJNZ EXEC ERROR",255);ui_hex4(159,104,(unsigned)zx_test_djnz_halt,255);
+ ui_text(23,136,"ALL RESULTS SHOULD BE 0000",255);
+ ui_text(23,172,"F8 RESUME FROM RESET",255);
+}
+void glyph_test_screen(void){
+ int i;
+ narm_half_clear(255);
+ ui_text(26,8,"ZX80 ROM GLYPH TEST F3 EXIT",0);
+ for(i=0;i<64;i++){
+  narm_half_blit(37+(i&7)*30,32+(i>>3)*24,8,8,zx_glyphs[i]);
+  ui_hex2(35+(i&7)*30,42+(i>>3)*24,(unsigned)i,0);
+ }
+ ui_text(25,231,"ROM CRC",0);ui_hex8(82,231,zx_rom_crc,0);
+}
+
+void error_display(void){
+ narm_half_clear(0x00);
+ narm_half_fill_rect(8,26,311,205,255);
+ narm_half_fill_rect(11,29,308,202,0);
+ ui_text(20,40,"SINCLAIR ZX80 EMULATOR",255);
+ ui_text(20,65,"ROM FILE NOT FOUND",255);
+ ui_text(20,91,"COPY 4096 BYTE ZX80.ROM",255);
+ ui_text(20,106,"TO SD OR FLASH ROOT",255);
+ ui_text(20,137,"PRESS F5 TO RELOAD ROM",255);
+ ui_text(20,154,"ESC TO EXIT",255);
+ narm_half_present();
+}
+void overlay(int running){
+ narm_half_fill_rect(7,7,312,89,255);
+ narm_half_fill_rect(9,9,310,87,0);
+ ui_text(14,13,"ZX80 4K ROM 3.25MHZ",255);
+ ui_text(14,26,"F2 STATUS F5 RESET F9 VIDEO",255);
+ if(zx_ram_bytes==1024)ui_text(14,39,"RAM 1K  F7 CHANGE",255);
+ else ui_text(14,39,"RAM 16K F7 CHANGE",255);
+ ui_text(14,52,"ESC EXIT",255);
+ if(running)ui_text(14,66,"RUNNING",255);
+ else ui_text(14,66,"PAUSED",255);
+ if(zx_authentic_video)ui_text(120,66,"SCAN VIDEO",255);
+ else ui_text(120,66,"STEADY VIDEO",255);
+}
+void clear_zx_ram(void){int i;for(i=0;i<16384;i++)zx_ram[i]=0;}
+void handle_events(void){
+ unsigned k=0,act=0,mods=0,ch=0;
+ int count=0;
+ while(count++<48 && narm_next_key_event(&k,&act,&mods,&ch)>0){
+  if(act!=NARM_KEY_ACTION_PRESS)continue;
+  if(k==NARM_KEY_ESCAPE){zx_quit=1;return;}
+  if(k==NARM_KEY_F1)zx_help=!zx_help;
+  if(k==NARM_KEY_F2)zx_debug=!zx_debug;
+  if(k==NARM_KEY_F3)zx_glyph_test=!zx_glyph_test;
+  if(k==NARM_KEY_F4)zx_pixel_mode=!zx_pixel_mode;
+  if(k==NARM_KEY_F9)zx_authentic_video=!zx_authentic_video;
+  if(k==NARM_KEY_F8){if(zx_selftest_active){zx_selftest_active=0;zx_paused=0;}else if(zx_rom_ok){run_selftest();zx_selftest_active=1;zx_paused=1;}}
+  if(k==NARM_KEY_F5){if(!zx_rom_ok){if(load_rom())build_zx80_glyphs();}if(zx_rom_ok){clear_zx_ram();z80_reset();zx_video_locked=0;zx_cycle_overshoot=0;zx_paused=0;}}
+  if(k==NARM_KEY_F6)zx_paused=!zx_paused;
+  if(k==NARM_KEY_F7){zx_ram_bytes=(zx_ram_bytes==1024)?16384:1024;clear_zx_ram();z80_reset();zx_video_locked=0;zx_cycle_overshoot=0;}
+ }
+}
+/* Nominal UK ZX80: 3,250,000 T-states/s and a 50 Hz host window.
+   65,000 T-states per 20 ms; carry instruction overshoot forward so the
+   long-term instruction rate cannot exceed the real Z80's clock.
+   If rendering is too expensive, the emulator runs SLOWER, never faster. */
+int main(void){
+ unsigned begin=0,elapsed=0,remain=0;
+ int budget,ticks;
+ clear_zx_ram();
+ zx_rom_ok=load_rom();
+ if(zx_rom_ok)build_zx80_glyphs();
+ z80_reset();
+ while(!zx_quit){
+  begin=narm_micros();
+  if(narm_has_focus()<=0){
+   /* Do not try to catch up missed emulator time when the host loses focus. */
+   narm_sleep_ms(30);continue;
+  }
+  handle_events();
+  update_keyboard();
+  if(!zx_rom_ok){error_display();narm_sleep_ms(40);continue;}
+  if(!zx_paused){
+   zx_video_begin_frame();
+   budget=65000-zx_cycle_overshoot;
+   while(budget>0 && !zx_quit){ticks=z80_step();budget-=ticks;}
+   zx_cycle_overshoot=-budget;
+   zx_video_last_irqs=zx_video_irq_frame;
+   zx_video_last_gap=zx_video_max_gap;
+   zx_video_last_m1=zx_video_m1_frame;
+   zx_video_locked=zx_video_raster_locked();
+  }
+  if(zx_selftest_active)selftest_screen();
+  else if(zx_glyph_test)glyph_test_screen();
+  else if(zx_authentic_video && !zx_paused){
+   if(zx_video_locked){
+    narm_half_clear(255);
+    narm_half_blit(32,24,256,192,zx_vpixels[zx_vready]);
+   }else narm_half_clear(0); /* TV has lost horizontal/vertical sync. */
+   if(zx_debug)render_status();
+  }
+  else{render_screen();render_status();}
+  if((zx_help || zx_paused) && !zx_glyph_test && !zx_selftest_active)overlay(!zx_paused);
+  narm_half_present();
+  /* Delay against the ORIGINAL start timestamp, not sleep_ms rounding.
+     This guarantees >=20,000 microseconds per 65,000 emulated T-states
+     (apart from the small instruction-boundary overshoot carried above). */
+  elapsed=narm_micros()-begin;
+  while(elapsed<20000u){
+   remain=20000u-elapsed;
+   if(remain>2500u)narm_sleep_ms((remain-1000u)/1000u);
+   else narm_yield();
+   elapsed=narm_micros()-begin;
+  }
+ }
+ return 0;
+}

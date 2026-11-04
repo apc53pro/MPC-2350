@@ -7,7 +7,7 @@
 static const uint16_t NARM_ABI_MAJOR = 1;
 static const uint16_t NARM_ABI_MINOR = 0;
 static const uint16_t NARM_API_MAJOR = 1;
-static const uint16_t NARM_API_MINOR = 12;
+static const uint16_t NARM_API_MINOR = 13;
 
 enum NativeControlFlag : uint32_t
 {
@@ -44,7 +44,8 @@ enum NativeCapability : uint64_t
   NARM_CAP_KEYBOARD = 1ull << 1,
   NARM_CAP_AUDIO = 1ull << 2,
   NARM_CAP_FILE_IO = 1ull << 3,
-  NARM_CAP_USB_STORAGE = 1ull << 4
+  NARM_CAP_USB_STORAGE = 1ull << 4,
+  NARM_CAP_MOUSE = 1ull << 5
 };
 
 enum NativeServiceId : uint32_t
@@ -80,6 +81,7 @@ enum NativeUsbStorageStatus : uint32_t
 enum NativeInterfaceId : uint32_t
 {
   NARM_INTERFACE_KEYBOARD = 0x0100,
+  NARM_INTERFACE_MOUSE = 0x0101,
   NARM_INTERFACE_FILE_IO = 0x0300,
   NARM_INTERFACE_AUDIO = 0x0700,
   NARM_INTERFACE_VIDEO_2D = 0x0400
@@ -186,6 +188,7 @@ enum NativeGraphicsCommandV1 : uint32_t
 
 struct NativeContextV1;
 struct NativeKeyboardApiV1;
+struct NativeMouseApiV1;
 struct NativeAudioApiV1;
 struct NativeFileApiV1;
 struct NativeVideoApiV1;
@@ -248,6 +251,80 @@ struct NativeKeyboardApiV1
   // programs. New programs should prefer stable HID key identifiers.
   NativeKeyboardPs2KeyDownFn ps2_key_down;
 };
+
+enum NativeMouseButtonV1 : uint32_t
+{
+  NARM_MOUSE_BUTTON_LEFT = 1u,
+  NARM_MOUSE_BUTTON_RIGHT = 2u,
+  NARM_MOUSE_BUTTON_MIDDLE = 4u,
+  NARM_MOUSE_BUTTON_BACK = 8u,
+  NARM_MOUSE_BUTTON_FORWARD = 16u
+};
+
+enum NativeMouseFlagV1 : uint32_t
+{
+  NARM_MOUSE_CONNECTED = 1u << 0,
+  NARM_MOUSE_FOCUSED = 1u << 1,
+  NARM_MOUSE_RELATIVE = 1u << 2,
+  NARM_MOUSE_CURSOR_VISIBLE = 1u << 3
+};
+
+// Event types are a bitmask: a report can move and change buttons together.
+enum NativeMouseEventTypeV1 : uint32_t
+{
+  NARM_MOUSE_EVENT_MOVE = 1u << 0,
+  NARM_MOUSE_EVENT_PRESS = 1u << 1,
+  NARM_MOUSE_EVENT_RELEASE = 1u << 2,
+  NARM_MOUSE_EVENT_WHEEL = 1u << 3,
+  NARM_MOUSE_EVENT_CONNECT = 1u << 4,
+  NARM_MOUSE_EVENT_DISCONNECT = 1u << 5,
+  NARM_MOUSE_EVENT_RESYNC = 1u << 6
+};
+
+struct NativeMouseStateV1
+{
+  int32_t x;
+  int32_t y;
+  uint32_t buttons;
+  uint32_t flags;
+};
+
+struct NativeMouseMotionV1
+{
+  int32_t dx;
+  int32_t dy;
+  int32_t wheel;
+};
+
+struct NativeMouseEventV1
+{
+  uint32_t type;
+  int32_t x;
+  int32_t y;
+  int32_t dx;
+  int32_t dy;
+  int32_t wheel;
+  uint32_t buttons;
+  uint32_t changed_buttons;
+  uint32_t timestamp_us;
+};
+
+struct NativeMouseApiV1
+{
+  uint32_t struct_bytes;
+  uint16_t interface_major;
+  uint16_t interface_minor;
+  int32_t (*get_state)(NativeContextV1 *, NativeMouseStateV1 *);
+  int32_t (*poll_event)(NativeContextV1 *, NativeMouseEventV1 *);
+  int32_t (*read_motion)(NativeContextV1 *, NativeMouseMotionV1 *);
+  int32_t (*set_cursor_visible)(NativeContextV1 *, uint32_t);
+  int32_t (*set_relative_mode)(NativeContextV1 *, uint32_t);
+  uint32_t (*dropped_events)(NativeContextV1 *);
+};
+
+static_assert(sizeof(NativeMouseStateV1) == 16, "Mouse state ABI drift");
+static_assert(sizeof(NativeMouseMotionV1) == 12, "Mouse motion ABI drift");
+static_assert(sizeof(NativeMouseEventV1) == 36, "Mouse event ABI drift");
 
 typedef uint32_t (*NativeAudioStatusFn)(NativeContextV1 *ctx);
 typedef int32_t (*NativeAudioSubmitFn)(NativeContextV1 *ctx,
@@ -388,6 +465,13 @@ static_assert(offsetof(NativeKeyboardApiV1, ps2_key_down) == 20,
               "NativeKeyboardApiV1 ABI drift");
 static_assert(sizeof(NativeKeyboardApiV1) == 24,
               "NativeKeyboardApiV1 size drift");
+static_assert(offsetof(NativeMouseApiV1, get_state) == 8, "Mouse API ABI drift");
+static_assert(offsetof(NativeMouseApiV1, poll_event) == 12, "Mouse API ABI drift");
+static_assert(offsetof(NativeMouseApiV1, read_motion) == 16, "Mouse API ABI drift");
+static_assert(offsetof(NativeMouseApiV1, set_cursor_visible) == 20, "Mouse API ABI drift");
+static_assert(offsetof(NativeMouseApiV1, set_relative_mode) == 24, "Mouse API ABI drift");
+static_assert(offsetof(NativeMouseApiV1, dropped_events) == 28, "Mouse API ABI drift");
+static_assert(sizeof(NativeMouseApiV1) == 32, "Mouse API size drift");
 
 static_assert(offsetof(NativeAudioApiV1, status) == 8,
               "NativeAudioApiV1 ABI drift");

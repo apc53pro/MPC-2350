@@ -215,15 +215,34 @@ int mc_inventory_close_key_held(void)
 int mc_inventory_run(void)
 {
     uint key,action,mods,character;int dirty=1,event,slot,blocked_enter,blocked_space,blocked_close;
+#ifdef MC10_MOUSE
+    int mouse_count;
+#endif
     if(!mc_player_ui_ready||!mc_inventory_ready)return 0;
     if(mc_inventory_creative){mc_ui_draw_status("CREATIVE INVENTORY PORT PENDING");mc_wait_for_return();return 0;}
     blocked_enter=narm_key_down(NARM_KEY_ENTER)>0;blocked_space=narm_key_down(NARM_KEY_SPACE)>0;blocked_close=1;
     while(narm_next_key_event(&key,&action,&mods,&character)>0){}
+#ifdef MC10_MOUSE
+    mc_mouse_ui_reset();
+#endif
     while(1)
     {
         if(!narm_key_down(NARM_KEY_ENTER))blocked_enter=0;if(!narm_key_down(NARM_KEY_SPACE))blocked_space=0;
         if(blocked_close&&!mc_inventory_close_key_held())blocked_close=0;
         if(mc_menu_update_pointer_held(narm_millis()))dirty=1;
+#ifdef MC10_MOUSE
+        for(mouse_count=0;mouse_count<MC_MOUSE_POLL_LIMIT;mouse_count=mouse_count+1)
+        {
+            event=mc_mouse_ui_event();if(!event)break;
+            dirty=1;
+            if(event==1||event==2)
+            {
+                slot=mc_inventory_hover_slot();
+                if((narm_key_down(NARM_KEY_LEFT_SHIFT)||narm_key_down(NARM_KEY_RIGHT_SHIFT))&&slot>=0)mc_inventory_quick_transfer(slot);
+                else mc_inventory_click(slot,event==2);
+            }
+        }
+#endif
         while(narm_next_key_event(&key,&action,&mods,&character)>0)
         {
             if(action!=NARM_KEY_ACTION_PRESS)continue;
@@ -233,6 +252,10 @@ int mc_inventory_run(void)
             {slot=mc_inventory_hover_slot();if((narm_key_down(NARM_KEY_LEFT_SHIFT)||narm_key_down(NARM_KEY_RIGHT_SHIFT))&&slot>=0)mc_inventory_quick_transfer(slot);else mc_inventory_click(slot,key==NARM_KEY_SPACE);dirty=1;}
         }
         event=narm_poll_system_event();if(event==NARM_EVENT_CLOSE_REQUESTED)return -1;
+#ifdef MC10_MOUSE
+        if(event==NARM_EVENT_FOCUS_LOST)mc_mouse_ui_reset();
+        if(event==NARM_EVENT_FOCUS_GAINED){mc_mouse_ui_reset();dirty=1;}
+#endif
         if(dirty){mc_inventory_draw();dirty=0;}narm_sleep_ms(2);
     }
     return 1;

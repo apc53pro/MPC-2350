@@ -2,6 +2,7 @@
 #define VGA4_INLINE_H
 
 #include "globals.h"
+#include "mouse_cursor.h"
 
 static inline __attribute__((always_inline)) void vga4PutPixelUncheckedInline(int32_t pixelX, int32_t pixelY, uint8_t colorIndex)
 {
@@ -177,13 +178,51 @@ static inline __attribute__((always_inline)) void vga4DrawGlyphInline(int x0, in
   }
 }
 
-static inline __attribute__((always_inline)) void vga4PresentInline()
+static inline __attribute__((always_inline)) void vga4ExpandPairsInline(uint32_t first, uint32_t last)
 {
   uint16_t* destination = (uint16_t*)vga_data_array;
-  for(uint32_t pair = 0; pair < VGA_4BIT_BUFFER_SIZE; pair++)
-  {
+  for(uint32_t pair = first; pair < last; ++pair)
     destination[pair] = vga_4bit_expanded_pairs[vga_640_480_4_01[pair]];
+}
+
+static inline __attribute__((always_inline)) void vga4ExpandCursorRowInline(int y, int left, int right)
+{
+  const uint32_t row = (uint32_t)y * (VGA_WIDTH / 2);
+  const uint32_t first = row + (left >> 1);
+  const uint32_t last = row + ((right + 1) >> 1);
+  vga4ExpandPairsInline(row, first);
+  for(uint32_t pair = first; pair < last; ++pair)
+    mouse_cursor_write_pair((pair - row) * 2, y, vga_4bit_expanded_pairs[vga_640_480_4_01[pair]]);
+  vga4ExpandPairsInline(last, row + VGA_WIDTH / 2);
+}
+
+static inline __attribute__((always_inline)) void vga4PresentInline(void (*service)() = nullptr)
+{
+  mouse_cursor_begin_present();
+  int left = 0, top = 0, right = 0, bottom = 0;
+  const bool cursor = mouse_cursor_bounds(left, top, right, bottom);
+  if(!service)
+  {
+    if(!cursor) vga4ExpandPairsInline(0, VGA_4BIT_BUFFER_SIZE);
+    else
+    {
+      // Keep the full-screen hot path as two flat bulk spans. Only the at
+      // most nine intersecting rows need cursor-aware conversion.
+      vga4ExpandPairsInline(0, (uint32_t)top * (VGA_WIDTH / 2));
+      for(int y = top; y < bottom; ++y) vga4ExpandCursorRowInline(y, left, right);
+      vga4ExpandPairsInline((uint32_t)bottom * (VGA_WIDTH / 2), VGA_4BIT_BUFFER_SIZE);
+    }
   }
+  else
+  {
+    for(int y = 0; y < VGA_HEIGHT; ++y)
+    {
+      if((y & 3) == 0) service();
+      if(cursor && y >= top && y < bottom) vga4ExpandCursorRowInline(y, left, right);
+      else vga4ExpandPairsInline((uint32_t)y * (VGA_WIDTH / 2), (uint32_t)(y + 1) * (VGA_WIDTH / 2));
+    }
+  }
+  mouse_cursor_end_present();
 }
 
 #endif

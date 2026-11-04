@@ -27,6 +27,9 @@ int mc_biome_yield(void){narm_yield();return 1;}
 #include "src/mc10_biome_tint.tc"
 #include "src/mc10_math.tc"
 #include "src/mc10_menu.tc"
+#ifdef MC10_MOUSE
+#include "src/mc10_mouse.tc"
+#endif
 #include "src/mc10_select_world.tc"
 #include "src/mc10_options.tc"
 #ifdef MC10_PLAYER_FOUNDATION

@@ -1,3 +1,51 @@
+/* Small 5x7 context menu; the firmware cursor is composited separately. */
+void fmDrawContextMenu()
+{
+    int i;
+    int action;
+    int y;
+    char *label;
+    char *hint;
+    uint background;
+    uint foreground;
+    if (fmMenuOpen == 0) return;
+    fmFillRect(fmMenuX + 3, fmMenuY + 3, fmMenuX + fmMenuWidth + 2, fmMenuY + fmMenuHeight + 2, (uint)1);
+    drawBox(fmMenuX, fmMenuY, fmMenuX + fmMenuWidth - 1, fmMenuY + fmMenuHeight - 1, (uint)15, (uint)0);
+    if (fmMenuActions[0] == 10) drawText("DELETE THIS ITEM?", 96, fmMenuX + 8, fmMenuY + 7, 1, (uint)4);
+    else if (fmMenuTarget >= 0) drawTextMax(fmMenuName, 48, 27, fmMenuX + 8, fmMenuY + 7, 1, (uint)1);
+    else drawText("FOLDER ACTIONS", 96, fmMenuX + 8, fmMenuY + 7, 1, (uint)1);
+    narm_line(fmMenuX + 4, fmMenuY + 17, fmMenuX + fmMenuWidth - 5, fmMenuY + 17, (uint)15);
+    for (i = 0; i < fmMenuCount; i = i + 1)
+    {
+        action = fmMenuActions[i]; label = "CANCEL"; hint = "";
+        if (action == 1) { label = "OPEN / RUN / PLAY"; hint = "ENTER"; }
+        else if (action == 2) { label = "INSPECT BYTES"; }
+        else if (action == 3) { label = "RENAME..."; hint = "E"; }
+        else if (action == 4) { label = "DELETE..."; }
+        else if (action == 5) { label = "NEW FILE..."; hint = "F"; }
+        else if (action == 6) { label = "NEW FOLDER..."; hint = "D"; }
+        else if (action == 7) { label = "REFRESH"; hint = "R"; }
+        else if (action == 8) { label = "PARENT FOLDER"; hint = "BKSP"; }
+        else if (action == 9) { label = "SWITCH FLASH / SD"; hint = "TAB"; }
+        else if (action == 10) { label = "DELETE PERMANENTLY"; }
+        else if (action == 11) { hint = "ESC"; }
+        y = fmMenuY + 20 + i * 15;
+        background = 0; foreground = 1;
+        if (action == 4 || action == 10) foreground = 4;
+        if (i == fmMenuHover) { background = 2; foreground = 0; }
+        fmFillRect(fmMenuX + 3, y, fmMenuX + fmMenuWidth - 4, y + 14, background);
+        drawText(label, 96, fmMenuX + 8, y + 4, 1, foreground);
+        drawText(hint, 96, fmMenuX + fmMenuWidth - 37, y + 4, 1, foreground);
+    }
+    fmMenuDirty = 0;
+}
+
+void fmPresent()
+{
+    fmDrawContextMenu();
+    narm_present();
+}
+
 /* FILEMGR640 UI. Coordinates are native 640x480, and all modes share the
  * firmware VGA4 framebuffer. The player remains visible while browsing or
  * inspecting files. A timer update repaints only its small card. */
@@ -121,7 +169,7 @@ void fmHeader(char subtitle[])
 void drawPathBar()
 {
     fmFillRect(12, 46, 627, 68, (uint)1);
-    uiText("PATH", 20, 52, (uint)15);
+    uiText("UP", 20, 52, (uint)11);
     uiTextN(cwd, 96, 68, 70, 52, (uint)0);
 }
 
@@ -450,8 +498,8 @@ void renderBrowser()
     drawSelectedInfo();
     renderAudioPanel();
     fmFooter("UP/DOWN MOVE  ENTER OPEN/RUN/PLAY  BACKSPACE PARENT  TAB DRIVE  F FILE  D FOLDER  E RENAME",
-             "DELETE/X REMOVE  R REFRESH    ALT F2 SWITCH APP    ALT F3 RUN MODE    ALT F4 CLOSE");
-    narm_present();
+             "CLICK SELECT  DOUBLE CLICK OPEN  RIGHT CLICK MENU  WHEEL SCROLL   ALT F2 SWITCH APP");
+    fmPresent();
 }
 
 void renderBrowserQuickMove()
@@ -461,7 +509,7 @@ void renderBrowserQuickMove()
     drawSelectedInfoClean();
     renderAudioPanel();
     drawStatus();
-    narm_present();
+    fmPresent();
 }
 
 int hexChar(uint value)
@@ -523,7 +571,7 @@ void renderFileView()
     drawFileDump();
     renderAudioPanel();
     fmFooter("UP/DOWN OR W/S PREVIOUS/NEXT PAGE    BACKSPACE RETURN TO FILES", "ALT F2 SWITCH APP    ALT F3 RUN MODE    ALT F4 CLOSE");
-    narm_present();
+    fmPresent();
 }
 
 void drawImageFormatName(int x, int y, uint color)
@@ -647,7 +695,7 @@ void renderImageView()
     }
     else drawImagePlaceholder();
     drawImageOverlay();
-    narm_present();
+    fmPresent();
 }
 
 void fmEditField()
@@ -674,10 +722,11 @@ void renderNameEdit()
     drawBox(80, 198, 559, 238, (uint)11, (uint)1);
     fmEditField();
     fmChip("ENTER SAVE", 82, 261, 106, (uint)10, (uint)0);
+    fmChip("ESC CANCEL", 202, 261, 106, (uint)14, (uint)0);
     drawText("BACKSPACE EDITS. EMPTY NAME + BACKSPACE CANCELS", 96, 82, 301, 1, (uint)15);
     renderAudioPanel();
     fmFooter("TYPE A NAME    ENTER SAVE    BACKSPACE DELETE A CHARACTER", "ALT F2 SWITCH APP    ALT F3 RUN MODE    ALT F4 CLOSE");
-    narm_present();
+    fmPresent();
 }
 
 void renderNameEditQuick()
@@ -685,7 +734,7 @@ void renderNameEditQuick()
     fmEditField();
     renderAudioPanel();
     drawStatus();
-    narm_present();
+    fmPresent();
 }
 
 void renderRenameProgress()
@@ -716,17 +765,25 @@ void renderRenameProgress()
     drawText("THE ORIGINAL IS REMOVED ONLY AFTER THE COPY SUCCEEDS", 96, 82, 293, 1, (uint)15);
     renderAudioPanel();
     fmFooter("PLEASE WAIT WHILE THE FILE IS COPIED", "ALT F2 SWITCH APP    ALT F3 RUN MODE    ALT F4 CLOSE");
-    narm_present();
+    fmPresent();
 }
 
 void render()
 {
+    if (fmMenuOpen != 0 && fmMenuTargetValid() == 0) fmDismissMenu();
+    if (fmMenuOpen != 0 && dirty != 0) quickMoveDirty = 0;
+    if (dirty == 0 && fmMenuDirty != 0 && fmMenuOpen != 0)
+    {
+        if (audioPanelDirty != 0) renderAudioPanel();
+        fmPresent();
+        return;
+    }
     if (dirty == 0)
     {
         if (audioPanelDirty != 0)
         {
             renderAudioPanel();
-            narm_present();
+            fmPresent();
         }
         return;
     }

@@ -2,6 +2,7 @@
 #define HALF_RES_INLINE_H
 
 #include "globals.h"
+#include "mouse_cursor.h"
 
 #define HALF_RES_WIDTH 320
 #define HALF_RES_HEIGHT 240
@@ -101,16 +102,14 @@ static inline __attribute__((always_inline)) void halfResDrawLineInline(var* buf
   }
 }
 
-static inline __attribute__((always_inline)) void halfResPresentInline(const var* buffer)
+static inline __attribute__((always_inline)) void halfResExpandRowsInline(const uint8_t* source, uint16_t first, uint16_t last)
 {
-  const uint8_t* source = (const uint8_t*)&buffer[0].value;
-
-  for(uint16_t y = 0; y < HALF_RES_HEIGHT; y++)
+  source += (uint32_t)first * HALF_RES_WIDTH;
+  for(uint16_t y = first; y < last; ++y)
   {
     uint16_t* topRow = (uint16_t*)(vga_data_array + ((uint32_t)y * 2 * VGA_WIDTH));
     uint16_t* bottomRow = topRow + (VGA_WIDTH >> 1);
-
-    for(uint16_t x = 0; x < HALF_RES_WIDTH; x++)
+    for(uint16_t x = 0; x < HALF_RES_WIDTH; ++x)
     {
       const uint8_t color = *source++;
       const uint16_t doubledPixel = color | ((uint16_t)color << 8);
@@ -118,6 +117,60 @@ static inline __attribute__((always_inline)) void halfResPresentInline(const var
       bottomRow[x] = doubledPixel;
     }
   }
+}
+
+static inline __attribute__((always_inline)) void halfResPresentInline(const var* buffer)
+{
+  const uint8_t* source = (const uint8_t*)&buffer[0].value;
+  mouse_cursor_begin_present();
+  int left = 0, top = 0, right = 0, bottom = 0;
+  if(!mouse_cursor_bounds(left, top, right, bottom))
+  {
+    halfResExpandRowsInline(source, 0, HALF_RES_HEIGHT);
+    mouse_cursor_end_present();
+    return;
+  }
+  const uint16_t first_y = top >> 1;
+  const uint16_t last_y = (bottom + 1) >> 1;
+  halfResExpandRowsInline(source, 0, first_y);
+  source += (uint32_t)first_y * HALF_RES_WIDTH;
+  for(uint16_t y = first_y; y < last_y; ++y)
+  {
+    uint16_t* topRow = (uint16_t*)(vga_data_array + ((uint32_t)y * 2 * VGA_WIDTH));
+    uint16_t* bottomRow = topRow + (VGA_WIDTH >> 1);
+    const bool top_cursor = y * 2 >= top && y * 2 < bottom;
+    const bool bottom_cursor = y * 2 + 1 >= top && y * 2 + 1 < bottom;
+    const uint16_t first = left >> 1;
+    const uint16_t last = (right + 1) >> 1;
+    uint16_t x = 0;
+    for(; x < first; ++x)
+    {
+      const uint8_t color = *source++;
+      const uint16_t doubledPixel = color | ((uint16_t)color << 8);
+      topRow[x] = doubledPixel;
+      bottomRow[x] = doubledPixel;
+    }
+    for(; x < last; ++x)
+    {
+      const uint8_t color = *source++;
+      const uint16_t doubledPixel = color | ((uint16_t)color << 8);
+      if (top_cursor) mouse_cursor_write_pair(x * 2, y * 2, doubledPixel);
+      else topRow[x] = doubledPixel;
+      if (bottom_cursor) mouse_cursor_write_pair(x * 2, y * 2 + 1, doubledPixel);
+      else bottomRow[x] = doubledPixel;
+    }
+    for(; x < HALF_RES_WIDTH; ++x)
+    {
+      const uint8_t color = *source++;
+      const uint16_t doubledPixel = color | ((uint16_t)color << 8);
+      topRow[x] = doubledPixel;
+      bottomRow[x] = doubledPixel;
+    }
+  }
+  // The local source pointer advanced across the cursor rows; the bulk
+  // helper indexes from the original framebuffer for the remaining rows.
+  halfResExpandRowsInline((const uint8_t*)&buffer[0].value, last_y, HALF_RES_HEIGHT);
+  mouse_cursor_end_present();
 }
 
 #endif

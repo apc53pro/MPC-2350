@@ -678,6 +678,14 @@ int8_t terminal_funcs(String code)
   {
     usb_storage_print_diagnostics();
 
+  }else if(tokens[0] == "TASKMEM" && tokenTreeSize == 2 &&
+           (tokens[1] == "ON" || tokens[1] == "OFF"))
+  {
+    const bool enabled = tokens[1] == "ON";
+    native_memory_trace_enable(enabled);
+    echo_message(enabled ? "=>NARM memory trace ON (serial, every 2s)" :
+                           "=>NARM memory trace OFF");
+
   }else if(tokens[0] == "TASKDIAG" && tokenTreeSize == 1)
   {
     native_scheduler_print_diagnostics();

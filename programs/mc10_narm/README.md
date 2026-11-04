@@ -1,5 +1,31 @@
 # MC10 NARM compatibility project
 
+## Build 31: mouse startup recovery
+
+The mouse build presents the menu before its first mouse call, and limits
+mouse queue draining so input cannot starve rendering. The separate
+`mc10_narm_build31_keyboard` executable uses the same game and assets
+without the mouse API, for recovery and comparison. Both use the Build 29
+asset files; replace only `/MC10/mc10_narm.narm` if those are already installed.
+The mouse build still requires NARM API 1.13 with the mouse service.
+
+## Build 30: physical mouse input
+
+Requires MPC-2350 firmware with NARM API 1.13 and mouse support, plus
+the existing depth-clear service. No new firmware code is needed.
+Replace `/MC10/mc10_narm.narm` from this build; Build 29 assets, saves
+and settings can stay in place.
+
+- Move/click in the main menu, world list, pause menu and settings.
+  Scroll the world list with the wheel, double-click a world to load it,
+  and drag settings sliders with the left button.
+- In play the mouse is captured for camera look. Sensitivity and Invert Mouse
+  apply; the wheel selects hotbar slots. Left click (default Attack binding)
+  swings the hand or held item; mining, placement and item use are not added.
+- In survival inventory, left/right click and Shift-click use the existing
+  pickup, split and quick-transfer rules. Escape and the inventory binding
+  still close it. Keyboard pointer, look and click controls remain available.
+
 ## Build 29: cameras, daylight and broad static block coverage
 
 `build_mc10.ps1 -Interactive -SkipAssets` creates the separate

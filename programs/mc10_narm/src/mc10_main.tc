@@ -23,6 +23,26 @@ void mc_show_menu_target_placeholder(int button_id)
     mc_wait_for_return();
 }
 
+int mc_main_activate_button(int button_id)
+{
+    if (button_id == 4) return 1;
+    if (button_id == 1) mc_select_world_run();
+    else if (button_id == 0)
+    {
+        if (mc_options_ready) mc_options_run();
+        else
+        {
+            mc_ui_draw_status("OPTIONS INIT FAILED");
+            mc_wait_for_return();
+        }
+    }
+    else if (button_id >= 0) mc_show_menu_target_placeholder(button_id);
+#ifdef MC10_MOUSE
+    if (button_id >= 0) mc_mouse_ui_reset();
+#endif
+    return 0;
+}
+
 int main(void)
 {
 #ifdef MC10_AUTOPROFILE
@@ -37,6 +57,9 @@ int main(void)
     int button_id;
     int event;
     int dirty;
+#ifdef MC10_MOUSE
+    int mouse_event, mouse_count;
+#endif
 
     mc_blocks_init();
     mc_boot_blocks_ok = mc_blocks_self_test();
@@ -52,6 +75,11 @@ int main(void)
     if (!mc_options_init()) mc_boot_options_ok = 0;
     else mc_boot_options_ok = mc_options_self_test();
 
+#ifdef MC10_MOUSE
+    /* Present a usable frame before calling the optional input backend. */
+    mc_menu_draw();
+    mc_mouse_ui_reset();
+#endif
     last_tick = narm_millis();
     dirty = 1;
     for (;;)
@@ -65,6 +93,18 @@ int main(void)
         }
         if (mc_menu_update_pointer_held(now)) dirty = 1;
 
+#ifdef MC10_MOUSE
+        for (mouse_count=0; mouse_count<32; mouse_count=mouse_count+1)
+        {
+            mouse_event=mc_mouse_ui_event();
+            if (!mouse_event) break;
+            dirty=1;
+            if (mouse_event!=1) continue;
+            button_id=mc_menu_mouse_pressed(0);
+            if (mc_main_activate_button(button_id)) return 0;
+            if (button_id>=0) last_tick=narm_millis();
+        }
+#endif
         while (narm_next_key_event(&key, &action, &mods, &character) > 0)
         {
             if (action != NARM_KEY_ACTION_PRESS &&
@@ -73,29 +113,9 @@ int main(void)
             if (key == NARM_KEY_ENTER && action == NARM_KEY_ACTION_PRESS)
             {
                 button_id = mc_menu_mouse_pressed(0);
-                if (button_id == 4) return 0;
-                if (button_id == 1)
-                {
-                    mc_select_world_run();
-                    last_tick = narm_millis();
-                    dirty = 1;
-                    continue;
-                }
-                if (button_id == 0)
-                {
-                    if (mc_options_ready) mc_options_run();
-                    else
-                    {
-                        mc_ui_draw_status("OPTIONS INIT FAILED");
-                        mc_wait_for_return();
-                    }
-                    last_tick = narm_millis();
-                    dirty = 1;
-                    continue;
-                }
+                if (mc_main_activate_button(button_id)) return 0;
                 if (button_id >= 0)
                 {
-                    mc_show_menu_target_placeholder(button_id);
                     last_tick = narm_millis();
                     dirty = 1;
                 }
@@ -104,6 +124,9 @@ int main(void)
             {
                 mc_ui_draw_status("PLATFORM STATUS");
                 mc_wait_for_return();
+#ifdef MC10_MOUSE
+                mc_mouse_ui_reset();
+#endif
                 last_tick = narm_millis();
                 dirty = 1;
             }
@@ -111,6 +134,10 @@ int main(void)
 
         event = narm_poll_system_event();
         if (event == NARM_EVENT_CLOSE_REQUESTED) return 0;
+#ifdef MC10_MOUSE
+        if (event == NARM_EVENT_FOCUS_LOST) mc_mouse_ui_reset();
+        if (event == NARM_EVENT_FOCUS_GAINED) { mc_mouse_ui_reset(); dirty=1; }
+#endif
         if (dirty)
         {
             mc_menu_draw();

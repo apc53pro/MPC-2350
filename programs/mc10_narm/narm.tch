@@ -205,6 +205,45 @@ int narm_ps2_key_down(unsigned scan_code, unsigned extended);
 int narm_next_key_event(unsigned *key, unsigned *action,
                         unsigned *modifiers, unsigned *character);
 
+// Mouse interface v1.0 (firmware API 1.13+). Screen coordinates are physical
+// 640x480 pixels. Raw deltas use right/down positive, before screen clamping.
+#define NARM_MOUSE_BUTTON_LEFT 1
+#define NARM_MOUSE_BUTTON_RIGHT 2
+#define NARM_MOUSE_BUTTON_MIDDLE 4
+#define NARM_MOUSE_BUTTON_BACK 8
+#define NARM_MOUSE_BUTTON_FORWARD 16
+#define NARM_MOUSE_CONNECTED 1
+#define NARM_MOUSE_FOCUSED 2
+#define NARM_MOUSE_RELATIVE 4
+#define NARM_MOUSE_CURSOR_VISIBLE 8
+#define NARM_MOUSE_EVENT_MOVE 1
+#define NARM_MOUSE_EVENT_PRESS 2
+#define NARM_MOUSE_EVENT_RELEASE 4
+#define NARM_MOUSE_EVENT_WHEEL 8
+#define NARM_MOUSE_EVENT_CONNECT 16
+#define NARM_MOUSE_EVENT_DISCONNECT 32
+#define NARM_MOUSE_EVENT_RESYNC 64
+struct NarmMouseState { int x; int y; unsigned buttons; unsigned flags; };
+struct NarmMouseMotion { int dx; int dy; int wheel; };
+struct NarmMouseEvent {
+    unsigned type;
+    int x; int y; int dx; int dy; int wheel;
+    unsigned buttons; unsigned changed_buttons; unsigned timestamp_us;
+};
+// get_state/read_motion return 0 on success. poll_event returns 1 for an
+// event, 0 if empty. All three can return a negative service error.
+int narm_mouse_get_state(struct NarmMouseState *state);
+int narm_mouse_poll_event(struct NarmMouseEvent *event);
+// Reading clears accumulated motion, independently of the event queue.
+int narm_mouse_read_motion(struct NarmMouseMotion *motion);
+// Focused applications only; pass 0 or 1. Relative mode freezes the screen
+// position and hides the cursor. Focus loss restores normal cursor policy.
+int narm_mouse_set_cursor_visible(unsigned visible);
+int narm_mouse_set_relative_mode(unsigned enabled);
+// Consecutive movement-only events coalesce. RESYNC signals queue overflow;
+// cancel gestures and reconcile event.buttons. Counter resets on focus change.
+unsigned narm_mouse_dropped_events(void);
+
 int narm_clear(unsigned color_index);
 int narm_pixel(int x, int y, unsigned color_index);
 int narm_fill_rect(int x0, int y0, int x1, int y1, unsigned color_index);

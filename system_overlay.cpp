@@ -2,6 +2,7 @@
 
 #include "globals.h"
 #include "graphics_runtime.h"
+#include "mouse_cursor.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -35,17 +36,15 @@ void sanitize_name(const char *source, char *destination, size_t bytes)
 void capture_background()
 {
   for (int y = 0; y < kOverlayHeight; ++y)
-    memcpy(overlay_backing + y * kOverlayRowBytes,
-           vga_data_array + y * VGA_WIDTH,
-           kOverlayRowBytes);
+    mouse_cursor_read_row(y, 0, overlay_backing + y * kOverlayRowBytes,
+                          kOverlayRowBytes);
 }
 
 void restore_background()
 {
   for (int y = 0; y < kOverlayHeight; ++y)
-    memcpy(vga_data_array + y * VGA_WIDTH,
-           overlay_backing + y * kOverlayRowBytes,
-           kOverlayRowBytes);
+    mouse_cursor_write_row(y, 0, overlay_backing + y * kOverlayRowBytes,
+                           kOverlayRowBytes);
 }
 
 void draw_overlay_text(int x, int y, const char *text)
@@ -65,10 +64,10 @@ void draw_overlay_text(int x, int y, const char *text)
       {
         const uint16_t bits = row == 0 ? (uint16_t)(rows >> 16)
                                        : (uint16_t)rows;
-        uint8_t *destination = vga_data_array +
-                               (y + pair * 2 + row) * VGA_WIDTH + base_x;
+        uint8_t pixels[16];
         for (int bit = 0; bit < 16; ++bit)
-          destination[bit] = (bits & (uint16_t)(0x8000u >> bit)) ? 0xffu : 0u;
+          pixels[bit] = (bits & (uint16_t)(0x8000u >> bit)) ? 0xffu : 0u;
+        mouse_cursor_write_row(y + pair * 2 + row, base_x, pixels, sizeof(pixels));
       }
     }
   }
@@ -76,14 +75,16 @@ void draw_overlay_text(int x, int y, const char *text)
 
 void render_overlay()
 {
+  static const uint8_t black_row[kOverlayWidth] = {};
   for (int y = 0; y < kOverlayHeight; ++y)
-    memset(vga_data_array + y * VGA_WIDTH, 0, kOverlayWidth);
+    mouse_cursor_write_row(y, 0, black_row, kOverlayWidth);
   draw_overlay_text(4, 3, overlay_line1);
   if (overlay_line2[0]) draw_overlay_text(4, 20, overlay_line2);
 }
 
 void begin_overlay()
 {
+  mouse_cursor_begin_present();
   const uint32_t generation = graphics_present_generation();
   if (overlay_active && generation == backing_generation) restore_background();
   capture_background();
@@ -91,6 +92,7 @@ void begin_overlay()
   overlay_active = true;
   overlay_deadline = millis() + kOverlayMilliseconds;
   render_overlay();
+  mouse_cursor_end_present();
 }
 }
 
@@ -132,10 +134,13 @@ void system_overlay_show_mode(uint32_t pid,
 void system_overlay_poll()
 {
   if (!overlay_active) return;
+  mouse_cursor_begin_present();
   if ((int32_t)(millis() - overlay_deadline) >= 0)
   {
-    restore_background();
+    // A later present has already replaced the expired overlay's backing.
+    if (graphics_present_generation() == backing_generation) restore_background();
     overlay_active = false;
+    mouse_cursor_end_present();
     return;
   }
   const uint32_t generation = graphics_present_generation();
@@ -145,4 +150,5 @@ void system_overlay_poll()
     backing_generation = generation;
   }
   render_overlay();
+  mouse_cursor_end_present();
 }

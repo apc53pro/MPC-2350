@@ -1,0 +1,56 @@
+; One instance per port, with arbitrary clock/data pins. JMP PIN selects clock;
+; IN PINS selects data. At 1 MHz the bounded inter-bit waits time out after
+; approximately 288 us. A timeout pushes zero, an invalid PS/2 frame.
+; A valid frame occupies bits 20..30. Bit 31 marks about 3 ms of idle
+; clock before the start bit, independent of when the CPU drains the FIFO.
+.program ps2_rx
+.wrap_target
+start:
+    mov isr, null
+    mov osr, null
+start_wait_high:
+    jmp pin, gap_start
+    jmp start_wait_high
+gap_start:
+    set x, 9
+gap_loop:
+    set y, 31
+gap_wait:
+    jmp pin, gap_high
+    jmp start_bit
+gap_high:
+    jmp y--, gap_wait [7]
+    jmp x--, gap_loop
+    mov osr, ~null
+start_high:
+    jmp pin, start_high
+start_bit:
+    in pins, 1
+    mov y, isr
+    jmp !y, start_ok
+    jmp start
+start_ok:
+    set x, 9
+bit:
+    set y, 31
+wait_high:
+    jmp pin, high
+    jmp y--, wait_high [7]
+    jmp timeout
+high:
+    set y, 31
+wait_low:
+    jmp pin, still_high
+    jmp sample
+still_high:
+    jmp y--, wait_low [7]
+timeout:
+    mov isr, null
+    push block
+    jmp start
+sample:
+    in pins, 1
+    jmp x--, bit
+    in osr, 1
+    push block
+.wrap

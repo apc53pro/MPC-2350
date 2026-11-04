@@ -3,12 +3,11 @@
 #include "mms.h"
 #include "native_runtime.h"
 #include "keyboard_runtime.h"
-#include "hardware/gpio.h"
+#include "ps2_pio_transport.h"
+#include "mouse_runtime.h"
 #include "pico/time.h"
 
 static volatile uint16_t event_packet = 0;
-static volatile int bitcount = 0;
-static volatile int databitcount = 0;
 static volatile uint8_t key_byte = 0;
 
 static volatile bool event_packetReady = false;
@@ -34,6 +33,12 @@ static volatile bool numLock = true;
 static uint8_t ps2_system_alt_mask = 0u;
 static uint8_t ps2_system_shortcut_latch = 0;
 static volatile uint32_t ps2_received_bytes = 0u;
+static uint32_t ps2_clock_edges = 0u;
+static uint32_t ps2_invalid_frames = 0u;
+static uint32_t ps2_queue_overflows = 0u;
+static uint32_t ps2_poll_count = 0u;
+static uint32_t ps2_poll_stage = PS2_POLL_IDLE;
+static uint32_t ps2_parsed_bytes = 0u;
 static uint32_t ps2_recoveries = 0u;
 static uint32_t ps2_last_transition = 0u;
 static uint32_t ps2_shortcut_presses[3] = {};
@@ -46,99 +51,42 @@ static constexpr uint8_t PS2_SHORTCUT_F4 = 1u << 2;
 // overwriting an older frame while the foreground code is busy.
 static constexpr uint8_t PS2_RX_QUEUE_SIZE = 32;
 static constexpr uint8_t PS2_RX_QUEUE_MASK = PS2_RX_QUEUE_SIZE - 1;
-static constexpr uint32_t PS2_FRAME_TIMEOUT_US = 250;
 static_assert((PS2_RX_QUEUE_SIZE & PS2_RX_QUEUE_MASK) == 0,
               "PS/2 receive queue must have a power-of-two size");
 
 static volatile uint8_t ps2_rx_queue[PS2_RX_QUEUE_SIZE];
 static volatile uint8_t ps2_rx_head = 0;
 static volatile uint8_t ps2_rx_tail = 0;
-static volatile uint8_t ps2_frame_data = 0;
-static volatile uint8_t ps2_parity_bit = 0;
 static volatile uint8_t ps2_resync_requested = 0;
 static volatile uint32_t ps2_last_edge_us = 0;
 
-static inline __attribute__((always_inline)) void ps2_reset_isr_frame()
+void __not_in_flash_func(ps2_keyboard_receive_byte)(uint8_t byte, bool valid, bool)
 {
-  bitcount = 0;
-  databitcount = 0;
-  ps2_frame_data = 0;
-  event_packet = 0;
-  ps2_parity_bit = 0;
-}
-
-void __not_in_flash_func(ps2_keyboard_clock_isr)()
-{
-  const uint32_t now = time_us_32();
-  const uint8_t data = (uint8_t)gpio_get(PS2_DATA);
-
-  // A missing clock edge must not shift every subsequent frame forever.
-  if (bitcount != 0 && (uint32_t)(now - ps2_last_edge_us) > PS2_FRAME_TIMEOUT_US)
+  // PIO performs the edge sampling. Keep this callback small: the foreground
+  // poll retains all Set-2 prefix, make/break, shortcut and text processing.
+  __atomic_store_n(&ps2_last_edge_us, time_us_32(), __ATOMIC_RELAXED);
+  if (!valid)
   {
-    ps2_reset_isr_frame();
-    ps2_resync_requested = 1;
-  }
-  ps2_last_edge_us = now;
-
-  // A PS/2 frame always starts with a zero start bit.  Idle-line noise is
-  // ignored rather than being allowed to become bit zero of a fake byte.
-  if (bitcount == 0)
-  {
-    if (data != 0)
-    {
-      return;
-    }
-    event_packet = 0;
-    ps2_frame_data = 0;
-    databitcount = 0;
-    bitcount = 1;
+    __atomic_fetch_add(&ps2_invalid_frames, 1u, __ATOMIC_RELAXED);
+    __atomic_store_n(&ps2_resync_requested, 1u, __ATOMIC_RELEASE);
     return;
   }
-
-  event_packet |= (uint16_t)data << bitcount;
-
-  if (bitcount >= 1 && bitcount <= 8)
+  // Retain this diagnostic field for existing fault records. It now counts
+  // the eleven sampled bits in each validated frame, rather than GPIO IRQs.
+  __atomic_fetch_add(&ps2_clock_edges, 11u, __ATOMIC_RELAXED);
+  __atomic_fetch_add(&ps2_received_bytes, 1u, __ATOMIC_RELAXED);
+  const uint8_t head = __atomic_load_n(&ps2_rx_head, __ATOMIC_RELAXED);
+  const uint8_t next = (uint8_t)((head + 1u) & PS2_RX_QUEUE_MASK);
+  if (next != __atomic_load_n(&ps2_rx_tail, __ATOMIC_ACQUIRE))
   {
-    ps2_frame_data |= data << databitcount;
-    databitcount++;
+    ps2_rx_queue[head] = byte;
+    __atomic_store_n(&ps2_rx_head, next, __ATOMIC_RELEASE);
+    event_packetReady = true;
   }
-  else if (bitcount == 9)
+  else
   {
-    ps2_parity_bit = data;
-  }
-
-  bitcount++;
-
-  if(bitcount == 11)
-  {
-    // Set 2 uses odd parity across the eight data bits and parity bit.
-    const uint8_t parity_valid = (uint8_t)
-      ((__builtin_parity((unsigned int)ps2_frame_data) ^ ps2_parity_bit) != 0);
-    const uint8_t stop_valid = data;
-    if (parity_valid && stop_valid)
-    {
-      ++ps2_received_bytes;
-      const uint8_t head = ps2_rx_head;
-      const uint8_t next = (uint8_t)((head + 1u) & PS2_RX_QUEUE_MASK);
-      if (next != ps2_rx_tail)
-      {
-        ps2_rx_queue[head] = ps2_frame_data;
-        __dmb();
-        ps2_rx_head = next;
-        event_packetReady = true;
-      }
-      else
-      {
-        // Dropping a prefix or break byte can leave the make/break parser in
-        // the wrong state, so queue overflow explicitly requests recovery.
-        ps2_resync_requested = 1;
-      }
-    }
-    else
-    {
-      ps2_resync_requested = 1;
-    }
-    ps2_reset_isr_frame();
+    __atomic_fetch_add(&ps2_queue_overflows, 1u, __ATOMIC_RELAXED);
+    __atomic_store_n(&ps2_resync_requested, 1u, __ATOMIC_RELEASE);
   }
 }
 
@@ -559,40 +507,43 @@ static void make_break_assembler(uint8_t scan_byte)
 
 void ps2_keyboard_poll()
 {
+  __atomic_fetch_add(&ps2_poll_count, 1u, __ATOMIC_RELAXED);
+  __atomic_store_n(&ps2_poll_stage, PS2_POLL_TRANSPORT, __ATOMIC_RELAXED);
+  ps2_pio_poll();
+  __atomic_store_n(&ps2_poll_stage, PS2_POLL_MOUSE, __ATOMIC_RELAXED);
+  mouse_runtime_poll();
   // An invalid frame, timeout, or full receive queue means a prefix or break
   // byte may have been lost.  Flush queued bytes and release all latched keys
   // instead of allowing a permanent shifted stream or phantom keypresses.
-  bool resync = false;
-  noInterrupts();
-  if (ps2_resync_requested)
+  __atomic_store_n(&ps2_poll_stage, PS2_POLL_RESYNC, __ATOMIC_RELAXED);
+  if (__atomic_exchange_n(&ps2_resync_requested, 0u, __ATOMIC_ACQ_REL))
   {
-    ps2_resync_requested = 0;
-    ps2_rx_tail = ps2_rx_head;
+    // Only this consumer writes tail, and only the IRQ producer writes head.
+    // Release/acquire publication needs no Arduino IRQ-stack bookkeeping.
+    const uint8_t head = __atomic_load_n(&ps2_rx_head, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&ps2_rx_tail, head, __ATOMIC_RELEASE);
     event_packetReady = false;
-    resync = true;
-  }
-  interrupts();
-  if (resync)
-  {
     __atomic_fetch_add(&ps2_recoveries, 1u, __ATOMIC_RELAXED);
     ps2_reset_make_break_state(true);
   }
 
-  while (true)
+  // Bound work even when new IRQ bytes arrive while this batch is decoded.
+  // Return to audio, rendering and the flash park boundary between batches.
+  for (uint8_t budget = 0; budget < PS2_RX_QUEUE_MASK; ++budget)
   {
-    uint8_t scan_byte;
-    noInterrupts();
-    const uint8_t tail = ps2_rx_tail;
-    if (tail == ps2_rx_head)
+    __atomic_store_n(&ps2_poll_stage, PS2_POLL_QUEUE, __ATOMIC_RELAXED);
+    const uint8_t tail = __atomic_load_n(&ps2_rx_tail, __ATOMIC_RELAXED);
+    if (tail == __atomic_load_n(&ps2_rx_head, __ATOMIC_ACQUIRE))
     {
       event_packetReady = false;
-      interrupts();
       break;
     }
-    scan_byte = ps2_rx_queue[tail];
-    ps2_rx_tail = (uint8_t)((tail + 1u) & PS2_RX_QUEUE_MASK);
-    event_packetReady = (ps2_rx_tail != ps2_rx_head);
-    interrupts();
+    const uint8_t scan_byte = ps2_rx_queue[tail];
+    const uint8_t next = (uint8_t)((tail + 1u) & PS2_RX_QUEUE_MASK);
+    __atomic_store_n(&ps2_rx_tail, next, __ATOMIC_RELEASE);
+    event_packetReady = (next != __atomic_load_n(&ps2_rx_head, __ATOMIC_ACQUIRE));
+    __atomic_fetch_add(&ps2_parsed_bytes, 1u, __ATOMIC_RELAXED);
+    __atomic_store_n(&ps2_poll_stage, PS2_POLL_DECODE, __ATOMIC_RELAXED);
 
     // Device responses and error bytes are not keyboard scan codes.
     if (scan_byte == 0x00 || scan_byte == 0xAA || scan_byte == 0xEE ||
@@ -603,15 +554,23 @@ void ps2_keyboard_poll()
       continue;
     }
 
-    // Parsing and event publication happen with interrupts enabled.  The old
-    // implementation disabled them across this entire call, long enough to
-    // lose PS/2 clock edges and permanently shift the receiver.
+    // Frame reception remains active throughout decoding/publication.
     make_break_assembler(scan_byte);
   }
+  __atomic_store_n(&ps2_poll_stage, PS2_POLL_IDLE, __ATOMIC_RELAXED);
 }
 
 void ps2_keyboard_get_diagnostics(Ps2KeyboardDiagnostics &diagnostics)
 {
+  diagnostics.clock_edges = __atomic_load_n(&ps2_clock_edges, __ATOMIC_RELAXED);
+  diagnostics.invalid_frames = __atomic_load_n(&ps2_invalid_frames, __ATOMIC_RELAXED);
+  diagnostics.queue_overflows = __atomic_load_n(&ps2_queue_overflows, __ATOMIC_RELAXED);
+  diagnostics.polls = __atomic_load_n(&ps2_poll_count, __ATOMIC_RELAXED);
+  diagnostics.queue_pending = (uint8_t)(__atomic_load_n(&ps2_rx_head, __ATOMIC_ACQUIRE) -
+      __atomic_load_n(&ps2_rx_tail, __ATOMIC_ACQUIRE)) & PS2_RX_QUEUE_MASK;
+  diagnostics.poll_stage = __atomic_load_n(&ps2_poll_stage, __ATOMIC_RELAXED);
+  diagnostics.parsed_bytes = __atomic_load_n(&ps2_parsed_bytes, __ATOMIC_RELAXED);
+  diagnostics.last_edge_us = __atomic_load_n(&ps2_last_edge_us, __ATOMIC_RELAXED);
   diagnostics.received_bytes = __atomic_load_n(&ps2_received_bytes, __ATOMIC_ACQUIRE);
   diagnostics.recoveries = __atomic_load_n(&ps2_recoveries, __ATOMIC_ACQUIRE);
   diagnostics.last_transition = __atomic_load_n(&ps2_last_transition, __ATOMIC_ACQUIRE);

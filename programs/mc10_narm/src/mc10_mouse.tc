@@ -1,0 +1,91 @@
+/* NARM screen coordinates are physical pixels; Minecraft draws at half size. */
+int mc_mouse_ui_left,mc_mouse_ui_wheel;
+uint mc_mouse_ui_pending;
+struct NarmMouseEvent mc_mouse_ui_packet;
+#define MC_MOUSE_POLL_LIMIT 32
+
+int mc_mouse_ui_position(int x,int y)
+{
+    int moved;
+    x=x/2;y=y/2;
+    if(x<0)x=0;if(x>319)x=319;if(y<0)y=0;if(y>239)y=239;
+    moved=x!=mc_menu_pointer_x||y!=mc_menu_pointer_y;
+    mc_menu_pointer_x=x;mc_menu_pointer_y=y;
+    return moved;
+}
+
+void mc_mouse_ui_reset(void)
+{
+    struct NarmMouseMotion motion;
+    struct NarmMouseState state;
+    int i;
+    mc_mouse_ui_left=0;mc_mouse_ui_wheel=0;mc_mouse_ui_pending=0;
+    if(narm_mouse_get_state(&state)!=0||!(state.flags&NARM_MOUSE_FOCUSED))return;
+    if(state.flags&NARM_MOUSE_RELATIVE)narm_mouse_set_relative_mode(0);
+    narm_mouse_set_cursor_visible(0); /* Use Minecraft's software pointer. */
+    for(i=0;i<MC_MOUSE_POLL_LIMIT;i=i+1)
+        if(narm_mouse_poll_event(&mc_mouse_ui_packet)!=1)break;
+    narm_mouse_read_motion(&motion);
+    if(narm_mouse_get_state(&state)==0&&(state.flags&3)==3)
+        mc_mouse_ui_position(state.x,state.y);
+}
+
+int mc_mouse_ui_event(void)
+{
+    int moved,count=0;uint pressed,released;
+    while(!mc_mouse_ui_pending)
+    {
+        if(count==MC_MOUSE_POLL_LIMIT)return 0;
+        count=count+1;
+        if(narm_mouse_poll_event(&mc_mouse_ui_packet)!=1)return 0;
+        if(mc_mouse_ui_packet.type&(NARM_MOUSE_EVENT_RESYNC|NARM_MOUSE_EVENT_DISCONNECT))
+        {
+            if(mc_mouse_ui_left){mc_mouse_ui_left=0;return 4;}
+            continue;
+        }
+        if(mc_mouse_ui_packet.type&NARM_MOUSE_EVENT_CONNECT)narm_mouse_set_cursor_visible(0);
+        moved=mc_mouse_ui_position(mc_mouse_ui_packet.x,mc_mouse_ui_packet.y);
+        pressed=mc_mouse_ui_packet.changed_buttons&mc_mouse_ui_packet.buttons;
+        released=mc_mouse_ui_packet.changed_buttons&~mc_mouse_ui_packet.buttons;
+        if(pressed&1)mc_mouse_ui_pending=mc_mouse_ui_pending|1;
+        if(pressed&2)mc_mouse_ui_pending=mc_mouse_ui_pending|2;
+        if(moved)mc_mouse_ui_pending=mc_mouse_ui_pending|4;
+        if(released&1)mc_mouse_ui_pending=mc_mouse_ui_pending|8;
+        if(released&2)mc_mouse_ui_pending=mc_mouse_ui_pending|16;
+        if(mc_mouse_ui_packet.wheel)mc_mouse_ui_pending=mc_mouse_ui_pending|32;
+    }
+    if(mc_mouse_ui_pending&1){mc_mouse_ui_pending=mc_mouse_ui_pending&~1;mc_mouse_ui_left=1;return 1;}
+    if(mc_mouse_ui_pending&2){mc_mouse_ui_pending=mc_mouse_ui_pending&~2;return 2;}
+    if(mc_mouse_ui_pending&4){mc_mouse_ui_pending=mc_mouse_ui_pending&~4;return 3;}
+    if(mc_mouse_ui_pending&8){mc_mouse_ui_pending=mc_mouse_ui_pending&~8;mc_mouse_ui_left=0;return 4;}
+    if(mc_mouse_ui_pending&16){mc_mouse_ui_pending=mc_mouse_ui_pending&~16;return 5;}
+    mc_mouse_ui_pending=0;mc_mouse_ui_wheel=mc_mouse_ui_packet.wheel;return 6;
+}
+
+/* In play, motion is consumed once, independently of button events. */
+uint mc_mouse_game_poll(int ready,struct NarmMouseMotion *motion)
+{
+    struct NarmMouseState state;struct NarmMouseEvent event;uint pressed=0;int wheel=0,i;
+    motion->dx=0;motion->dy=0;motion->wheel=0;
+    if(narm_mouse_get_state(&state)!=0||(state.flags&3)!=3)return 0;
+    if(!(state.flags&NARM_MOUSE_RELATIVE))
+    {
+        if(ready)narm_mouse_set_relative_mode(1);
+        return 0;
+    }
+    for(i=0;i<MC_MOUSE_POLL_LIMIT;i=i+1)
+    {
+        if(narm_mouse_poll_event(&event)!=1)break;
+        if(event.type&(NARM_MOUSE_EVENT_RESYNC|NARM_MOUSE_EVENT_DISCONNECT)){pressed=0;wheel=0;}
+        else
+        {
+            pressed=pressed|(event.changed_buttons&event.buttons);
+            if(event.wheel>0)wheel=(wheel+1)%9;
+            if(event.wheel<0)wheel=(wheel-1)%9;
+        }
+    }
+    if(narm_mouse_read_motion(motion)!=0||!ready)
+    {motion->dx=0;motion->dy=0;motion->wheel=0;return 0;}
+    motion->wheel=wheel;
+    return pressed;
+}

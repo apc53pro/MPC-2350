@@ -616,69 +616,105 @@ void mc_world_placeholder(char *message)
     mc_wait_for_return();
 }
 
+int mc_world_activate_pointer(void)
+{
+    int row=mc_world_row_at_pointer(), button;
+    uint now;
+    if (row >= 0)
+    {
+        now = narm_millis();
+        if (row == mc_world_selected && (uint)(now - mc_world_last_click) < 250)
+        {
+            mc_world_loaded = &mc_world_list[row];
+            mc_world_loaded_wait();
+#ifdef MC10_MOUSE
+            mc_mouse_ui_reset();
+#endif
+        }
+        mc_world_select_row(row);
+        mc_world_last_click = now;
+    }
+    else if (mc_menu_pointer_x >= 284 && mc_menu_pointer_x <= 290 &&
+             mc_menu_pointer_y >= MC_WORLD_LIST_TOP &&
+             mc_menu_pointer_y <= MC_WORLD_LIST_BOTTOM)
+    {
+        mc_world_scroll = mc_world_scroll +
+            (mc_menu_pointer_y < 104 ? -24 : 24);
+        mc_world_clamp_scroll();
+    }
+    else
+    {
+        button = mc_world_button_pressed();
+        if (button == 0) return 1;
+        if (button == 1 && mc_world_selected >= 0)
+        {
+            mc_world_loaded = &mc_world_list[mc_world_selected];
+            mc_world_loaded_wait();
+        }
+        else if (button == 3) mc_world_placeholder("CREATE WORLD PENDING");
+        else if (button == 6) mc_world_placeholder("RENAME WORLD PENDING");
+        else if (button == 2) mc_world_placeholder("DELETE WORLD PENDING");
+#ifdef MC10_MOUSE
+        if (button>=0) mc_mouse_ui_reset();
+#endif
+    }
+    return 0;
+}
+
 void mc_select_world_run(void)
 {
     unsigned key, action, mods, character;
     int event;
     int dirty = 1;
-    int row;
-    int button;
     uint now;
+#ifdef MC10_MOUSE
+    int mouse_event, mouse_count, wheel;
+#endif
     if (!mc_world_init())
     {
         mc_world_placeholder("SELECT WORLD INIT FAIL");
         return;
     }
+#ifdef MC10_MOUSE
+    mc_mouse_ui_reset();
+#endif
     for (;;)
     {
         now = narm_millis();
         if (mc_menu_update_pointer_held(now)) dirty = 1;
+#ifdef MC10_MOUSE
+        for (mouse_count=0; mouse_count<32; mouse_count=mouse_count+1)
+        {
+            mouse_event=mc_mouse_ui_event();
+            if (!mouse_event) break;
+            dirty=1;
+            if (mouse_event==1 && mc_world_activate_pointer()) return;
+            if (mouse_event==6 && mc_menu_pointer_y>=MC_WORLD_LIST_TOP &&
+                mc_menu_pointer_y<=MC_WORLD_LIST_BOTTOM)
+            {
+                wheel=mc_mouse_ui_wheel;
+                if (wheel>32) wheel=32;
+                if (wheel< -32) wheel=-32;
+                mc_world_scroll=mc_world_scroll-wheel*(MC_WORLD_SLOT_HEIGHT/2);
+                mc_world_clamp_scroll();
+            }
+        }
+#endif
         while (narm_next_key_event(&key, &action, &mods, &character) > 0)
         {
             if (action != NARM_KEY_ACTION_PRESS &&
                 action != NARM_KEY_ACTION_REPEAT) continue;
             if (key == NARM_KEY_ESCAPE && action == NARM_KEY_ACTION_PRESS) return;
-            if (key == NARM_KEY_ENTER && action == NARM_KEY_ACTION_PRESS)
-            {
-                row = mc_world_row_at_pointer();
-                if (row >= 0)
-                {
-                    now = narm_millis();
-                    if (row == mc_world_selected &&
-                        (uint)(now - mc_world_last_click) < 250)
-                    {
-                        mc_world_loaded = &mc_world_list[row];
-                        mc_world_loaded_wait();
-                    }
-                    mc_world_select_row(row);
-                    mc_world_last_click = now;
-                }
-                else if (mc_menu_pointer_x >= 284 && mc_menu_pointer_x <= 290 &&
-                         mc_menu_pointer_y >= MC_WORLD_LIST_TOP &&
-                         mc_menu_pointer_y <= MC_WORLD_LIST_BOTTOM)
-                {
-                    mc_world_scroll = mc_world_scroll +
-                        (mc_menu_pointer_y < 104 ? -24 : 24);
-                    mc_world_clamp_scroll();
-                }
-                else
-                {
-                    button = mc_world_button_pressed();
-                    if (button == 0) return;
-                    if (button == 1 && mc_world_selected >= 0)
-                    {
-                        mc_world_loaded = &mc_world_list[mc_world_selected];
-                        mc_world_loaded_wait();
-                    }
-                    else if (button == 3) mc_world_placeholder("CREATE WORLD PENDING");
-                    else if (button == 6) mc_world_placeholder("RENAME WORLD PENDING");
-                    else if (button == 2) mc_world_placeholder("DELETE WORLD PENDING");
-                }
-            }
+            if (key == NARM_KEY_ENTER && action == NARM_KEY_ACTION_PRESS &&
+                mc_world_activate_pointer()) return;
             dirty = 1;
         }
         event = narm_poll_system_event();
         if (event == NARM_EVENT_CLOSE_REQUESTED) return;
+#ifdef MC10_MOUSE
+        if (event == NARM_EVENT_FOCUS_LOST) mc_mouse_ui_reset();
+        if (event == NARM_EVENT_FOCUS_GAINED) { mc_mouse_ui_reset(); dirty=1; }
+#endif
         if (dirty) { mc_world_draw(); dirty = 0; }
         narm_sleep_ms(2);
     }

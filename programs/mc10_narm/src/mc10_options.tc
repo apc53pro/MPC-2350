@@ -66,6 +66,9 @@ int mc_options_fallback_labels;
 int mc_options_drag_slider=-1;
 int mc_options_drag_changed;
 int mc_options_enter_blocked;
+#ifdef MC10_MOUSE
+int mc_options_drag_mouse;
+#endif
 char mc_options_path[18] = {'/','M','C','1','0','/','o','p','t','i','o','n','s','.','t','x','t',0};
 
 char *mc_options_fallback_label(int index)
@@ -543,6 +546,9 @@ void mc_options_build_screen(int screen)
     int i; int option; int options_main[6]; int options_video[11];
     mc_options_screen=screen; mc_options_button_count=0; mc_options_capture_key=-1;
     mc_options_drag_slider=-1;mc_options_drag_changed=0;
+#ifdef MC10_MOUSE
+    mc_options_drag_mouse=0;
+#endif
     mc_options_enter_blocked=narm_key_down(NARM_KEY_ENTER)>0;
     options_main[0]=0; options_main[1]=1; options_main[2]=2;
     options_main[3]=3; options_main[4]=4; options_main[5]=11;
@@ -729,14 +735,15 @@ void mc_options_release_enter(void)
 {
     int save=mc_options_drag_slider>=0&&mc_options_drag_changed;
     mc_options_drag_slider=-1;mc_options_drag_changed=0;mc_options_enter_blocked=0;
+#ifdef MC10_MOUSE
+    mc_options_drag_mouse=0;
+#endif
     if(save)mc_options_save();
 }
 
-void mc_options_press_enter(void)
+void mc_options_press_pointer(void)
 {
     int i;float previous;
-    if(mc_options_enter_blocked)return;
-    mc_options_enter_blocked=1;
     for(i=0;i<mc_options_button_count;i=i+1)
         if(mc_options_buttons[i].enabled&&mc_menu_button_hovered(&mc_options_buttons[i]))
         {
@@ -751,10 +758,27 @@ void mc_options_press_enter(void)
         }
 }
 
+void mc_options_press_enter(void)
+{
+    if(mc_options_enter_blocked)return;
+#ifdef MC10_MOUSE
+    if(mc_options_drag_mouse)return;
+#endif
+    mc_options_enter_blocked=1;
+    mc_options_press_pointer();
+}
+
 void mc_options_drag_step(void)
 {
     int index=mc_options_drag_slider;float value;
     if(index<0)return;
+#ifdef MC10_MOUSE
+    if(mc_options_drag_mouse)
+    {
+        if(!mc_mouse_ui_left){mc_options_release_enter();return;}
+    }
+    else
+#endif
     if(narm_key_down(NARM_KEY_ENTER)<=0){mc_options_release_enter();return;}
     value=(float)(mc_menu_pointer_x-(mc_options_buttons[index].x_position+4))/142.0f;
     if(value<0)value=0;if(value>1)value=1;
@@ -832,16 +856,52 @@ int mc_options_self_test(void)
 void mc_options_run(void)
 {
     unsigned key,action,mods,character,now; int event; int i;
+#ifdef MC10_MOUSE
+    int mouse_event,mouse_count,old_screen;
+#endif
     if (!mc_options_ready) return;
     mc_options_build_screen(MC_OPTIONS_MAIN);
+#ifdef MC10_MOUSE
+    mc_mouse_ui_reset();
+#endif
     while (mc_options_screen>=0)
     {
         now=narm_millis(); if (mc_menu_update_pointer_held(now)) mc_options_dirty=1;
         if(narm_key_down(NARM_KEY_ENTER)<=0)mc_options_enter_blocked=0;
+#ifdef MC10_MOUSE
+        for(mouse_count=0;mouse_count<32&&mc_options_screen>=0;mouse_count=mouse_count+1)
+        {
+            mouse_event=mc_mouse_ui_event();
+            if(!mouse_event)break;
+            mc_options_dirty=1;
+            if(mouse_event==4&&mc_options_drag_mouse)
+            {
+                mc_options_release_enter();
+                continue;
+            }
+            if(mouse_event==3)
+            {
+                mc_options_drag_step();
+                continue;
+            }
+            if(mc_options_screen==MC_OPTIONS_CONTROLS&&mc_options_capture_key>=0)continue;
+            if(mouse_event!=1||mc_options_drag_slider>=0)continue;
+            old_screen=mc_options_screen;
+            mc_options_press_pointer();
+            mc_options_drag_mouse=mc_options_drag_slider>=0;
+            if(old_screen!=mc_options_screen)mc_mouse_ui_reset();
+        }
+        if(mc_options_screen<0)return;
+#endif
         while (narm_next_key_event(&key,&action,&mods,&character)>0)
         {
             if(key==NARM_KEY_ENTER&&action==NARM_KEY_ACTION_RELEASE)
-            {mc_options_release_enter();continue;}
+            {
+#ifdef MC10_MOUSE
+                if(mc_options_drag_mouse){mc_options_enter_blocked=0;continue;}
+#endif
+                mc_options_release_enter();continue;
+            }
             if (action!=NARM_KEY_ACTION_PRESS) continue;
             if (mc_options_screen==MC_OPTIONS_CONTROLS && mc_options_capture_key>=0)
             {
@@ -852,6 +912,10 @@ void mc_options_run(void)
             {
                 mc_options_save();
                 mc_options_drag_slider=-1;mc_options_drag_changed=0;
+#ifdef MC10_MOUSE
+                mc_options_drag_mouse=0;
+                mc_mouse_ui_reset();
+#endif
                 if (mc_options_screen==MC_OPTIONS_MAIN) mc_options_screen=-1;
                 else mc_options_build_screen(MC_OPTIONS_MAIN);
             }
@@ -861,8 +925,16 @@ void mc_options_run(void)
         mc_options_drag_step();
         event=narm_poll_system_event();
         if(event==NARM_EVENT_FOCUS_LOST)
-        {mc_options_release_enter();mc_options_enter_blocked=1;}
+        {
+            mc_options_release_enter();mc_options_enter_blocked=1;
+#ifdef MC10_MOUSE
+            mc_mouse_ui_reset();
+#endif
+        }
         if(event==NARM_EVENT_CLOSE_REQUESTED){mc_options_release_enter();return;}
+#ifdef MC10_MOUSE
+        if(event==NARM_EVENT_FOCUS_GAINED){mc_mouse_ui_reset();mc_options_dirty=1;}
+#endif
         if (mc_options_dirty && mc_options_screen>=0) { mc_options_draw(); mc_options_dirty=0; }
         narm_sleep_ms(2);
     }

@@ -1,22 +1,28 @@
 #include "native_runtime.h"
 #include "native_scheduler_arch.h"
+#include "native_stack_diagnostics.h"
+#include "native_live_diagnostics.h"
+#include "native_fault_capture.h"
 
 #include "SDmgr.h"
 #include "globals.h"
 #include "graphics_3d_runtime.h"
 #include "graphics_runtime.h"
 #include "keyboard_runtime.h"
+#include "mouse_runtime.h"
 #include "audio_runtime.h"
 #include "file_io_runtime.h"
 #include "system_overlay.h"
 #include "terminal.h"
 #include "ps2_keyboard_driver.h"
+#include "ps2_pio_transport.h"
 #include "usb_storage_mode.h"
 
 #include <FatFS.h>
 #include <hardware/regs/addressmap.h>
 #include <hardware/irq.h>
 #include <hardware/clocks.h>
+#include <hardware/structs/qmi.h>
 #include <hardware/sync.h>
 #include <hardware/exception.h>
 #include <hardware/structs/m33.h>
@@ -94,6 +100,7 @@ struct NativeProcess
   NativeAllocation text;
   NativeAllocation data;
   NativeAllocation stack;
+  uintptr_t lowest_hardware_psp;
   NativeContextV1 context;
   uint32_t audio_voice_mask;
   uint32_t audio_manual_pause_mask;
@@ -164,6 +171,15 @@ repeating_timer_t scheduler_timer;
 bool scheduler_timer_started = false;
 bool scheduler_initialized = false;
 bool scheduler_selftest_passed = false;
+bool memory_trace_enabled = false;
+uint32_t core1_progress_stage = 0u;
+uint32_t core1_progress_loops = 0u;
+uint32_t core1_progress_last_ms = 0u;
+uint32_t core1_min_stack_free = UINT32_MAX;
+uint32_t memory_trace_deadline_ms = 0u;
+volatile uintptr_t scheduler_lowest_hardware_psp = UINTPTR_MAX;
+volatile uintptr_t scheduler_stack_begin = 0u;
+volatile uintptr_t scheduler_stack_end = 0u;
 volatile uint32_t scheduler_timer_ticks = 0u;
 volatile uint32_t scheduler_timer_core = 0xffffffffu;
 uint32_t scheduler_timeslices = 0u;
@@ -325,6 +341,7 @@ void release_allocation(NativeAllocation &allocation)
 
 void release_process(NativeProcess &process)
 {
+  mouse_input_release(process.pid);
   release_allocation(process.stack);
   release_allocation(process.data);
   release_allocation(process.text);
@@ -391,14 +408,21 @@ uint32_t maximum_data_alignment(const NarmImageHeader &header)
   return result;
 }
 
-NativeProcess *claim_process()
+void initialize_process_table()
 {
   if (!process_table_initialized)
   {
+    // .psram is NOLOAD: it can contain arbitrary bytes on cold boot and
+    // records from the previous run after a watchdog/reset. Clear it before
+    // the scheduler or diagnostics can inspect tasks, even at the terminal.
     memset(processes, 0, sizeof(processes));
     process_table_initialized = true;
   }
+}
 
+NativeProcess *claim_process()
+{
+  initialize_process_table();
   for (uint32_t i = 0; i < NARM_MAX_PROCESSES; ++i)
   {
     if (processes[i].state == NATIVE_PROCESS_EMPTY)
@@ -485,6 +509,7 @@ bool service_supported(void *, uint32_t service_id, uint16_t minimum_version)
     case NARM_SERVICE_USB_STORAGE_DISABLE:
     case NARM_SERVICE_USB_STORAGE_STATUS:
     case NARM_INTERFACE_KEYBOARD:
+    case NARM_INTERFACE_MOUSE:
     case NARM_INTERFACE_FILE_IO:
     case NARM_INTERFACE_AUDIO:
     case NARM_INTERFACE_VIDEO_2D:
@@ -792,6 +817,7 @@ int32_t api_invoke(NativeContextV1 *context,
     return NARM_SERVICE_ERR_ARGUMENTS;
   }
   abort_if_stop_requested(context, service_id != NARM_SERVICE_YIELD);
+  native_fault_checkpoint(NARM_PHASE_INVOKE | service_id);
 
   switch (service_id)
   {
@@ -1008,6 +1034,8 @@ const NativeKeyboardApiV1 native_keyboard_api = {
   native_keyboard_ps2_key_down
 };
 
+#include "native_mouse_api_impl.h"
+
 uint32_t native_audio_status(NativeContextV1 *context)
 {
   if (!valid_native_context(context)) return 0u;
@@ -1027,6 +1055,7 @@ int32_t native_audio_submit(NativeContextV1 *context,
   if (!valid_service_arguments(context, args, arg_words))
     return NARM_SERVICE_ERR_ARGUMENTS;
   abort_if_stop_requested(context);
+  native_fault_checkpoint(NARM_PHASE_AUDIO_API | command);
   if (!has_capability(context, NARM_CAP_AUDIO))
     return NARM_SERVICE_ERR_CAPABILITY;
   if (!native_owns_audio(context)) return NARM_SERVICE_ERR_BUSY;
@@ -1202,6 +1231,7 @@ int32_t native_file_submit(NativeContextV1 *context,
   if (!valid_service_arguments(context, args, arg_words))
     return NARM_SERVICE_ERR_ARGUMENTS;
   abort_if_stop_requested(context);
+  native_fault_checkpoint(NARM_PHASE_FILE | command);
   if (!has_capability(context, NARM_CAP_FILE_IO))
     return NARM_SERVICE_ERR_CAPABILITY;
 
@@ -1809,6 +1839,7 @@ int32_t video_submit(NativeContextV1 *context,
   if (!valid_service_arguments(context, args, arg_words))
     return NARM_SERVICE_ERR_ARGUMENTS;
   abort_if_stop_requested(context);
+  native_fault_checkpoint(NARM_PHASE_VIDEO | command);
   if (!has_capability(context, NARM_CAP_FRAMEBUFFER_2D))
     return NARM_SERVICE_ERR_CAPABILITY;
   if (!native_owns_graphics(context)) return NARM_SERVICE_ERR_BUSY;
@@ -1980,6 +2011,13 @@ const void *api_get_interface(NativeContextV1 *context,
       return nullptr;
     return &native_keyboard_api;
   }
+  if (interface_id == NARM_INTERFACE_MOUSE)
+  {
+    if(interface_major != native_mouse_api.interface_major ||
+       minimum_minor > native_mouse_api.interface_minor ||
+       !has_capability(context, NARM_CAP_MOUSE)) return nullptr;
+    return &native_mouse_api;
+  }
   if (interface_id == NARM_INTERFACE_AUDIO)
   {
     if (interface_major != native_audio_api.interface_major ||
@@ -2034,7 +2072,7 @@ const NativeApiV1 native_api = {
   NARM_API_MAJOR,
   NARM_API_MINOR,
   (uint32_t)(NARM_CAP_FRAMEBUFFER_2D | NARM_CAP_KEYBOARD | NARM_CAP_AUDIO |
-             NARM_CAP_FILE_IO | NARM_CAP_USB_STORAGE),
+             NARM_CAP_FILE_IO | NARM_CAP_USB_STORAGE | NARM_CAP_MOUSE),
   0,
   api_invoke,
   api_yield,
@@ -2148,7 +2186,8 @@ bool initialize_process_context(NativeProcess &process)
 {
   uintptr_t top = (uintptr_t)(process.stack.aligned + process.image.stack_bytes);
   top &= ~(uintptr_t)7u;
-  if (top < (uintptr_t)process.stack.aligned + 64u) return false;
+  if (top < (uintptr_t)process.stack.aligned +
+            NARM_STACK_CONTEXT_RESERVE_BYTES + 64u) return false;
 
   uint32_t *hardware_frame = (uint32_t *)top - 8;
   memset(hardware_frame, 0, 8u * sizeof(uint32_t));
@@ -2166,7 +2205,9 @@ bool initialize_process_context(NativeProcess &process)
   process.arch.saved_psp = software_frame;
   process.arch.exception_return = 0xfffffffdu;
   process.arch.control = 0u;
-  process.arch.psplim = (uint32_t)(uintptr_t)process.stack.aligned;
+  process.arch.psplim = (uint32_t)(uintptr_t)process.stack.aligned +
+                       NARM_STACK_CONTEXT_RESERVE_BYTES;
+  process.lowest_hardware_psp = (uintptr_t)hardware_frame;
   return true;
 }
 
@@ -2186,7 +2227,7 @@ NarmStatus load_process(const NarmReader &reader, NativeProcess *&loaded_process
   policy.service_supported = service_supported;
   policy.capabilities_low = (uint32_t)(NARM_CAP_FRAMEBUFFER_2D | NARM_CAP_KEYBOARD |
                                        NARM_CAP_AUDIO | NARM_CAP_FILE_IO |
-                                       NARM_CAP_USB_STORAGE);
+                                       NARM_CAP_USB_STORAGE | NARM_CAP_MOUSE);
   NarmStatus status = narm_validate_image(reader,
                                           policy,
                                           process->image,
@@ -2244,7 +2285,7 @@ NarmStatus load_process(const NarmReader &reader, NativeProcess *&loaded_process
   {
     memset(process->data.aligned, 0, process->layout.data_arena_bytes);
   }
-  memset(process->stack.aligned, 0xcd, process->image.stack_bytes);
+  memset(process->stack.aligned, NARM_STACK_FILL_BYTE, process->image.stack_bytes);
 
   uint8_t *rodata_destination = process->data.aligned
                                   ? process->data.aligned + process->layout.rodata_runtime_offset
@@ -2363,19 +2404,25 @@ NarmStatus load_process(const NarmReader &reader, NativeProcess *&loaded_process
 
 bool sd_read_at(void *user, uint32_t offset, void *destination, uint32_t bytes)
 {
+  native_fault_checkpoint(NARM_PHASE_LOADER);
   // The NARM file remains open while the native process runs, but the SD bus
   // must only be owned while a loader read is actually in progress.  Holding
   // the bus for the lifetime of load_and_run() prevents Core 1 from refilling
   // streamed audio after its startup ring has drained.
   SdBusGuard sdBusGuard;
   FirmwareFile *file = (FirmwareFile *)user;
-  return file->seekSet(offset) && file->read(destination, bytes) == (int)bytes;
+  const bool result = file->seekSet(offset) && file->read(destination, bytes) == (int)bytes;
+  native_fault_heartbeat();
+  return result;
 }
 
 bool fs_read_at(void *user, uint32_t offset, void *destination, uint32_t bytes)
 {
+  native_fault_checkpoint(NARM_PHASE_LOADER);
   File *file = (File *)user;
-  return file->seek(offset) && file->read((uint8_t *)destination, bytes) == (int)bytes;
+  const bool result = file->seek(offset) && file->read((uint8_t *)destination, bytes) == (int)bytes;
+  native_fault_heartbeat();
+  return result;
 }
 
 void set_process_focus(NativeProcess *next)
@@ -2397,6 +2444,7 @@ void set_process_focus(NativeProcess *next)
   terminal_has_focus = next == nullptr;
   keyboard_clear_events();
   keyboard_set_focus(next ? KEYBOARD_FOCUS_NARM : KEYBOARD_FOCUS_TERMINAL);
+  mouse_input_set_focus(next ? next->pid : 0u);
   if (next)
   {
     next->focused = true;
@@ -2428,6 +2476,14 @@ bool scheduler_timer_callback(repeating_timer_t *)
   if (get_core_num() == 0u &&
       __atomic_load_n(&narm_arch_current_context, __ATOMIC_ACQUIRE))
   {
+    uintptr_t psp;
+    __asm volatile ("mrs %0, psp" : "=r"(psp));
+    if (psp >= scheduler_stack_begin && psp <= scheduler_stack_end &&
+        psp < scheduler_lowest_hardware_psp)
+      scheduler_lowest_hardware_psp = psp;
+    if (psp >= scheduler_stack_begin && psp <= scheduler_stack_end &&
+        scheduler_stack_end - psp >= 32u)
+      native_fault_irq_sample(((const uint32_t *)psp)[6]);
     *(volatile uint32_t *)0xe000ed04u = 1u << 28;
     __dsb();
     __isb();
@@ -2494,7 +2550,8 @@ bool scheduler_preemption_selftest()
   hardware_frame[6] = (uint32_t)(uintptr_t)narm_arch_probe_entry & ~1u;
   hardware_frame[7] = 0x01000000u;
   NativeArchContext probe = {hardware_frame - 8u, 0xfffffffdu, 0u,
-                             (uint32_t)(uintptr_t)stack};
+                             (uint32_t)(uintptr_t)stack +
+                             NARM_STACK_CONTEXT_RESERVE_BYTES};
   narm_arch_text_begin = (uintptr_t)narm_arch_probe_entry & ~(uintptr_t)1u;
   narm_arch_text_end = (uintptr_t)narm_arch_probe_end;
   bool passed = true;
@@ -2574,6 +2631,191 @@ NativeProcess *find_process_by_pid(uint32_t pid)
     if (processes[i].state != NATIVE_PROCESS_EMPTY && processes[i].pid == pid)
       return &processes[i];
   return nullptr;
+}
+
+void print_native_memory_diagnostics(bool to_terminal)
+{
+  // Take the snapshot before constructing any display Strings. The periodic
+  // serial trace itself uses Print directly and does not allocate Strings.
+  const uint32_t heap_free = rp2040.getFreeHeap();
+  const uint32_t psram_free = rp2040.getFreePSRAMHeap();
+  const uint32_t firmware_stack_free = rp2040.getFreeStack();
+  const uint32_t native_sram_free = native_arena_free_bytes(narm_sram_arena);
+  const uint32_t native_psram_free = native_arena_free_bytes(narm_psram_arena);
+  Serial.print("NARM-MEM MS="); Serial.print(millis());
+  Serial.print(" HEAP_FREE="); Serial.print(heap_free);
+  Serial.print(" PSRAM_HEAP_FREE="); Serial.print(psram_free);
+  Serial.print(" FW_STACK_FREE="); Serial.print(firmware_stack_free);
+  Serial.print(" NATIVE_SRAM_FREE="); Serial.print(native_sram_free);
+  Serial.print(" NATIVE_PSRAM_FREE="); Serial.println(native_psram_free);
+  const uint32_t psram_timing = qmi_hw->m[1].timing;
+  Serial.print("NARM-QMI R5 SYS_HZ="); Serial.print(clock_get_hz(clk_sys));
+  Serial.print(" FLASH_DIV=");
+  Serial.print((qmi_hw->m[0].timing & QMI_M0_TIMING_CLKDIV_BITS) >> QMI_M0_TIMING_CLKDIV_LSB);
+  Serial.print(" PSRAM_DIV=");
+  Serial.print((psram_timing & QMI_M1_TIMING_CLKDIV_BITS) >> QMI_M1_TIMING_CLKDIV_LSB);
+  Serial.print(" RXDELAY=");
+  Serial.print((psram_timing & QMI_M1_TIMING_RXDELAY_BITS) >> QMI_M1_TIMING_RXDELAY_LSB);
+  Serial.print(" MIN_DESELECT=");
+  Serial.print((psram_timing & QMI_M1_TIMING_MIN_DESELECT_BITS) >> QMI_M1_TIMING_MIN_DESELECT_LSB);
+  Serial.print(" MAX_SELECT=");
+  Serial.println((psram_timing & QMI_M1_TIMING_MAX_SELECT_BITS) >> QMI_M1_TIMING_MAX_SELECT_LSB);
+  native_fault_print_report();
+  if (to_terminal)
+    echo_message(" MEM HEAP=" + String(heap_free) + " PSRAM=" + String(psram_free) +
+                 " NATIVE=" + String(native_sram_free) + "/" + String(native_psram_free));
+
+  const uint32_t core1_seen = __atomic_load_n(&core1_progress_last_ms, __ATOMIC_RELAXED);
+  const uint32_t core1_loops = __atomic_load_n(&core1_progress_loops, __ATOMIC_RELAXED);
+  Ps2KeyboardDiagnostics keyboard = {};
+  ps2_keyboard_get_diagnostics(keyboard);
+  Serial.print("NARM-LIVE R2 FOCUS="); Serial.print(native_focused_pid());
+  Serial.print(" TERMINAL="); Serial.print(terminal_has_focus ? 1u : 0u);
+  Serial.print(" TICKS="); Serial.print((uint32_t)scheduler_timer_ticks);
+  Serial.print(" SLICES="); Serial.print(scheduler_timeslices);
+  Serial.print(" YIELDS="); Serial.print(scheduler_yields);
+  Serial.print(" COMMANDS="); Serial.print(scheduler_commands_applied);
+  Serial.print(" PENDING=0x"); Serial.print((uint32_t)__atomic_load_n(&narm_arch_scheduler_commands, __ATOMIC_ACQUIRE), HEX);
+  Serial.print(" PRESENTS="); Serial.print(graphics_present_generation());
+  Serial.print(" USB="); Serial.println(usb_storage_status());
+  Serial.print("NARM-CORE1 LOOPS="); Serial.print(core1_loops);
+  Serial.print(" AGE_MS="); Serial.print(core1_loops ? millis() - core1_seen : UINT32_MAX);
+  Serial.print(" STAGE="); Serial.print(__atomic_load_n(&core1_progress_stage, __ATOMIC_RELAXED));
+  Serial.print(" STACK_MIN="); Serial.println(__atomic_load_n(&core1_min_stack_free, __ATOMIC_RELAXED));
+  Serial.print("NARM-KEY EDGES="); Serial.print(keyboard.clock_edges);
+  Serial.print(" RX="); Serial.print(keyboard.received_bytes);
+  Serial.print(" BAD="); Serial.print(keyboard.invalid_frames);
+  Serial.print(" OVERRUN="); Serial.print(keyboard.queue_overflows);
+  Serial.print(" POLLS="); Serial.print(keyboard.polls);
+  Serial.print(" POLL_STAGE="); Serial.print(keyboard.poll_stage);
+  Serial.print(" PARSED="); Serial.print(keyboard.parsed_bytes);
+  Serial.print(" QUEUED="); Serial.print(keyboard.queue_pending);
+  Serial.print(" RECOVERIES="); Serial.print(keyboard.recoveries);
+  Serial.print(" LAST=0x"); Serial.print(keyboard.last_transition, HEX);
+  Serial.print(" ALT_F2_F3_F4=");
+  for (uint32_t key = 0u; key < 3u; ++key)
+  {
+    if (key) Serial.print('/');
+    Serial.print(keyboard.shortcut_presses[key]);
+  }
+  Serial.println();
+
+  Ps2PioDiagnostics input = {};
+  ps2_pio_get_diagnostics(input);
+  Serial.print("NARM-PS2 READY="); Serial.print(input.ready);
+  Serial.print(" FLASH_PAUSED="); Serial.print(input.flash_paused);
+  Serial.print(" CTRL=0x"); Serial.print(input.ctrl, HEX);
+  Serial.print(" FDEBUG=0x"); Serial.print(input.fdebug, HEX);
+  Serial.print(" IRQ_EN=0x"); Serial.print(input.irq_enable, HEX);
+  Serial.print(" IRQ_PENDING=0x"); Serial.print(input.irq_pending, HEX);
+  Serial.print(" PROGRAM="); Serial.println(input.program_offset);
+  for(uint i = 0; i < 2; ++i)
+  {
+    const Ps2PioPortDiagnostics &d = input.port[i];
+    Serial.print(i ? "NARM-PS2-MOUSE SM=" : "NARM-PS2-KEY SM="); Serial.print(d.sm);
+    Serial.print(" PC="); Serial.print(d.pc);
+    Serial.print(" FIFO="); Serial.print(d.rx_level);
+    Serial.print(" CLKDIV=0x"); Serial.print(d.clkdiv, HEX);
+    Serial.print(" EXEC=0x"); Serial.print(d.execctrl, HEX);
+    Serial.print(" PINS=0x"); Serial.print(d.pinctrl, HEX);
+    Serial.print(" CLK="); Serial.print(d.clock_pin); Serial.print('/');
+    Serial.print(d.clock_high); Serial.print('/'); Serial.print(d.clock_output);
+    Serial.print(" DATA="); Serial.print(d.data_pin); Serial.print('/');
+    Serial.print(d.data_high); Serial.print('/'); Serial.print(d.data_output);
+    Serial.print(" FUNC="); Serial.print(d.clock_function); Serial.print('/'); Serial.print(d.data_function);
+    Serial.print(" TX="); Serial.print(d.transmitting);
+    Serial.print(" RECOVERY="); Serial.println(d.recovering);
+  }
+
+  MouseTraceSnapshot mouse_trace = {};
+  if(!mouse_runtime_get_trace(mouse_trace)) Serial.println("NARM-MOUSE TRACE_BUSY");
+  else
+  {
+    Serial.print("NARM-MOUSE RX="); Serial.print(mouse_trace.received);
+    Serial.print(" INVALID="); Serial.print(mouse_trace.invalid);
+    Serial.print(" REPORTS="); Serial.println(mouse_trace.reports);
+    for(uint32_t i = 0; i < mouse_trace.byte_count; ++i)
+    {
+      const MouseByteTrace &b = mouse_trace.bytes[i];
+      Serial.print("NARM-MOUSE-RX T="); Serial.print(b.timestamp_us);
+      Serial.print(" BYTE=0x"); Serial.print(b.value & 255u, HEX);
+      Serial.print(" VALID="); Serial.print((b.value >> 8) & 1u);
+      Serial.print(" POS="); Serial.print(b.status & 255u);
+      Serial.print(" ID="); Serial.print((b.status >> 8) & 255u);
+      Serial.print(" RESYNC="); Serial.print((b.status >> 16) & 1u);
+      Serial.print(" STREAM="); Serial.print((b.status >> 17) & 1u);
+      Serial.print(" GAP="); Serial.print((b.status >> 18) & 1u);
+      Serial.print(" INIT="); Serial.println(b.status >> 24);
+    }
+    for(uint32_t i = 0; i < mouse_trace.packet_count; ++i)
+    {
+      const MousePacketTrace &p = mouse_trace.packets[i];
+      Serial.print("NARM-MOUSE-PACKET T="); Serial.print(p.timestamp_us);
+      Serial.print(" RAW=0x"); Serial.print(p.raw, HEX);
+      Serial.print(" ID="); Serial.print(p.device_id);
+      Serial.print(" DX="); Serial.print(p.dx);
+      Serial.print(" DY="); Serial.print(p.dy);
+      Serial.print(" WHEEL="); Serial.print(p.wheel);
+      Serial.print(" X="); Serial.print(p.x);
+      Serial.print(" Y="); Serial.println(p.y);
+    }
+  }
+
+  for (uint32_t i = 0u; i < NARM_MAX_PROCESSES; ++i)
+  {
+    const NativeProcess &process = processes[i];
+    if (process.state == NATIVE_PROCESS_EMPTY ||
+        process.state == NATIVE_PROCESS_LOADING ||
+        process.state == NATIVE_PROCESS_EXITED) continue;
+    const uint32_t headroom = narm_stack_headroom(
+        (uintptr_t)process.stack.aligned, process.stack.bytes,
+        process.lowest_hardware_psp);
+    const uint32_t untouched = narm_stack_untouched(process.stack.aligned,
+                                                   process.stack.bytes);
+    Serial.print("NARM-STACK PID="); Serial.print(process.pid);
+    Serial.print(" BYTES="); Serial.print(process.stack.bytes);
+    Serial.print(" DATA_BYTES="); Serial.print(process.data.bytes);
+    Serial.print(" DATA_LOCATION=");
+    Serial.print(process.data.internal_sram ? "SRAM" : "PSRAM");
+    Serial.print(" PSP_HEADROOM="); Serial.print(headroom);
+    Serial.print(" FILL_HEADROOM="); Serial.print(untouched);
+    Serial.print(" STACK_LOCATION=");
+    Serial.println(process.stack.internal_sram ? "SRAM" : "PSRAM");
+    uint32_t pc = 0u;
+    const bool pc_valid = narm_saved_pc(process.stack.aligned, process.stack.bytes,
+                                      process.arch, pc);
+    Serial.print("NARM-TASK PID="); Serial.print(process.pid);
+    Serial.print(" STATE="); Serial.print((uint32_t)process.state);
+    Serial.print(" FOCUSED="); Serial.print(process.focused ? 1u : 0u);
+    Serial.print(" MODE="); Serial.print((uint32_t)effective_mode(process));
+    Serial.print(" SLICES="); Serial.print(process.cpu_slices);
+    Serial.print(" FLAGS=0x"); Serial.print(__atomic_load_n(&process_control_flags[i], __ATOMIC_ACQUIRE), HEX);
+    Serial.print(" PC_VALID="); Serial.print(pc_valid ? 1u : 0u);
+    Serial.print(" PC=0x"); Serial.print(pc, HEX);
+    Serial.print(" TEXT_BASE=0x"); Serial.print((uintptr_t)process.text.aligned, HEX);
+    Serial.print(" TEXT_BYTES="); Serial.println(process.text.bytes);
+    if (to_terminal)
+      echo_message(" PID " + String(process.pid) + " STACK=" + String(process.stack.bytes) +
+                   " PSP_FREE=" + String(headroom) + " FILL_FREE=" + String(untouched));
+  }
+}
+
+void poll_native_serial_diagnostics()
+{
+  static NativeSerialCommandParser parser;
+  // Bound input work so a serial sender cannot starve the native scheduler.
+  for (uint32_t count = 0u; count < 64u && Serial.available() > 0; ++count)
+  {
+    const NativeSerialCommand command = parser.feed((uint8_t)Serial.read());
+    if (command == NARM_SERIAL_DIAG) print_native_memory_diagnostics(false);
+    else if (command == NARM_SERIAL_CAPTURE_TEST) native_fault_selftest();
+    else if (command == NARM_SERIAL_FOCUS)
+      Serial.println(native_request_focus_next() ? "NARM-SERIAL FOCUS queued" : "NARM-SERIAL FOCUS unavailable");
+    else if (command == NARM_SERIAL_CLOSE)
+      Serial.println(native_request_stop() ? "NARM-SERIAL CLOSE queued" : "NARM-SERIAL no focused task");
+    else if (command == NARM_SERIAL_HELP || command == NARM_SERIAL_INVALID)
+      Serial.println("NARM-SERIAL commands: NARM DIAG | NARM FOCUS | NARM CLOSE | NARM HELP | NARM CAPTURE TEST (reboots; send newline)");
+  }
 }
 } // namespace
 
@@ -2731,6 +2973,8 @@ bool native_request_toggle_mode()
 void native_scheduler_begin()
 {
   if (scheduler_initialized) return;
+  initialize_process_table();
+  native_fault_begin();
   scheduler_initialized = true;
   critical_section_init(&scheduler_command_lock);
   // PendSV must run after peripheral IRQ handlers return to Thread/PSP. At
@@ -2766,11 +3010,25 @@ void native_scheduler_begin()
   Serial.print("NARM MT-R3: scheduler self-test ");
   Serial.println(result);
   echo_message(String("=>NARM MT-R3: scheduler self-test ") + result);
+  Serial.println("NARM LIVE-R2: core/input/task trace; serial NARM DIAG/FOCUS/CLOSE");
+  Serial.println("NARM FAULT-R7: retained context; NARM CAPTURE TEST intentionally reboots");
+  native_fault_print_report();
 }
 
 void native_scheduler_poll()
 {
   native_scheduler_begin();
+  native_fault_heartbeat();
+  native_fault_checkpoint(NARM_PHASE_SERIAL);
+  poll_native_serial_diagnostics();
+  if (memory_trace_enabled && Serial &&
+      (int32_t)(millis() - memory_trace_deadline_ms) >= 0)
+  {
+    native_fault_checkpoint(NARM_PHASE_TRACE);
+    print_native_memory_diagnostics(false);
+    memory_trace_deadline_ms = millis() + 2000u;
+  }
+  native_fault_checkpoint(NARM_PHASE_SCHEDULER);
   critical_section_enter_blocking(&scheduler_command_lock);
   const uint32_t commands = __atomic_exchange_n(&narm_arch_scheduler_commands,
                                                  0u,
@@ -2847,19 +3105,33 @@ void native_scheduler_poll()
                    &process_control_flags[selected - processes],
                    __ATOMIC_RELEASE);
   __atomic_store_n(&active_process, selected, __ATOMIC_RELEASE);
+  scheduler_stack_begin = (uintptr_t)selected->stack.aligned;
+  scheduler_stack_end = scheduler_stack_begin + selected->stack.bytes;
+  scheduler_lowest_hardware_psp = selected->lowest_hardware_psp;
   __atomic_store_n(&narm_arch_current_context, &selected->arch, __ATOMIC_RELEASE);
   narm_arch_text_begin = (uintptr_t)selected->text.aligned;
   narm_arch_text_end = narm_arch_text_begin + selected->text.bytes;
   narm_arch_requested_reason = NARM_ARCH_SWITCH_YIELD;
   narm_arch_switch_reason = NARM_ARCH_SWITCH_NONE;
   ++selected->cpu_slices;
+  native_fault_process(selected->pid);
+  native_fault_checkpoint(NARM_PHASE_NATIVE);
   const uint32_t reason = narm_arch_resume(&selected->arch);
+  native_fault_process(0u);
+  native_fault_checkpoint(NARM_PHASE_SCHEDULER);
   __atomic_store_n(&scheduler_active_control_flags, (uint32_t *)nullptr,
                    __ATOMIC_RELEASE);
   __atomic_store_n(&narm_arch_current_context,
                    (NativeArchContext *)nullptr,
                    __ATOMIC_RELEASE);
   __atomic_store_n(&active_process, (NativeProcess *)nullptr, __ATOMIC_RELEASE);
+  // saved_psp includes the software context. Convert back to the hardware
+  // frame address before comparing it with the timer's PSP samples.
+  const uintptr_t hardware_psp = (uintptr_t)selected->arch.saved_psp +
+      32u + ((selected->arch.exception_return & 0x10u) == 0u ? 64u : 0u);
+  selected->lowest_hardware_psp = scheduler_lowest_hardware_psp;
+  if (hardware_psp < selected->lowest_hardware_psp)
+    selected->lowest_hardware_psp = hardware_psp;
   if (reason == NARM_ARCH_SWITCH_TIMESLICE) ++scheduler_timeslices;
   else if (reason == NARM_ARCH_SWITCH_YIELD) ++scheduler_yields;
 
@@ -2985,6 +3257,31 @@ void native_scheduler_print_diagnostics()
          String(__atomic_load_n(&scheduler_command_requests[1], __ATOMIC_ACQUIRE)) + "/" +
          String(__atomic_load_n(&scheduler_command_requests[2], __ATOMIC_ACQUIRE)) +
          " PENDING=0x" + String((uint32_t)__atomic_load_n(&narm_arch_scheduler_commands, __ATOMIC_ACQUIRE), HEX));
+  print_native_memory_diagnostics(true);
+}
+
+void native_memory_trace_enable(bool enabled)
+{
+  native_fault_trace_enable(enabled);
+  memory_trace_enabled = enabled;
+  memory_trace_deadline_ms = millis();
+}
+
+void native_core1_checkpoint(NativeCore1Stage stage)
+{
+  // Only Core 1 writes these fixed SRAM words. Core 0 takes approximate,
+  // lock-free diagnostic snapshots; no process pointer is shared here.
+  __atomic_store_n(&core1_progress_stage, (uint32_t)stage, __ATOMIC_RELAXED);
+  if (stage == NARM_CORE1_FLASH)
+  {
+    __atomic_store_n(&core1_progress_last_ms, millis(), __ATOMIC_RELAXED);
+    __atomic_store_n(&core1_progress_loops,
+                     __atomic_load_n(&core1_progress_loops, __ATOMIC_RELAXED) + 1u,
+                     __ATOMIC_RELAXED);
+  }
+  const uint32_t free_stack = rp2040.getFreeStack();
+  if (free_stack < __atomic_load_n(&core1_min_stack_free, __ATOMIC_RELAXED))
+    __atomic_store_n(&core1_min_stack_free, free_stack, __ATOMIC_RELAXED);
 }
 
 uint32_t native_task_count() { return native_running_processes(); }

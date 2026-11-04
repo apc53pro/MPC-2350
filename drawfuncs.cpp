@@ -254,16 +254,7 @@ void presentVga4BitBuffer()
   {
     // Bound time away from EP0 while copying the PSRAM framebuffer. USB
     // control requests must be serviced within a frame, not once per frame.
-    uint16_t *destination = (uint16_t *)vga_data_array;
-    constexpr uint32_t chunk_pairs = VGA_WIDTH * 2u;
-    for (uint32_t base = 0; base < VGA_4BIT_BUFFER_SIZE; base += chunk_pairs)
-    {
-      usb_storage_poll();
-      const uint32_t end = base + chunk_pairs < VGA_4BIT_BUFFER_SIZE
-                         ? base + chunk_pairs : VGA_4BIT_BUFFER_SIZE;
-      for (uint32_t pair = base; pair < end; ++pair)
-        destination[pair] = vga_4bit_expanded_pairs[vga_640_480_4_01[pair]];
-    }
+    vga4PresentInline(usb_storage_poll);
     graphics_note_present();
     return;
   }
@@ -272,23 +263,7 @@ void presentVga4BitBuffer()
 
 void draw_half_res_buffer()
 {
-  // Four 8-bit pixels are stored per word, matching RP2350 byte order.
-  const uint8_t* source = (const uint8_t*)&memory[partitions[SYS_HALF_RES_BUFFER_PARTITION_INDEX].start_addr].value;
-
-  for(uint16_t y = 0; y < 240; y++)
-  {
-    uint16_t* top_row = (uint16_t*)(vga_data_array + ((uint32_t)y * 2 * VGA_WIDTH));
-    uint16_t* bottom_row = top_row + (VGA_WIDTH >> 1);
-
-    for(uint16_t x = 0; x < 320; x++)
-    {
-      const uint8_t color = *source++;
-      const uint16_t doubled_pixel = color | ((uint16_t)color << 8);
-      top_row[x] = doubled_pixel;
-      bottom_row[x] = doubled_pixel;
-    }
-  }
-  graphics_note_present();
+  graphics_half_present(&memory[partitions[SYS_HALF_RES_BUFFER_PARTITION_INDEX].start_addr]);
 }
 
 void draw_pixel_half_res_buffer(int x, int y, uint8_t color)

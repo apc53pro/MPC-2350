@@ -1,5 +1,5 @@
 param(
-    [string]$Compiler = (Join-Path $PSScriptRoot '..\..\..\..\Compiler_For_NARM\narmcc.exe'),
+    [string]$Compiler = (Join-Path $PSScriptRoot '..\..\..\Compiler_For_NARM\narmcc.exe'),
     [string]$Output = (Join-Path $PSScriptRoot '..\..\data\filemgr.narm')
 )
 $ErrorActionPreference = 'Stop'
