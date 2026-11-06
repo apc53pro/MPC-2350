@@ -11,8 +11,10 @@ namespace mock_gpio {
 inline bool level[48]{}, output[48]{};
 inline unsigned drive[48]{};
 inline bool ready = false, valid = false;
+inline bool valid_follows_clock = false;
 inline uint8_t status[128]{};
 inline unsigned address = 0, reset_clock_edges = 0;
+inline unsigned clock_rises = 0;
 inline uint8_t last_data_write = 0;
 inline uint32_t now = 0;
 inline uint32_t first_clock_us = UINT32_MAX, configuration_ready_us = 0;
@@ -31,6 +33,7 @@ inline void set_level(unsigned pin, bool value) {
     last_clock_edge_us = now;
   }
   if (pin == 16 && value && !level[16]) {
+    ++clock_rises;
     if (first_clock_us == UINT32_MAX) first_clock_us = now;
     if (!level[36]) ++reset_clock_edges;
     if (!level[17] && now - write_assert_us < min_write_setup_us)
@@ -70,8 +73,10 @@ inline PinStatus digitalRead(unsigned pin) {
   if (pin >= 18 && pin < 26 && !mock_gpio::output[pin] &&
       !mock_gpio::level[38] && mock_gpio::level[17] && mock_gpio::level[37])
     value = ((mock_gpio::status[mock_gpio::address] >> (pin - 18)) & 1u) != 0;
-  else if (pin == 39) value = configured && mock_gpio::ready;
-  else if (pin == 40) value = configured && mock_gpio::valid;
+  else if (pin == 39) value = configured && mock_gpio::ready && mock_gpio::level[38];
+  else if (pin == 40) value = mock_gpio::valid_follows_clock ? mock_gpio::level[16] :
+      configured && mock_gpio::valid && !mock_gpio::level[38] &&
+      mock_gpio::level[17] && mock_gpio::level[37];
   else value = mock_gpio::level[pin];
   return value ? HIGH : LOW;
 }

@@ -57,7 +57,9 @@ The user reports A2 silicon and **one 100 Ω series resistor per signal wire**
 (16 total). The added **4.7 kΩ pull-down from GPIO39/WREADY to common GND and
 4.7 kΩ pull-down from GPIO40/RVALID to common GND** are now confirmed fitted;
 capability reads still return all zero. Other external bias fitment is
-unconfirmed. That observation precedes the 6.3 MHz / 50 us bus-test changes.
+unconfirmed. The user subsequently tested the 6.3 MHz / 50 us build and again
+reported sixteen zero capability bytes with matching address echoes and reset
+HIGH. Slowing the clocks did not change the readback or identify its cause.
 A2 E9 can affect weak or floating inputs; the series parts alone
 do not provide pull-down bias. E9 is not established as the root cause.
 Arduino `digitalRead()` does not remove the silicon leakage. See the GPU guide
@@ -91,8 +93,40 @@ readback`; they are not treated as an SDRAM initialization timeout.
    The same probe runs automatically once after a failed startup, including
    when the serial command loop is disabled locally.
 
-A byte transfer times out after 250 ms. Any failed transfer or invalid reply
-latches the client offline and releases data, with WR_N/RD_N/ALE_N HIGH and
+For a stable voltage test while offline, send **`GPU_HOLD`**. It first releases
+the bus with RD_N/WR_N/ALE_N HIGH and data pins as inputs, then samples RVALID
+after 50 us at HCLK LOW and after 50 us at HCLK HIGH. The `GPU IDLE` values
+`RVALID_LOWCLK` / `RVALID_HIGHCLK` should both be **0** while RD_N is inactive.
+An incorrect result could indicate a clock-linked RVALID miswire; that cause
+has not been confirmed. The diagnostic continues even if this idle check fails.
+The single idle rising edge sends no packet.
+
+It then freshly selects
+register `0x41`, whose expected byte is **`0x02`**, and holds **HCLK HIGH / RD_N
+LOW**, with WR_N/ALE_N HIGH, reset HIGH and all RP data pins as inputs. The
+read remains held even if the byte is wrong or RVALID times out after 250 ms;
+an address-write/WREADY timeout releases the bus. `GPU HOLD` reports the result,
+and `GPU BUS` prints RP-side control levels. The client stays offline and no
+command packet is submitted or retried.
+
+Measure **D1 at Tang J6.9 / FPGA pin 28 and RP GPIO19 / Core P3.5**, on both sides
+of the existing 100 Ω resistor, relative to common GND. A correct held read has
+D1 HIGH (about 3.3 V) and the other seven data bits LOW. At the Tang end,
+RESET_N pin71, HCLK pin77, WR_N pin15 and ALE_N pin17 should be HIGH; RD_N pin16
+and ABORT pin72 LOW; RVALID pin74 HIGH and WREADY pin73 LOW. These are expected
+levels, not measured results. Keep the two fitted 4.7 kΩ handshake pull-downs.
+
+`GPU_STATUS` rereads held data without clock edges. `GPU_PROBE` refuses while
+held. Send **`GPU_RELEASE`** to end the read and release the bus, or **`GPU_RESET`**
+to clear the hold and perform normal hard initialization. This diagnostic needs
+no FPGA reflash or clock change; use the existing 6.3 MHz bus-test image.
+The idle WREADY/RVALID values in a normal probe's final log are not its active
+transfer levels: printing all sixteen bytes means software sampled both inputs
+HIGH during those transfers.
+
+A normal initialization, packet or probe byte transfer times out after 250 ms.
+A failed transfer or invalid reply latches the client offline and releases data,
+with WR_N/RD_N/ALE_N HIGH and
 GPU_RESET_N **HIGH**. Keeping reset released lets video timing continue while
 the failed host session stays offline. The previous failure path asserted reset
 LOW, which also stopped HDMI video; that behavior was removed.

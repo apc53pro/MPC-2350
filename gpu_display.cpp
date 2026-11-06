@@ -20,6 +20,7 @@ int selected_address = -1;
 unsigned service_counter = 0;
 uint8_t address_sent = 0, address_sensed = 0;
 uint8_t data_pins = 0;
+bool read_held = false;
 
 uint8_t read_data_pins() {
   uint8_t byte = 0;
@@ -51,6 +52,7 @@ void release_bus() {
   // GPU_RESET_N; a failed/partial packet is never retried in this session.
   digitalWrite(kReset, HIGH);
   selected_address = -1;
+  read_held = false;
 }
 bool write_cycle(uint8_t byte, bool address) {
   digitalWrite(kRead, HIGH); digitalWrite(kWrite, HIGH); low();
@@ -105,6 +107,7 @@ bool read_register(void *, uint8_t address, uint8_t *out) { return read_at(addre
 bool gpu_display_begin() {
   // Assert reset first: pinMode(OUTPUT_12MA) initially drives LOW. Keep GPU
   // logic reset while the other control outputs are configured.
+  read_held = false;
   pinMode(kReset, OUTPUT_12MA); digitalWrite(kReset, LOW);
   delayMicroseconds(1);
   for (unsigned pin : {kClock, kWrite, kAbort, kAddress, kRead}) {
@@ -136,6 +139,7 @@ void gpu_display_present() {
 }
 
 void gpu_display_diagnostics() {
+  if (read_held) data_pins = read_data_pins();
   Serial.print("NANO GPU: "); Serial.print(gpu.ready() ? "READY" : "OFFLINE");
   Serial.print("; "); Serial.print(gpu.error());
   Serial.print("; presents="); Serial.print(gpu.presents());
@@ -152,10 +156,17 @@ void gpu_display_diagnostics() {
   Serial.print("; sensed=0x"); Serial.println(address_sensed, HEX);
   Serial.print("GPU DATA: pins=0x"); Serial.print(data_pins, HEX);
   Serial.println("");
+  Serial.print("GPU BUS: held="); Serial.print(read_held ? 1 : 0);
+  Serial.print("; HCLK="); Serial.print(digitalRead(kClock));
+  Serial.print("; WR_N="); Serial.print(digitalRead(kWrite));
+  Serial.print("; RD_N="); Serial.print(digitalRead(kRead));
+  Serial.print("; ALE_N="); Serial.print(digitalRead(kAddress));
+  Serial.print("; ABORT="); Serial.println(digitalRead(kAbort));
 }
 
 void gpu_display_probe() {
   if (gpu.ready()) { Serial.println("GPU_PROBE is for an offline link; use GPU_STATUS."); return; }
+  if (read_held) { Serial.println("GPU_HOLD active; use GPU_RELEASE or GPU_RESET first."); return; }
   // Read immutable sideband capabilities without submitting or retrying a
   // packet. Even a core fault must leave these registers accessible.
   Serial.print("GPU CAPS:");
@@ -169,4 +180,44 @@ void gpu_display_probe() {
   Serial.println("");
   release_bus();
   gpu_display_diagnostics();
+}
+
+void gpu_display_hold() {
+  if (gpu.ready()) { Serial.println("GPU_HOLD is for an offline link; use GPU_STATUS."); return; }
+  release_bus();
+  // RVALID must stay LOW with RD_N HIGH, regardless of HCLK. This also
+  // distinguishes a real read handshake from a clock-linked input.
+  low();
+  const int idle_low = digitalRead(kValid);
+  high();
+  const int idle_high = digitalRead(kValid);
+  low();
+  Serial.print("GPU IDLE: RVALID_LOWCLK="); Serial.print(idle_low);
+  Serial.print("; RVALID_HIGHCLK="); Serial.print(idle_high);
+  Serial.println("; expected=0/0");
+  // Force a fresh address latch. This is a sideband read, never a packet.
+  if (!select(65)) { Serial.println("GPU HOLD: address timeout; bus released."); return; }
+  digitalWrite(kWrite, HIGH); digitalWrite(kRead, HIGH); release_data(); low();
+  digitalWrite(kAddress, HIGH); digitalWrite(kRead, LOW); delayMicroseconds(kClockPhaseUs);
+  const uint32_t start = micros();
+  bool valid;
+  for (;;) {
+    high();
+    valid = digitalRead(kValid) == HIGH;
+    if (valid || (uint32_t)(micros() - start) >= kTimeoutUs) break;
+    low();
+  }
+  // Deliberately keep the read active, even for bad data or missing RVALID,
+  // so a meter can measure stable control/data levels at both boards.
+  read_held = true;
+  Serial.print("GPU HOLD: register=0x41; expected=0x02; ");
+  Serial.println(valid ? "read held; use GPU_RELEASE to end." :
+                         "RVALID timeout; read held; use GPU_RELEASE to end.");
+  gpu_display_diagnostics();
+}
+
+void gpu_display_release() {
+  if (!read_held) { Serial.println("GPU RELEASE: no read held."); return; }
+  release_bus();
+  Serial.println("GPU RELEASE: bus released; client remains offline.");
 }
