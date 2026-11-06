@@ -16,13 +16,27 @@ inline unsigned address = 0, reset_clock_edges = 0;
 inline uint8_t last_data_write = 0;
 inline uint32_t now = 0;
 inline uint32_t first_clock_us = UINT32_MAX, configuration_ready_us = 0;
+inline uint32_t last_clock_edge_us = UINT32_MAX, min_clock_phase_us = UINT32_MAX;
+inline uint32_t write_assert_us = 0, read_assert_us = 0;
+inline uint32_t min_write_setup_us = UINT32_MAX, min_read_setup_us = UINT32_MAX;
 inline std::vector<bool> reset_writes;
 
 inline void set_level(unsigned pin, bool value) {
   if (pin == 36) reset_writes.push_back(value);
+  if (pin == 17 && !value && level[17]) write_assert_us = now;
+  if (pin == 38 && !value && level[38]) read_assert_us = now;
+  if (pin == 16 && value != level[16]) {
+    if (last_clock_edge_us != UINT32_MAX && now - last_clock_edge_us < min_clock_phase_us)
+      min_clock_phase_us = now - last_clock_edge_us;
+    last_clock_edge_us = now;
+  }
   if (pin == 16 && value && !level[16]) {
     if (first_clock_us == UINT32_MAX) first_clock_us = now;
     if (!level[36]) ++reset_clock_edges;
+    if (!level[17] && now - write_assert_us < min_write_setup_us)
+      min_write_setup_us = now - write_assert_us;
+    if (!level[38] && now - read_assert_us < min_read_setup_us)
+      min_read_setup_us = now - read_assert_us;
     if (level[36] && ready && now >= configuration_ready_us && !level[17] && level[38]) {
       uint8_t byte = 0;
       for (unsigned i = 0; i < 8; ++i) {

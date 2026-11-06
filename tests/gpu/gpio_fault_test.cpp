@@ -36,6 +36,9 @@ void reset_fixture(bool ready, bool valid) {
   mock_gpio::ready = ready; mock_gpio::valid = valid;
   mock_gpio::now = 0; mock_gpio::reset_clock_edges = 0;
   mock_gpio::first_clock_us = UINT32_MAX; mock_gpio::configuration_ready_us = 0;
+  mock_gpio::last_clock_edge_us = UINT32_MAX; mock_gpio::min_clock_phase_us = UINT32_MAX;
+  mock_gpio::write_assert_us = 0; mock_gpio::read_assert_us = 0;
+  mock_gpio::min_write_setup_us = UINT32_MAX; mock_gpio::min_read_setup_us = UINT32_MAX;
   mock_gpio::reset_writes.clear(); Serial.text.clear();
 }
 
@@ -49,6 +52,9 @@ void check_failure_state() {
   for (unsigned pin : {16u, 17u, 35u, 36u, 37u, 38u}) assert(mock_gpio::drive[pin] == 12);
   assert(mock_gpio::reset_clock_edges == 32);
   assert(mock_gpio::first_clock_us >= 1000000);
+  assert(mock_gpio::min_clock_phase_us >= 50); // HCLK never exceeds 10 kHz.
+  assert(mock_gpio::min_write_setup_us >= 50);
+  assert(mock_gpio::min_read_setup_us >= 50);
   assert(mock_gpio::reset_writes.front() == false);
   bool released = false;
   for (bool level : mock_gpio::reset_writes) {
@@ -101,7 +107,10 @@ int main() {
     assert(read_at(64, &received));
     assert(received == byte);
   }
+  assert(mock_gpio::min_clock_phase_us >= 50);
+  assert(mock_gpio::min_write_setup_us >= 50 && mock_gpio::min_write_setup_us != UINT32_MAX);
+  assert(mock_gpio::min_read_setup_us >= 50 && mock_gpio::min_read_setup_us != UINT32_MAX);
   std::cout << "PASS Arduino GPIO glue: 256 write/read byte patterns, configuration startup wait, reset pulse, timeouts, "
                "startup fault and malformed reply leave reset HIGH and data released; "
-               "startup diagnostics, address echo and capability probe verified.\n";
+               "startup diagnostics, address echo, capability probe and 50 us clock/setup minima verified.\n";
 }

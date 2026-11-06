@@ -1,7 +1,12 @@
 # MPC-2350: Nano GPU terminal bring-up
 
-This first GPU firmware displays a **40x30 monochrome terminal** over the Tang
-Nano 20K HDMI output. PS/2 terminal input, command history and scrolling remain.
+This first GPU firmware implements a **40x30 monochrome terminal** for the Tang
+Nano 20K. The current fixed bus-test FPGA image runs the GPU core/SDRAM at
+**6.3 MHz** and intentionally outputs an independent **black 640×480/60 HDMI
+raster** at 25.2 MHz pixels / 126 MHz serialization. GPU-rendered pixels are
+disconnected, so this image cannot display or qualify the terminal. Restoring
+visible GPU output requires a later board clock/video change and new validation.
+PS/2 terminal input, command history and scrolling remain.
 NARM program launching is disabled until its GPU API is implemented. PS/2 mouse
 input is retained; the graphical mouse cursor is deferred.
 
@@ -11,7 +16,8 @@ compositors have been removed. The small terminal character grid is retained;
 the general terminal allocation arena is 64 KiB and contains no graphics partitions.
 
 `gpu_display.cpp` drives the current 16-wire bus with GPIO, using at least
-1 us per clock phase. It claims no PIO or DMA resources. `nano_gpu.cpp` checks
+50 us per clock phase/setup wait (a phase-only ceiling of 10 kHz before API
+overhead). It claims no PIO or DMA resources. `nano_gpu.cpp` checks
 the N20K-SYS-0.2 capabilities and replies, uploads the font once as a 64 KiB
 RGB565 heap texture, and uses GPU `COPY_RECT`, `FENCE` and `PRESENT` commands.
 Startup keeps GPU_RESET_N LOW and data released for **1000 ms** before clocking
@@ -48,11 +54,12 @@ Tang LCD disconnected and follow the guide's pulls, series resistors and groundi
 Remove any local GPU-reset release jumper before the RP drives GPU_RESET_N.
 
 The user reports A2 silicon and **one 100 Ω series resistor per signal wire**
-(16 total), with no separate WREADY/RVALID pull-downs. A2 E9 can affect weak
-or floating inputs; these series parts do not provide pull-down bias. The
-first proposed test adds **4.7 kΩ from GPIO39 to common GND and 4.7 kΩ from
-GPIO40 to common GND**, with power off, retaining the series parts. Fitment
-and results are not yet reported. Keep using this firmware for that test;
+(16 total). The added **4.7 kΩ pull-down from GPIO39/WREADY to common GND and
+4.7 kΩ pull-down from GPIO40/RVALID to common GND** are now confirmed fitted;
+capability reads still return all zero. Other external bias fitment is
+unconfirmed. That observation precedes the 6.3 MHz / 50 us bus-test changes.
+A2 E9 can affect weak or floating inputs; the series parts alone
+do not provide pull-down bias. E9 is not established as the root cause.
 Arduino `digitalRead()` does not remove the silicon leakage. See the GPU guide
 and [RP2350 E9 notes](https://arduino-pico.readthedocs.io/en/stable/rp2350.html).
 
@@ -68,8 +75,10 @@ readback`; they are not treated as an SDRAM initialization timeout.
 
 1. Install the full-board Nano GPU image and compile/install this RP firmware with
    signal links isolated during programming. Connect only while both boards are off.
-2. Power normally and connect HDMI. Expect the MPC-2350 banner, black text on white,
-   a prompt and an underscore cursor. Type a command such as `SD_INFO` or `SYS_MEM`.
+2. Power normally and connect HDMI. With the fixed 6.3 MHz bus-test FPGA image,
+   expect a detected video signal and constant black. The terminal banner is
+   mirrored to USB Serial; no visible GPU terminal is expected for this image.
+   A successful bus/capability read is the first test, not a display result.
 3. USB Serial at 115200 mirrors terminal messages and accepts commands. `GPU_STATUS`
    prints link state, presentation count, physical RESET_N/WREADY/RVALID levels
    and the last startup fault snapshot; `GPU_RESET` performs a hard GPU reset,
@@ -90,6 +99,8 @@ LOW, which also stopped HDMI video; that behavior was removed.
 No partial packet is retried. Correct the connection/image and use `GPU_RESET`
 to hard-reset and retry. `GPU BOOT` reports the last captured startup flags and
 core/link fault codes; it is a saved snapshot, not a new live status read.
+If the capability check fails first, the snapshot is still zero-initialized
+and unread; zero `GPU BOOT` fields then do not establish that the GPU has no fault.
 The one-second startup allowance is not a configuration-DONE detector. If the
 Tang is powered later or reprogrammed while the RP is running, wait for its
 configuration to finish and issue `GPU_RESET` (or restart the RP).

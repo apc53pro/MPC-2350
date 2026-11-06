@@ -13,6 +13,7 @@ constexpr unsigned kAbort = 35, kReset = 36, kAddress = 37, kRead = 38;
 constexpr unsigned kReady = 39, kValid = 40;
 constexpr uint32_t kTimeoutUs = 250000;
 constexpr uint32_t kConfigurationWaitMs = 1000;
+constexpr uint32_t kClockPhaseUs = 50; // At most 10 kHz HCLK, before API overhead.
 static_assert(__GPIOCNT > kValid, "Select RP2350B: GPU handshakes require GPIO39/40");
 NanoGpu gpu;
 int selected_address = -1;
@@ -30,8 +31,8 @@ uint8_t read_data_pins() {
 void service() {
   if ((++service_counter & 31u) == 0) { usb_storage_poll(); audio_core0_poll(); }
 }
-void low() { digitalWrite(kClock, LOW); delayMicroseconds(1); }
-void high() { digitalWrite(kClock, HIGH); delayMicroseconds(1); }
+void low() { digitalWrite(kClock, LOW); delayMicroseconds(kClockPhaseUs); }
+void high() { digitalWrite(kClock, HIGH); delayMicroseconds(kClockPhaseUs); }
 void release_data() {
   for (unsigned bit = 0; bit < 8; ++bit) pinMode(kData + bit, INPUT);
 }
@@ -55,7 +56,7 @@ bool write_cycle(uint8_t byte, bool address) {
   digitalWrite(kRead, HIGH); digitalWrite(kWrite, HIGH); low();
   write_data(byte);
   digitalWrite(kAddress, address ? LOW : HIGH); digitalWrite(kWrite, LOW);
-  delayMicroseconds(1);
+  delayMicroseconds(kClockPhaseUs);
   if (address) {
     address_sent = byte; address_sensed = read_data_pins();
   }
@@ -81,7 +82,7 @@ bool write_byte(void *, uint8_t byte) {
 bool read_at(unsigned address, uint8_t *out) {
   if (!select(address)) return false;
   digitalWrite(kWrite, HIGH); digitalWrite(kRead, HIGH); release_data(); low();
-  digitalWrite(kAddress, HIGH); digitalWrite(kRead, LOW); delayMicroseconds(1);
+  digitalWrite(kAddress, HIGH); digitalWrite(kRead, LOW); delayMicroseconds(kClockPhaseUs);
   const uint32_t start = micros();
   do {
     high();
