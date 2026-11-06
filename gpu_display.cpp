@@ -19,6 +19,7 @@ static_assert(NUM_BANK0_GPIOS > kValid, "Select RP2350B: GPU handshakes require 
 NanoGpu gpu;
 int selected_address = -1;
 unsigned service_counter = 0;
+uint8_t address_sent = 0, address_sensed = 0;
 
 void service() {
   if ((++service_counter & 31u) == 0) { usb_storage_poll(); audio_core0_poll(); }
@@ -40,6 +41,11 @@ bool write_cycle(uint8_t byte, bool address) {
   gpio_set_dir_out_masked(kDataMask);
   gpio_put(kAddress, !address); gpio_put(kWrite, false);
   busy_wait_us_32(1);
+  if (address) {
+    address_sent = byte; address_sensed = 0;
+    for (unsigned bit = 0; bit < 8; ++bit)
+      address_sensed |= (uint8_t)(gpio_get(kData + bit) << bit);
+  }
   const uint32_t start = time_us_32();
   do {
     const bool accepted = gpio_get(kReady); // Before the rising edge.
@@ -92,6 +98,7 @@ bool gpu_display_begin() {
   for (unsigned pin = kData; pin < kData + 8; ++pin) gpio_init(pin);
   for (unsigned pin : {kReady, kValid}) { gpio_init(pin); gpio_disable_pulls(pin); }
   release_data(); selected_address = -1;
+  address_sent = 0; address_sensed = 0;
   // Flash configuration can take several hundred milliseconds. Keep GPU
   // logic reset asserted and the bus released before attempting any transfer.
   // This is a startup allowance, not a configuration-DONE measurement.
@@ -101,7 +108,9 @@ bool gpu_display_begin() {
   for (unsigned i = 0; i < 64; ++i) { high(); low(); }
   const bool ok = gpu.begin({nullptr, write_byte, read_byte, read_register}, font);
   if (!ok) release_bus();
-  gpu_display_diagnostics(); return ok;
+  gpu_display_diagnostics();
+  if (!ok) gpu_display_probe();
+  return ok;
 }
 
 void gpu_display_present() {
@@ -123,4 +132,23 @@ void gpu_display_diagnostics() {
   Serial.print("GPU BOOT: flags=0x"); Serial.print(status[1], HEX);
   Serial.print("; core_fault="); Serial.print(core_fault);
   Serial.print("; link_fault="); Serial.println(status[56]);
+  Serial.print("GPU ADDRESS: sent=0x"); Serial.print(address_sent, HEX);
+  Serial.print("; sensed=0x"); Serial.println(address_sensed, HEX);
+}
+
+void gpu_display_probe() {
+  if (gpu.ready()) { Serial.println("GPU_PROBE is for an offline link; use GPU_STATUS."); return; }
+  // Read immutable sideband capabilities without submitting or retrying a
+  // packet. Even a core fault must leave these registers accessible.
+  Serial.print("GPU CAPS:");
+  for (unsigned address = 64; address < 80; ++address) {
+    uint8_t value;
+    if (!read_at(address, &value)) {
+      Serial.print(" timeout at register "); Serial.println(address); return;
+    }
+    Serial.print(" "); Serial.print(value, HEX);
+  }
+  Serial.println("");
+  release_bus();
+  gpu_display_diagnostics();
 }

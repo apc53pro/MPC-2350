@@ -55,6 +55,13 @@ Remove any local GPU-reset release jumper before the RP drives GPU_RESET_N.
    prints link state, presentation count, physical RESET_N/WREADY/RVALID levels
    and the last startup fault snapshot; `GPU_RESET` performs a hard GPU reset,
    starts a fresh session, reuploads the font and redraws the terminal.
+   `GPU_PROBE`, while offline, reads immutable capability registers 64..79
+   without submitting packets. Its expected hexadecimal prefix is `0 2 8 20`.
+   `GPU ADDRESS` prints the last address byte driven and sensed at the RP data
+   pads; mismatches identify a local data-drive problem. Matching echoes do not
+   prove continuity across the inter-board wires.
+   The same probe runs automatically once after a failed startup, including
+   when the serial command loop is disabled locally.
 
 A byte transfer times out after 250 ms. Any failed transfer or invalid reply
 latches the client offline and releases data, with WR_N/RD_N/ALE_N HIGH and
@@ -67,6 +74,9 @@ core/link fault codes; it is a saved snapshot, not a new live status read.
 The one-second startup allowance is not a configuration-DONE detector. If the
 Tang is powered later or reprogrammed while the RP is running, wait for its
 configuration to finish and issue `GPU_RESET` (or restart the RP).
+An entirely `FF` startup snapshot is reported as `all-ones startup readback`,
+not a decoded GPU fault. Use `GPU_PROBE` and check the data wiring before
+interpreting fault fields from that invalid snapshot.
 Electrical margins, clock rate and physical display operation remain unverified.
 The slow first full redraw is intentional; this version prioritizes bring-up.
 

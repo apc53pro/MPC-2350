@@ -432,6 +432,9 @@ int8_t terminal_funcs(String code)
   }else if(tokens[0] == "GPU_STATUS" && tokenTreeSize == 1)
   {
     gpu_display_diagnostics();
+  }else if(tokens[0] == "GPU_PROBE" && tokenTreeSize == 1)
+  {
+    gpu_display_probe();
   }else if(tokens[0] == "SD_INFO" && tokenTreeSize == 1) // show SD card info
   {
     SdBusGuard sdBusGuard;

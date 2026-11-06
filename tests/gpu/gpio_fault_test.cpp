@@ -18,6 +18,7 @@ struct TestSerial {
     std::ostringstream out; out << std::hex << (unsigned)value; text += out.str();
   }
   template<class T> void println(T value) { print(value); text += '\n'; }
+  void println(uint8_t value, int base) { print(value, base); text += '\n'; }
 } Serial;
 char gridBuffer_char[40][60];
 int char_grid_buffer_V_draw_offset = 0;
@@ -73,7 +74,16 @@ int main() {
   mock_gpio::status[1] = 1; mock_gpio::status[2] = 1;
   assert(!gpu_display_begin()); check_failure_state(); // Malformed GET_CAPS reply.
   assert(std::string(gpu.error()) == "invalid reply header");
+  reset_fixture(true, true);
+  memset(mock_gpio::status + 1, 0xff, 63);
+  assert(!gpu_display_begin()); check_failure_state();
+  assert(std::string(gpu.error()) == "all-ones startup readback");
+  mock_gpio::status[64] = 0; mock_gpio::status[65] = 2;
+  mock_gpio::status[66] = 8; mock_gpio::status[67] = 32;
+  gpu_display_probe(); check_failure_state();
+  assert(Serial.text.find("GPU CAPS: 0 2 8 20") != std::string::npos);
+  assert(address_sent == 79 && address_sensed == 79);
   std::cout << "PASS actual GPIO glue: configuration startup wait, reset polarity/pulse, write/read timeouts, "
                "startup fault and malformed reply leave reset HIGH and data released; "
-               "startup fault diagnostics retained.\n";
+               "startup diagnostics, address pad echo and immutable capability probe verified.\n";
 }

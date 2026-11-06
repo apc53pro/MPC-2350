@@ -99,6 +99,9 @@ bool NanoGpu::begin(NanoGpuTransport transport, const uint16_t font[128][16]) {
     for (unsigned i = 1; i < 64; ++i)
       if (!bus_.read_register(bus_.user, (uint8_t)i, status + i))
         return fail("status read timeout");
+    bool all_ones = true;
+    for (unsigned i = 1; i < 64; ++i) all_ones &= status[i] == 0xff;
+    if (all_ones) return fail("all-ones startup readback");
     if ((status[1] & 0x88) || get32(status + 32) || status[56])
       return fail("GPU startup fault");
     if (!(status[1] & 1)) continue;
