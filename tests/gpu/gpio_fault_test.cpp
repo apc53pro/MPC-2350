@@ -35,6 +35,7 @@ void reset_fixture(bool ready, bool valid) {
   mock_gpio::status[65] = 2; mock_gpio::status[66] = 8; mock_gpio::status[67] = 32;
   mock_gpio::ready = ready; mock_gpio::valid = valid;
   mock_gpio::valid_follows_clock = false; mock_gpio::clock_rises = 0;
+  mock_gpio::swap_d5_d6 = false;
   mock_gpio::now = 0; mock_gpio::reset_clock_edges = 0;
   mock_gpio::first_clock_us = UINT32_MAX; mock_gpio::configuration_ready_us = 0;
   mock_gpio::last_clock_edge_us = UINT32_MAX; mock_gpio::min_clock_phase_us = UINT32_MAX;
@@ -92,7 +93,7 @@ int main() {
   mock_gpio::status[66] = 8; mock_gpio::status[67] = 32;
   gpu_display_probe(); check_failure_state();
   assert(Serial.text.find("GPU CAPS: 0 2 8 20") != std::string::npos);
-  assert(address_sent == 79 && address_sensed == 79);
+  assert(address_sent == 0x23 && address_sensed == 0x23);
   reset_fixture(true, true);
   memset(mock_gpio::status + 64, 0, 16);
   assert(!gpu_display_begin()); check_failure_state();
@@ -157,8 +158,37 @@ int main() {
   assert(!gpu_display_begin()); // RESET also exits a held read safely.
   assert(!read_held && mock_gpio::level[38] && !mock_gpio::level[16]);
   assert(mock_gpio::level[36] && mock_gpio::reset_clock_edges == reset_edges_before + 32);
+  mock_gpio::valid = true;
+  mock_gpio::status[1] = 1; mock_gpio::status[2] = 1;
+  memset(mock_gpio::status + 32, 0, 16);
+  mock_gpio::status[65] = 2; mock_gpio::status[67] = 0x20;
+  Serial.text.clear();
+  gpu_display_swaptest();
+  assert(Serial.text.find("GPU SWAPTEST: 1 0 0; flags=0x1") != std::string::npos);
+  assert(!read_held && mock_gpio::level[38] && !mock_gpio::level[16]);
+  mock_gpio::swap_d5_d6 = true;
+  Serial.text.clear();
+  gpu_display_probe();
+  assert(Serial.text.find("GPU CAPS: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0") != std::string::npos);
+  assert(Serial.text.find("GPU SWAPTEST: 1 2 40; flags=0x1") != std::string::npos);
+  assert(address_sent == 0x23 && address_sensed == 0x23 && mock_gpio::address == 0x43);
+  assert(mock_gpio::last_data_write == previous_packet_byte);
+  mock_gpio::swap_d5_d6 = false; mock_gpio::status[2] = 0;
+  Serial.text.clear();
+  gpu_display_swaptest();
+  assert(Serial.text.find("GPU SWAPTEST: 0 0 0") != std::string::npos);
+  mock_gpio::valid = false;
+  gpu_display_swaptest();
+  assert(Serial.text.find("GPU SWAPTEST: timeout at register 0x1") != std::string::npos);
+  assert(mock_gpio::level[38] && !mock_gpio::level[16] && mock_gpio::level[36]);
+  mock_gpio::valid = true;
+  gpu_display_hold();
+  edges = mock_gpio::clock_rises;
+  gpu_display_swaptest();
+  assert(read_held && mock_gpio::clock_rises == edges);
+  gpu_display_release();
   std::cout << "PASS Arduino GPIO glue: 256 write/read byte patterns, configuration startup wait, reset pulse, timeouts, "
                "startup fault and malformed reply leave reset HIGH and data released; "
                "startup diagnostics, address echo, capability probe, held reads, idle handshake check, "
-               "release/reset transitions and 50 us clock/setup minima verified.\n";
+               "release/reset transitions, D5/D6 swap signatures and 50 us clock/setup minima verified.\n";
 }

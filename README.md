@@ -93,6 +93,35 @@ readback`; they are not treated as an SDRAM initialization timeout.
    The same probe runs automatically once after a failed startup, including
    when the serial command loop is disabled locally.
 
+After a completed sixteen-byte capability sweep, `GPU_PROBE` runs the
+offline-only **`GPU_SWAPTEST`**, also available as a USB command. A timeout
+during the capability sweep skips the automatic test. It refreshes the status snapshot by
+reading register `0x01`, then reads requested addresses **`02`, `21`, `23`** and
+prints `GPU SWAPTEST: <three HEX bytes>; flags=0x<raw flags>`. It does not decode
+or classify the result. After a fresh hard reset with epoch 1 and zero upper
+bytes of the fault code:
+
+| Wiring hypothesis | Expected HEX bytes |
+| --- | --- |
+| Correct D5/D6 order | `1 0 0` |
+| Pure D5/D6 interchange in both address and return data | `1 2 40` |
+
+For the interchange, `02` is unchanged, `21` reaches capability register `41`
+(`02`), and `23` reaches `43` (`20`), returned with bits 5/6 exchanged as `40`.
+`1 2 40` strongly supports this hypothesis under those assumptions but is not
+a unique fault diagnosis; `1 0 0` does not verify all bus lines. No swap-test
+result has yet been reported. The sixteen zero capability bytes neither rule
+out firmware nor prove this interchange. Startup can accept register 64's
+expected zero; register **65**, expected `02`, is the first prefix mismatch.
+All zeros or timeouts keep the held-read voltage test below relevant.
+
+The map remains **D5: GPIO23 / Core P3.9 → Tang J5.5 / FPGA pin 42** and
+**D6: GPIO24 / Core P3.12 → Tang J5.6 / FPGA pin 41**. The driver still indexes
+data as `GPIO18 + bit_index`; the local RP address echo cannot verify the Tang
+endpoints. `GPU_SWAPTEST` submits no packet and refuses while online or while
+a read is held. It releases the bus when complete or on timeout; a timeout
+identifies the register. It needs no FPGA reflash, constraint or clock change.
+
 For a stable voltage test while offline, send **`GPU_HOLD`**. It first releases
 the bus with RD_N/WR_N/ALE_N HIGH and data pins as inputs, then samples RVALID
 after 50 us at HCLK LOW and after 50 us at HCLK HIGH. The `GPU IDLE` values
@@ -116,8 +145,9 @@ RESET_N pin71, HCLK pin77, WR_N pin15 and ALE_N pin17 should be HIGH; RD_N pin16
 and ABORT pin72 LOW; RVALID pin74 HIGH and WREADY pin73 LOW. These are expected
 levels, not measured results. Keep the two fitted 4.7 kΩ handshake pull-downs.
 
-`GPU_STATUS` rereads held data without clock edges. `GPU_PROBE` refuses while
-held. Send **`GPU_RELEASE`** to end the read and release the bus, or **`GPU_RESET`**
+`GPU_STATUS` rereads held data without clock edges. `GPU_PROBE` and
+`GPU_SWAPTEST` refuse while held. Send **`GPU_RELEASE`** to end the read and
+release the bus, or **`GPU_RESET`**
 to clear the hold and perform normal hard initialization. This diagnostic needs
 no FPGA reflash or clock change; use the existing 6.3 MHz bus-test image.
 The idle WREADY/RVALID values in a normal probe's final log are not its active

@@ -179,7 +179,31 @@ void gpu_display_probe() {
   }
   Serial.println("");
   release_bus();
+  gpu_display_swaptest();
   gpu_display_diagnostics();
+}
+
+void gpu_display_swaptest() {
+  if (gpu.ready()) { Serial.println("GPU_SWAPTEST is for an offline link; use GPU_STATUS."); return; }
+  if (read_held) { Serial.println("GPU_HOLD active; use GPU_RELEASE or GPU_RESET first."); return; }
+  release_bus();
+  // Refresh the status snapshot, then compare status and capability aliases.
+  // These are sideband register reads, never command packets or a remap.
+  const uint8_t addresses[] = {1, 2, 0x21, 0x23};
+  uint8_t values[4];
+  for (unsigned i = 0; i < 4; ++i) {
+    if (!read_at(addresses[i], values + i)) {
+      Serial.print("GPU SWAPTEST: timeout at register 0x");
+      Serial.println(addresses[i], HEX);
+      return; // read_at already released the bus on timeout.
+    }
+  }
+  Serial.print("GPU SWAPTEST:");
+  for (unsigned i = 1; i < 4; ++i) {
+    Serial.print(" "); Serial.print(values[i], HEX);
+  }
+  Serial.print("; flags=0x"); Serial.println(values[0], HEX);
+  release_bus();
 }
 
 void gpu_display_hold() {

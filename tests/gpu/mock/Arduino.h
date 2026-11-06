@@ -12,6 +12,7 @@ inline bool level[48]{}, output[48]{};
 inline unsigned drive[48]{};
 inline bool ready = false, valid = false;
 inline bool valid_follows_clock = false;
+inline bool swap_d5_d6 = false;
 inline uint8_t status[128]{};
 inline unsigned address = 0, reset_clock_edges = 0;
 inline unsigned clock_rises = 0;
@@ -22,6 +23,11 @@ inline uint32_t last_clock_edge_us = UINT32_MAX, min_clock_phase_us = UINT32_MAX
 inline uint32_t write_assert_us = 0, read_assert_us = 0;
 inline uint32_t min_write_setup_us = UINT32_MAX, min_read_setup_us = UINT32_MAX;
 inline std::vector<bool> reset_writes;
+
+inline uint8_t wire_byte(uint8_t value) {
+  if (!swap_d5_d6) return value;
+  return (uint8_t)((value & ~0x60u) | ((value & 0x20u) << 1) | ((value & 0x40u) >> 1));
+}
 
 inline void set_level(unsigned pin, bool value) {
   if (pin == 36) reset_writes.push_back(value);
@@ -46,8 +52,8 @@ inline void set_level(unsigned pin, bool value) {
         assert(output[18 + i]);
         byte |= (uint8_t)(level[18 + i] << i);
       }
-      if (!level[37]) address = byte;
-      else last_data_write = byte;
+      if (!level[37]) address = wire_byte(byte);
+      else last_data_write = wire_byte(byte);
     }
   }
   level[pin] = value;
@@ -72,7 +78,7 @@ inline PinStatus digitalRead(unsigned pin) {
   bool value;
   if (pin >= 18 && pin < 26 && !mock_gpio::output[pin] &&
       !mock_gpio::level[38] && mock_gpio::level[17] && mock_gpio::level[37])
-    value = ((mock_gpio::status[mock_gpio::address] >> (pin - 18)) & 1u) != 0;
+    value = ((mock_gpio::wire_byte(mock_gpio::status[mock_gpio::address]) >> (pin - 18)) & 1u) != 0;
   else if (pin == 39) value = configured && mock_gpio::ready && mock_gpio::level[38];
   else if (pin == 40) value = mock_gpio::valid_follows_clock ? mock_gpio::level[16] :
       configured && mock_gpio::valid && !mock_gpio::level[38] &&

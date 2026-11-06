@@ -435,6 +435,9 @@ int8_t terminal_funcs(String code)
   }else if(tokens[0] == "GPU_PROBE" && tokenTreeSize == 1)
   {
     gpu_display_probe();
+  }else if(tokens[0] == "GPU_SWAPTEST" && tokenTreeSize == 1)
+  {
+    gpu_display_swaptest();
   }else if(tokens[0] == "GPU_HOLD" && tokenTreeSize == 1)
   {
     gpu_display_hold();
