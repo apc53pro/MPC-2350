@@ -25,9 +25,12 @@ void service() {
 void low() { gpio_put(kClock, false); busy_wait_us_32(1); }
 void high() { gpio_put(kClock, true); busy_wait_us_32(1); }
 void release_data() { gpio_set_dir_in_masked(kDataMask); }
-void isolate() {
+void release_bus() {
   gpio_put(kWrite, true); gpio_put(kRead, true); gpio_put(kAddress, true);
-  release_data(); gpio_put(kClock, false); gpio_put(kReset, false);
+  release_data(); gpio_put(kClock, false);
+  // Keep scanout alive for diagnosis. Only explicit initialization asserts
+  // GPU_RESET_N; a failed/partial packet is never retried in this session.
+  gpio_put(kReset, true);
   selected_address = -1;
 }
 bool write_cycle(uint8_t byte, bool address) {
@@ -45,7 +48,7 @@ bool write_cycle(uint8_t byte, bool address) {
       service(); return true;
     }
   } while ((uint32_t)(time_us_32() - start) < kTimeoutUs);
-  isolate(); return false;
+  release_bus(); return false;
 }
 bool select(unsigned address) {
   if ((int)address == selected_address) return true;
@@ -70,7 +73,7 @@ bool read_at(unsigned address, uint8_t *out) {
     low();
     if (valid) { service(); return true; }
   } while ((uint32_t)(time_us_32() - start) < kTimeoutUs);
-  isolate(); return false;
+  release_bus(); return false;
 }
 bool read_byte(void *, uint8_t *out) { return read_at(0, out); }
 bool read_register(void *, uint8_t address, uint8_t *out) { return read_at(address, out); }
@@ -92,18 +95,27 @@ bool gpu_display_begin() {
   gpio_put(kReset, true);
   for (unsigned i = 0; i < 64; ++i) { high(); low(); }
   const bool ok = gpu.begin({nullptr, write_byte, read_byte, read_register}, font);
-  if (!ok) isolate();
+  if (!ok) release_bus();
   gpu_display_diagnostics(); return ok;
 }
 
 void gpu_display_present() {
   if (gpu.ready() && !gpu.terminal_present(gridBuffer_char, char_grid_buffer_V_draw_offset)) {
-    isolate(); gpu_display_diagnostics();
+    release_bus(); gpu_display_diagnostics();
   }
 }
 
 void gpu_display_diagnostics() {
   Serial.print("NANO GPU: "); Serial.print(gpu.ready() ? "READY" : "OFFLINE");
   Serial.print("; "); Serial.print(gpu.error());
-  Serial.print("; presents="); Serial.println(gpu.presents());
+  Serial.print("; presents="); Serial.print(gpu.presents());
+  Serial.print("; RESET_N="); Serial.print(gpio_get(kReset));
+  Serial.print("; WREADY="); Serial.print(gpio_get(kReady));
+  Serial.print("; RVALID="); Serial.println(gpio_get(kValid));
+  const uint8_t *status = gpu.boot_status();
+  const uint32_t core_fault = (uint32_t)status[32] | ((uint32_t)status[33] << 8) |
+      ((uint32_t)status[34] << 16) | ((uint32_t)status[35] << 24);
+  Serial.print("GPU BOOT: flags=0x"); Serial.print(status[1], HEX);
+  Serial.print("; core_fault="); Serial.print(core_fault);
+  Serial.print("; link_fault="); Serial.println(status[56]);
 }

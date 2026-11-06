@@ -20,6 +20,7 @@ public:
   bool ready() const { return online_; }
   const char *error() const { return error_; }
   uint32_t presents() const { return presents_; }
+  const uint8_t *boot_status() const { return boot_status_; }
 
 private:
   NanoGpuTransport bus_{};
@@ -27,6 +28,7 @@ private:
   bool online_ = false, first_frame_ = true;
   const char *error_ = "not initialized";
   char displayed_[1200]{}; // Character metadata, not pixels.
+  uint8_t boot_status_[64]{}; // Last startup snapshot, also retained on failure.
   bool fail(const char *message);
   bool read_bytes(uint8_t *out, uint32_t count);
   bool send(uint16_t opcode, const uint8_t *payload, uint32_t count, uint32_t &sequence);

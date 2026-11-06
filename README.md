@@ -50,12 +50,18 @@ Remove any local GPU-reset release jumper before the RP drives GPU_RESET_N.
 2. Power normally and connect HDMI. Expect the MPC-2350 banner, black text on white,
    a prompt and an underscore cursor. Type a command such as `SD_INFO` or `SYS_MEM`.
 3. USB Serial at 115200 mirrors terminal messages and accepts commands. `GPU_STATUS`
-   prints link state/presentation count; `GPU_RESET` performs a hard GPU reset,
+   prints link state, presentation count, physical RESET_N/WREADY/RVALID levels
+   and the last startup fault snapshot; `GPU_RESET` performs a hard GPU reset,
    starts a fresh session, reuploads the font and redraws the terminal.
 
 A byte transfer times out after 250 ms. Any failed transfer or invalid reply
-latches the client offline, releases data and holds GPU reset LOW. No partial
-packet is retried. Correct the connection/image and use `GPU_RESET` to retry.
+latches the client offline and releases data, with WR_N/RD_N/ALE_N HIGH and
+GPU_RESET_N **HIGH**. Keeping reset released lets video timing continue while
+the failed host session stays offline. The previous failure path asserted reset
+LOW, which also stopped HDMI video; that behavior was removed.
+No partial packet is retried. Correct the connection/image and use `GPU_RESET`
+to hard-reset and retry. `GPU BOOT` reports the last captured startup flags and
+core/link fault codes; it is a saved snapshot, not a new live status read.
 Electrical margins, clock rate and physical display operation remain unverified.
 The slow first full redraw is intentional; this version prioritizes bring-up.
 
@@ -69,7 +75,12 @@ packet/terminal client, first build the Nano GPU oracle objects with its
 python tests/gpu/run_tests.py --gpu <Nano-20K-GPU-checkout> --compiler <matching-g++>
 ```
 
-The GPU test reads every pixel back through packets and checks font upload, full
+The GPIO host mock compiles the actual board glue and checks that write/read
+timeouts, startup faults and malformed replies leave reset HIGH, strobes
+inactive and data released. It also checks reset pulse polarity and retained
+startup diagnostics. GPIO/time are stubbed; electrical behavior is not tested.
+
+The GPU client test reads every pixel back through packets and checks font upload, full
 redraw, idle behavior, edits across swaps, scrolling, invalid glyphs and latched
 transport/reply failures. It uses the clocked C++ GPU software oracle, not FPGA
 RTL or physical hardware. The portable driver and font compile as strict C++17

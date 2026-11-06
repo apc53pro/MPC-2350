@@ -17,6 +17,13 @@ objects = ["setup", "renderer", "hw_mult18x18", "hw_bsram", "hw_tile_pipeline",
 build = firmware / "build/gpu-client-tests"
 build.mkdir(parents=True, exist_ok=True)
 exe = build / ("gpu-client-tests.exe" if os.name == "nt" else "gpu-client-tests")
+gpio_exe = build / ("gpio-fault-tests.exe" if os.name == "nt" else "gpio-fault-tests")
+subprocess.run([args.compiler, "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+                "-I", str(firmware / "tests/gpu/mock"), "-I", str(firmware),
+                str(firmware / "tests/gpu/gpio_fault_test.cpp"),
+                str(firmware / "nano_gpu.cpp"), str(firmware / "font.cpp"),
+                "-o", str(gpio_exe)], check=True)
+subprocess.run([str(gpio_exe)], check=True)
 subprocess.run([args.compiler, "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
                 "-I", str(firmware), "-I", str(gpu / "reference/include"),
                 str(firmware / "tests/gpu/nano_gpu_test.cpp"),

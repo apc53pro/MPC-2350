@@ -92,7 +92,9 @@ bool NanoGpu::begin(NanoGpuTransport transport, const uint16_t font[128][16]) {
   error_ = "not ready";
   if (!bus_.write || !bus_.read || !bus_.read_register || !font)
     return fail("missing transport/font");
-  uint8_t status[64] = {}, caps[64];
+  memset(boot_status_, 0, sizeof(boot_status_));
+  uint8_t *status = boot_status_;
+  uint8_t caps[64];
   for (unsigned poll = 0; poll < 2048; ++poll) {
     for (unsigned i = 1; i < 64; ++i)
       if (!bus_.read_register(bus_.user, (uint8_t)i, status + i))
