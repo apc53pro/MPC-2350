@@ -1,4 +1,5 @@
-#include "draw_funcs.h"
+#include "terminal_grid.h"
+#include "gpu_display.h"
 #include "globals.h"
 #include "terminal.h"
 #include "terminal_funcs.h"
@@ -24,14 +25,12 @@ void scroll_terminal_up(int times)
       for(int j = 0; j < 40; j++)
       {
         gridBuffer_char[j][i-1] = gridBuffer_char[j][i];
-        gridBuffer_charColor[j][i-1] = gridBuffer_charColor[j][i];
-        gridBuffer_backColor[j][i-1] = gridBuffer_backColor[j][i];
       }
     }
 
     for(int i = 0; i < 40; i++)
     {
-      gridBuffer_char[i][58] = ' ';
+      gridBuffer_char[i][59] = ' ';
     }
   }
 
@@ -43,15 +42,16 @@ void draw_line_pointer(int x, int y, bool show_line_pointer)
 {
   if(terminal_aspects.LP.drawn == false && show_line_pointer == true)
   {
-    drawString_grid(gridBuffer_char, x, y, terminal_aspects.LP.line_pointer_str, terminal_aspects.LP.color, terminal_aspects.LP.backColor, terminal_aspects.LP.useBackColor);
+    terminal_write_grid(gridBuffer_char, x, y, terminal_aspects.LP.line_pointer_str);
     terminal_aspects.LP.drawn = true;
   }
 }
 
 void echo_message(String message)
 {
+  Serial.println(message);
   gridBuffer_char[terminal_aspects.cur.locationX][terminal_aspects.cur.locationY] = ' ';
-  drawString_grid(gridBuffer_char, 0, terminal_aspects.cur.locationY, message, terminal_aspects.inputColor, terminal_aspects.inputBackColor, terminal_aspects.useInputBackColor);
+  terminal_write_grid(gridBuffer_char, 0, terminal_aspects.cur.locationY, message);
   
   if(terminal_aspects.cur.locationY < 58)
   {
@@ -119,7 +119,7 @@ void userInput()
   {
        char c = (char)terminal_key_event.character;
 
-       drawString_grid(gridBuffer_char, terminal_aspects.cur.locationX, terminal_aspects.cur.locationY, String(c), terminal_aspects.inputColor, terminal_aspects.inputBackColor, terminal_aspects.useInputBackColor);
+       terminal_write_grid(gridBuffer_char, terminal_aspects.cur.locationX, terminal_aspects.cur.locationY, String(c));
     
        if(textLinePtr >= line.length())
        {
@@ -233,59 +233,16 @@ int prevCurY = 0;
 
 void blinkCursor(int x, int y, bool active)
 {
-  if(active == true)
-  {
-    if(millis() - terminal_aspects.cur.ms > terminal_aspects.cur.blink_time_ms)
-    {
-      terminal_aspects.cur.showing = !terminal_aspects.cur.showing;
-      terminal_aspects.cur.ms = millis();
-    }
-
-    if(prevCurX != terminal_aspects.cur.locationX || prevCurY != terminal_aspects.cur.locationY)
-    {
-      //gridBuffer_char[prevCurX][prevCurY] = textChar;
-      textChar = gridBuffer_char[terminal_aspects.cur.locationX][terminal_aspects.cur.locationY];
-
-      prevCurX = terminal_aspects.cur.locationX;
-      prevCurY = terminal_aspects.cur.locationY;
-    }
-
-    if(terminal_aspects.cur.showing == true)
-    {
-      
-      gridBuffer_char[x][y] = terminal_aspects.cur.symbol;
-      gridBuffer_charColor[x][y] = terminal_aspects.cur.color;
-      
-      if(terminal_aspects.cur.useBackColor == true)
-      {
-        gridBuffer_backColor[x][y] = terminal_aspects.cur.backColor;
-      }else
-      {
-        gridBuffer_backColor[x][y] = 300;
-      }
-
-    }else
-    {
-      if(textChar != ' ')
-      {
-        gridBuffer_char[x][y] = textChar;
-        gridBuffer_charColor[x][y] = terminal_aspects.cur.color;
-      }else
-      {
-        gridBuffer_char[x][y] = ' ';
-        gridBuffer_charColor[x][y] = terminal_aspects.cur.color;
-      }
-      
-
-      if(terminal_aspects.cur.useBackColor == true)
-      {
-        gridBuffer_backColor[x][y] = terminal_aspects.cur.backColor;
-      }else
-      {
-        gridBuffer_backColor[x][y] = 300;
-      }
-    }
+  if (!active || x < 0 || x >= 40 || y < 0 || y >= 60) return;
+  if ((uint32_t)(millis() - terminal_aspects.cur.ms) > (uint32_t)terminal_aspects.cur.blink_time_ms) {
+    terminal_aspects.cur.showing = !terminal_aspects.cur.showing;
+    terminal_aspects.cur.ms = millis();
   }
+  if (prevCurX != x || prevCurY != y) {
+    textChar = gridBuffer_char[x][y];
+    prevCurX = x; prevCurY = y;
+  }
+  gridBuffer_char[x][y] = terminal_aspects.cur.showing ? terminal_aspects.cur.symbol : textChar;
 }
 
 void controls()
@@ -361,19 +318,6 @@ void controls()
   }
 }
 
-static uint32_t fps_last_us = 0;
-static uint32_t framesCounted = 0;
-static uint32_t fps_x10 = 0;
-
-void draw_fps_counter()
-{
-  String fps_text = String(fps_x10 / 10);
-  fps_text += ".";
-  fps_text += String(fps_x10 % 10);
-  fps_text += " FPS";
-  drawString_grid(gridBuffer_char, 0, 0, fps_text, 0b00011100, 0, true);
-}
-
 void terminal(bool show, bool show_line_pointer, bool show_cursor)
 {
   
@@ -386,36 +330,10 @@ void terminal(bool show, bool show_line_pointer, bool show_cursor)
 
     blinkCursor(terminal_aspects.cur.locationX, terminal_aspects.cur.locationY, show_cursor);    
 
-    draw_fps_counter();
 
     userInput();
 
-    drawCharGridBuffer();
-    presentVga4BitBuffer();
+    gpu_display_present();
 
-    uint32_t now_us = micros();
-    if(fps_last_us == 0)
-    {
-      fps_last_us = now_us;
-      framesCounted = 0;
-    }else
-    {
-      framesCounted++;
-      uint32_t elapsed_us = now_us - fps_last_us;
-
-      if(elapsed_us >= 1000000)
-      {
-        fps_x10 = (uint32_t)((((uint64_t)framesCounted * 10000000ULL) + (elapsed_us / 2)) / elapsed_us);
-
-        fps_last_us = now_us;
-        //Serial.print("\nTERMINAL FPS X10: ");
-        //Serial.print(fps_x10);
-
-        framesCounted = 0;
-      }
-    }
   }
-  
 }
-
-

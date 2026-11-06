@@ -13,7 +13,6 @@ String ARGUMENT_STRUCTURE_ANALYZER(String arg, String argStructure, int returnCo
 
 bool isValidSymbol(char ch);
 
-void clearVBuffer(uint8_t color);
 
 double PRINT(String code);
 

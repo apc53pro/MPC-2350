@@ -1,4 +1,4 @@
-#include "draw_funcs.h"
+#include "gpu_display.h"
 #include "globals.h"
 #include "terminal.h"
 #include "terminal_funcs.h"
@@ -365,15 +365,7 @@ uint8_t codeTokenizer(String code)
   return 0;
 }
 
-void clearVBuffer(uint8_t color)
-{
-  clearVga4BitBuffer(color);
-  presentVga4BitBuffer();
-}
-
 char gridBuffer_char[40][60];
-uint8_t gridBuffer_charColor[40][60];
-uint16_t gridBuffer_backColor[40][60];
 
 
 int char_grid_buffer_V_draw_offset = 0;
@@ -434,7 +426,13 @@ int8_t terminal_funcs(String code)
   //code.toUpperCase();
   codeTokenizer(code);
 
-  if(tokens[0] == "SD_INFO" && tokenTreeSize == 1) // show SD card info
+  if(tokens[0] == "GPU_RESET" && tokenTreeSize == 1)
+  {
+    echo_message(gpu_display_begin() ? "=>GPU READY" : "=>GPU OFFLINE; CHECK USB SERIAL");
+  }else if(tokens[0] == "GPU_STATUS" && tokenTreeSize == 1)
+  {
+    gpu_display_diagnostics();
+  }else if(tokens[0] == "SD_INFO" && tokenTreeSize == 1) // show SD card info
   {
     SdBusGuard sdBusGuard;
     int8_t sdReady = sdEnsureReady();

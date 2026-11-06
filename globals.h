@@ -54,28 +54,6 @@ static inline uint64_t firmwareSdVolumeUsedBytes()
   return (uint64_t)(cluster_count - free_cluster_count) * (uint64_t)SD.bytesPerCluster();
 }
 
-#define VGA_WIDTH 640
-#define VGA_HEIGHT 480
-#define TXCOUNT (VGA_WIDTH * VGA_HEIGHT) // Total pixels in 640x480 resolution
-#define VGA_4BIT_BUFFER_SIZE (TXCOUNT / 2)
-
-extern uint8_t vga_data_array[TXCOUNT] __attribute__((aligned(4)));
-extern uint8_t * address_pointer;
-
-PSRAM extern uint8_t vga_640_480_4_01[VGA_4BIT_BUFFER_SIZE] __attribute__((aligned(4)));
-extern const uint8_t vga_4bit_color[16];
-extern uint16_t vga_4bit_expanded_pairs[256];
-
-#define HSYNC 16   
-#define VSYNC 17
-// VGA timing constants
-#define H_ACTIVE   655    // (active + frontporch - 1) - one cycle delay for mov
-#define V_ACTIVE   479    // (active - 1)
-#define RGB_ACTIVE 639    // (horizontal active) - 1
-// Screen width/height
-#define _width 640
-#define _height 480
-extern const int memory_size;
 
 typedef enum{USER, SYSTEM, VACANT} partition_typ;
 
@@ -106,8 +84,6 @@ extern uint8_t PS2_DATA;
 #define SD_SPI_TARGET_HZ 15000000UL
 extern bool sdInitialized;
 
-// Global lookup table for bit shifts (used in pixel operations)
-extern const uint8_t shift_lookup[4];
 
 extern volatile int readCount;
 extern volatile bool extChar;
@@ -121,8 +97,6 @@ extern uint16_t non_ext_make_LUT[256][2];
 
 PSRAM extern char gridBuffer_char[40][60];
 
-PSRAM extern uint8_t gridBuffer_charColor[40][60];
-PSRAM extern uint16_t gridBuffer_backColor[40][60];
 
 extern int char_grid_buffer_V_draw_offset;
 
@@ -144,29 +118,15 @@ typedef struct
 extern partition partitions[partition_amount];
 #define partition_name_max 50
 
-// Shared firmware graphics/font arena, counted in 32-bit words. The permanent
-// font, half-resolution color, depth, and depth-stamp partitions require
-// 116,224 words in total; 128 Ki words leaves 14,848 words of headroom.
-#define memory_size (128u * 1024u) // 512 KiB
-
-
-extern int SYS_FONT_PARTITION_INDEX;
-extern int SYS_HALF_RES_BUFFER_PARTITION_INDEX;
-extern int SYS_Z_BUFFER_PARTITION_INDEX;
-extern int SYS_Z_STAMP_BUFFER_PARTITION_INDEX; // 19200 words, 4 stamp bytes per word
-
-#define font_start_address 0
-#define vbuff_start_address font_start_address + (256*8)
+// Small general-purpose terminal MALLOC arena, counted in words. Font and
+// display attachments live in the GPU; no graphics partitions are allocated.
+#define memory_size (16u * 1024u) // 64 KiB
 
 PSRAM extern var memory[memory_size];
 
 struct line_pointer
 {
   bool drawn = false;
-  bool useBackColor = true;
-  int color = 0;
-  int backColor = 255;
-
   String line_pointer_str = ">:";
 };
 
@@ -177,11 +137,8 @@ struct cursor
 
   bool showing = true;
   int blink_time_ms = 500;
-  int ms = 0;
+  uint32_t ms = 0;
   char symbol = '_';
-  int color = 0;
-  int backColor = 255;
-  bool useBackColor = true;
 };
 
 struct terminal_aspects
@@ -189,9 +146,6 @@ struct terminal_aspects
   struct cursor cur;
   struct line_pointer LP;
 
-  int inputColor = 0;
-  int inputBackColor = 255;
-  bool useInputBackColor = true;
 };
 
 extern struct terminal_aspects terminal_aspects;
@@ -199,7 +153,6 @@ extern struct terminal_aspects terminal_aspects;
 extern bool run_program;
 
 extern String line;
-extern bool graphics_mode;
 extern bool terminal_on;
 
 #endif

@@ -1370,8 +1370,8 @@ bool audio_core1_begin()
     return false;
   }
 
-  // VGA has already reserved its channels and I2S just reserved its ping-pong
-  // pair. Keep one RX/TX pair for SPI audio for the remainder of runtime.
+  // I2S just reserved its ping-pong pair. Keep one RX/TX pair for SPI audio
+  // for the remainder of runtime. The GPIO GPU driver uses no DMA channels.
   // Polling them avoids the Arduino SPI and audio-buffer shared IRQ handlers.
   initializeAudioSpiDma();
 

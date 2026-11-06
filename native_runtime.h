@@ -6,9 +6,8 @@
 #include "native_image.h"
 
 static const uint32_t NARM_MAX_PROCESSES = 4u;
-// The target Waveshare RP2350 board has 8 MiB of physical PSRAM. The shared
-// graphics/font arena is intentionally bounded in globals.h, allowing 6 MiB
-// to be reserved exclusively for native program images and process memory.
+// The target Waveshare board has 8 MiB PSRAM. Retained process infrastructure
+// reserves 6 MiB; GPU display storage no longer occupies RP2350 PSRAM.
 static const uint32_t NARM_PSRAM_ARENA_BYTES = 6u * 1024u * 1024u;
 // Keep this deliberately bounded: the audio and filesystem stacks still need
 // ordinary internal heap at run time. 32 KiB gives four typical 8 KiB native

@@ -1,3 +1,6 @@
+HISTORICAL ONLY: the software rasterizers described below have been removed
+from the GPU-terminal firmware. These notes do not describe its display path.
+
 TinyCraft / GP-PICO-OS VM textured 3D mask optimization patch
 
 Changes in bRPVM.cpp:

@@ -8,7 +8,7 @@
 static constexpr uint8_t AUDIO_VOICE_CHANNELS = 32;
 static constexpr uint32_t AUDIO_OUTPUT_SAMPLE_RATE = 48000;
 
-// Call on Core 0 after VGA has claimed and started its PIO/DMA resources.
+// Call on Core 0 after the terminal and GPU startup have completed.
 bool audio_runtime_init();
 bool audio_runtime_ready();
 bool audio_output_ready();

@@ -147,12 +147,10 @@ enum NativeServiceResult : int32_t
   NARM_SERVICE_ERR_BUSY = -4
 };
 
-// Extensible commands accepted by NativeVideoApiV1::submit. Commands operate
-// on the firmware's shared frame, depth, and stamp buffers; no framebuffer is
-// allocated in a NARM process. Arguments are fixed-width 32-bit words in the
-// order used by the source-level NARMCC built-ins. Float arguments contain
-// their IEEE-754 binary32 representation and pointer arguments are validated
-// against the calling process before they are dereferenced.
+// Historical native-video command IDs retained as ABI metadata for tooling.
+// This GPU-terminal build exposes no native video interface or graphics
+// capability and allocates none of the former frame/depth/stamp buffers.
+// GPU-facing NARM support will be defined in a later change.
 enum NativeGraphicsCommandV1 : uint32_t
 {
   NARM_GRAPHICS_HALF_PRESENT = 0x0000,
@@ -168,8 +166,6 @@ enum NativeGraphicsCommandV1 : uint32_t
   // flags and counters. Flushes prior draws and invalidates depth/HiZ exactly
   // like a frame clear. Probe STATS_READ(76)==0x44430001 before calling.
   NARM_GRAPHICS_HALF_CLEAR_DEPTH = 0x0009,
-
-  NARM_GRAPHICS_VGA4_GLYPH = 0x0100,
 
   NARM_GRAPHICS_SCREEN_GOURAUD_TRIANGLE = 0x0200,
   NARM_GRAPHICS_TRI3D_FLAT = 0x0201,

@@ -9,6 +9,5 @@ void system_overlay_show_mode(uint32_t pid,
                               const char *name,
                               NativeRunMode selected,
                               NativeRunMode effective);
-void system_overlay_poll();
 
 #endif

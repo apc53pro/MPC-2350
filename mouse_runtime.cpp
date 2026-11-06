@@ -1,7 +1,6 @@
 #include "mouse_runtime.h"
 #include "mouse_protocol.h"
 #include "ps2_pio_transport.h"
-#include "mouse_cursor.h"
 #include "mouse_input_state.h"
 
 #include "hardware/sync.h"
@@ -86,14 +85,6 @@ private:
   uint32_t irq_;
 };
 
-void publish_cursor_locked()
-{
-  int32_t x, y;
-  bool visible;
-  g_input.cursor(x, y, visible);
-  mouse_cursor_set_target(x, y, visible);
-}
-
 static void __not_in_flash_func(publish_state_locked)(const NativeMouseMotionV1 &motion,
                                                        uint32_t timestamp)
 {
@@ -106,7 +97,6 @@ static void __not_in_flash_func(publish_state_locked)(const NativeMouseMotionV1 
   __atomic_store_n(&g_published.reports, g_state.reports, __ATOMIC_RELAXED);
   __atomic_store_n(&g_published.connected, g_state.connected ? 1u : 0u, __ATOMIC_RELAXED);
   __atomic_fetch_add(&g_published.sequence, 1u, __ATOMIC_RELEASE);
-  publish_cursor_locked();
 }
 
 static void publish_state()
@@ -440,7 +430,6 @@ void mouse_input_set_focus(uint32_t pid)
 {
   InputGuard guard;
   g_input.focus(pid);
-  publish_cursor_locked();
 }
 
 bool mouse_runtime_get_trace(MouseTraceSnapshot &trace)
@@ -452,7 +441,6 @@ void mouse_input_release(uint32_t pid)
 {
   InputGuard guard;
   g_input.release(pid);
-  publish_cursor_locked();
 }
 
 void mouse_input_get_state(uint32_t pid, NativeMouseStateV1 &state)
@@ -477,7 +465,6 @@ bool mouse_input_set_cursor_visible(uint32_t pid, bool visible)
 {
   InputGuard guard;
   const bool allowed = g_input.set_cursor(pid, visible);
-  if(allowed) publish_cursor_locked();
   return allowed;
 }
 
@@ -485,7 +472,6 @@ bool mouse_input_set_relative_mode(uint32_t pid, bool enabled)
 {
   InputGuard guard;
   const bool allowed = g_input.set_relative(pid, enabled);
-  if(allowed) publish_cursor_locked();
   return allowed;
 }
 

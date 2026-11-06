@@ -8,9 +8,6 @@ static uint32_t fake_now;
 static uint32_t irq_depth;
 static bool wire_ok = true;
 static std::vector<uint8_t> sent;
-static int32_t cursor_x;
-static int32_t cursor_y;
-static bool cursor_visible;
 
 uint32_t time_us_32() { return fake_now; }
 uint32_t save_and_disable_interrupts() { return irq_depth++; }
@@ -22,14 +19,6 @@ bool ps2_pio_send_byte(Ps2Port port, uint8_t byte)
   sent.push_back(byte);
   return wire_ok;
 }
-void mouse_cursor_set_target(int32_t x, int32_t y, bool visible)
-{
-  // Publication holds the input lock. Diagnostics must not try to reacquire it.
-  MouseTraceSnapshot trace = {};
-  assert(mouse_runtime_get_trace(trace));
-  cursor_x = x; cursor_y = y; cursor_visible = visible;
-}
-
 static MouseState snapshot()
 {
   MouseState state;
@@ -54,7 +43,7 @@ static void reset_runtime(uint32_t now)
   wire_ok = true;
   mouse_runtime_init();
   assert(!snapshot().connected);
-  assert(!cursor_visible && cursor_x == 320 && cursor_y == 240);
+  assert(!snapshot().connected && snapshot().x == 320 && snapshot().y == 240);
 }
 static void ack_expect(uint8_t next)
 {
@@ -108,12 +97,12 @@ int main()
   MouseState state = snapshot();
   assert(state.connected && state.x == 520 && state.y == 235);
   assert(state.buttons == 1 && state.reports == 1);
-  assert(cursor_visible && cursor_x == 520 && cursor_y == 235);
+  assert(snapshot().connected && snapshot().x == 520 && snapshot().y == 235);
   // During streaming the receive handler updates state without poll/render.
   receive(0x38); receive(56); receive(251);
   state = snapshot();
   assert(state.x == 320 && state.y == 240 && state.reports == 2);
-  assert(state.buttons == 0 && cursor_x == 320 && cursor_y == 240);
+  assert(state.buttons == 0 && state.x == 320 && state.y == 240);
   receive(0x0f); receive(0); receive(0);
   assert(snapshot().buttons == 7);
   mouse_runtime_receive(0, false, false);
@@ -139,19 +128,18 @@ int main()
   assert(mouse_input_poll_event(7, event) && (event.type & NARM_MOUSE_EVENT_PRESS));
   assert(mouse_input_poll_event(7, event) && (event.type & NARM_MOUSE_EVENT_RELEASE));
   assert(!mouse_input_poll_event(7, event));
-  assert(mouse_input_set_relative_mode(7, true) && !cursor_visible);
+  assert(mouse_input_set_relative_mode(7, true));
   receive(0x38); receive(156); receive(251); // -100, +5 screen delta.
   assert(snapshot().x == 639 && snapshot().y == 239);
   mouse_input_read_motion(7, motion);
   assert(motion.dx == -100 && motion.dy == 5);
   assert(!mouse_input_set_cursor_visible(8, false));
   mouse_input_set_focus(8);
-  assert(cursor_visible && cursor_x == 639 && cursor_y == 239);
+  assert(snapshot().connected && snapshot().x == 639 && snapshot().y == 239);
   mouse_input_get_state(7, app_state);
   assert(app_state.x == 0 && app_state.buttons == 0 && app_state.flags == NARM_MOUSE_CONNECTED);
-  assert(mouse_input_set_cursor_visible(8, false) && !cursor_visible);
+  assert(mouse_input_set_cursor_visible(8, false));
   mouse_input_release(8);
-  assert(cursor_visible);
 
   // The reset ID is zero, but negotiation selects four-byte wheel packets.
   initialize_to_enable(3);

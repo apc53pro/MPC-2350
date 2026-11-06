@@ -147,7 +147,7 @@ int32_t usb_storage_enable(uint32_t owner_pid)
     else set_status(USB_STORAGE_ERROR);
     return USB_STORAGE_RESULT_USB;
   }
-  // Finish the control endpoint handshake before returning to VGA drawing.
+  // Finish the control endpoint handshake before returning to the terminal.
   // No host is also valid: ON then remains explicitly enabled and waiting.
   FatFSUSB.waitForConfiguration(3000u);
   return USB_STORAGE_RESULT_OK;

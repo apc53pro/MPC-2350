@@ -1,8 +1,5 @@
-#include "globals.h"
-#include "mms.h"
 #include "font.h"
 
-static const uint16_t font_table_size = (128*8);
 const uint16_t font[128][16] = {{0b0000000000000000,
                            0b0000000000000000,
                            0b0000000000000000,
@@ -1619,24 +1616,3 @@ const uint16_t font[128][16] = {{0b0000000000000000,
                            0b0000000000000000}
 
                            };
-
-
-static String partName = "SYS_FONT";
-int SYS_FONT_PARTITION_INDEX;
-void fillMemoryWithFont()
-{
-  SYS_FONT_PARTITION_INDEX = alloc_partition(partName, SYSTEM, font_table_size);
-
-  for(int i = 0; i < 128; i++)
-  {
-    for(int j = 0; j < 8; j++)
-    {
-      int byte1 = font[i][(j*2)];
-      int byte2 = font[i][(j*2) + 1];
-
-      write_in_partition(SYS_FONT_PARTITION_INDEX, (i*8) + j, (byte1 << 16) | byte2);
-
-    }
-  }
-}
-

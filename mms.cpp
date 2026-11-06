@@ -1,13 +1,6 @@
 #include "mms.h"
 #include "globals.h"
 
-uint8_t vga_data_array[TXCOUNT];
-uint8_t * address_pointer = &vga_data_array[0] ;
-
-// This is a CPU-rendered staging buffer, not the buffer scanned by VGA DMA.
-// Keeping it in PSRAM leaves enough internal SRAM heap for I2S.begin().
-PSRAM uint8_t vga_640_480_4_01[VGA_4BIT_BUFFER_SIZE];
-
 PSRAM var memory[memory_size];
 partition partitions[partition_amount];
 
