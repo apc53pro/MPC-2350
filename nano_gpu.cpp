@@ -95,6 +95,15 @@ bool NanoGpu::begin(NanoGpuTransport transport, const uint16_t font[128][16]) {
   memset(boot_status_, 0, sizeof(boot_status_));
   uint8_t *status = boot_status_;
   uint8_t caps[64];
+  // These immutable sideband bytes do not depend on SDRAM initialization.
+  // Check the bus fingerprint before interpreting any startup/fault status.
+  const uint8_t prefix[4] = {0, 2, 8, 32};
+  for (unsigned i = 0; i < 4; ++i) {
+    uint8_t byte;
+    if (!bus_.read_register(bus_.user, (uint8_t)(64 + i), &byte))
+      return fail("capability read timeout");
+    if (byte != prefix[i]) return fail("invalid capability readback");
+  }
   for (unsigned poll = 0; poll < 2048; ++poll) {
     for (unsigned i = 1; i < 64; ++i)
       if (!bus_.read_register(bus_.user, (uint8_t)i, status + i))

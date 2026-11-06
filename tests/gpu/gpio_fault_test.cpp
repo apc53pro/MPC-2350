@@ -1,4 +1,4 @@
-// Compile the actual board glue against GPIO/time stubs; no Arduino build.
+// Compile the actual board glue against Arduino GPIO/time stubs; no board build.
 #define GLOBALS_H
 #define AUDIO_RUNTIME_H
 #define USB_STORAGE_MODE_H
@@ -30,7 +30,9 @@ void audio_core0_poll() {}
 void reset_fixture(bool ready, bool valid) {
   memset(mock_gpio::level, 0, sizeof(mock_gpio::level));
   memset(mock_gpio::output, 0, sizeof(mock_gpio::output));
+  memset(mock_gpio::drive, 0, sizeof(mock_gpio::drive));
   memset(mock_gpio::status, 0, sizeof(mock_gpio::status));
+  mock_gpio::status[65] = 2; mock_gpio::status[66] = 8; mock_gpio::status[67] = 32;
   mock_gpio::ready = ready; mock_gpio::valid = valid;
   mock_gpio::now = 0; mock_gpio::reset_clock_edges = 0;
   mock_gpio::first_clock_us = UINT32_MAX; mock_gpio::configuration_ready_us = 0;
@@ -44,6 +46,7 @@ void check_failure_state() {
   assert(!mock_gpio::level[16]);
   for (unsigned pin = 18; pin < 26; ++pin) assert(!mock_gpio::output[pin]);
   assert(!mock_gpio::output[39] && !mock_gpio::output[40]);
+  for (unsigned pin : {16u, 17u, 35u, 36u, 37u, 38u}) assert(mock_gpio::drive[pin] == 12);
   assert(mock_gpio::reset_clock_edges == 32);
   assert(mock_gpio::first_clock_us >= 1000000);
   assert(mock_gpio::reset_writes.front() == false);
@@ -83,7 +86,22 @@ int main() {
   gpu_display_probe(); check_failure_state();
   assert(Serial.text.find("GPU CAPS: 0 2 8 20") != std::string::npos);
   assert(address_sent == 79 && address_sensed == 79);
-  std::cout << "PASS actual GPIO glue: configuration startup wait, reset polarity/pulse, write/read timeouts, "
+  reset_fixture(true, true);
+  memset(mock_gpio::status + 64, 0, 16);
+  assert(!gpu_display_begin()); check_failure_state();
+  assert(std::string(gpu.error()) == "invalid capability readback");
+  // All byte patterns verify bit order and data-direction changes. The
+  // Arduino pinMode output-latch clearing is deliberately modeled above.
+  for (unsigned byte = 0; byte < 256; ++byte) {
+    assert(write_cycle((uint8_t)byte, false));
+    assert(mock_gpio::last_data_write == byte);
+    for (unsigned pin = 18; pin < 26; ++pin) assert(!mock_gpio::output[pin]);
+    mock_gpio::status[64] = (uint8_t)byte;
+    uint8_t received = 0;
+    assert(read_at(64, &received));
+    assert(received == byte);
+  }
+  std::cout << "PASS Arduino GPIO glue: 256 write/read byte patterns, configuration startup wait, reset pulse, timeouts, "
                "startup fault and malformed reply leave reset HIGH and data released; "
-               "startup diagnostics, address pad echo and immutable capability probe verified.\n";
+               "startup diagnostics, address echo and capability probe verified.\n";
 }

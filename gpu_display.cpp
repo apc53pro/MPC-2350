@@ -4,8 +4,7 @@
 #include "font.h"
 #include "audio_runtime.h"
 #include "usb_storage_mode.h"
-#include <hardware/gpio.h>
-#include <pico/time.h>
+#include <Arduino.h>
 #include <initializer_list>
 
 namespace {
@@ -14,47 +13,61 @@ constexpr unsigned kAbort = 35, kReset = 36, kAddress = 37, kRead = 38;
 constexpr unsigned kReady = 39, kValid = 40;
 constexpr uint32_t kTimeoutUs = 250000;
 constexpr uint32_t kConfigurationWaitMs = 1000;
-constexpr uint32_t kDataMask = 0xffu << kData;
-static_assert(NUM_BANK0_GPIOS > kValid, "Select RP2350B: GPU handshakes require GPIO39/40");
+static_assert(__GPIOCNT > kValid, "Select RP2350B: GPU handshakes require GPIO39/40");
 NanoGpu gpu;
 int selected_address = -1;
 unsigned service_counter = 0;
 uint8_t address_sent = 0, address_sensed = 0;
+uint8_t data_pins = 0;
+
+uint8_t read_data_pins() {
+  uint8_t byte = 0;
+  for (unsigned bit = 0; bit < 8; ++bit)
+    byte |= (uint8_t)((digitalRead(kData + bit) == HIGH) << bit);
+  return byte;
+}
 
 void service() {
   if ((++service_counter & 31u) == 0) { usb_storage_poll(); audio_core0_poll(); }
 }
-void low() { gpio_put(kClock, false); busy_wait_us_32(1); }
-void high() { gpio_put(kClock, true); busy_wait_us_32(1); }
-void release_data() { gpio_set_dir_in_masked(kDataMask); }
+void low() { digitalWrite(kClock, LOW); delayMicroseconds(1); }
+void high() { digitalWrite(kClock, HIGH); delayMicroseconds(1); }
+void release_data() {
+  for (unsigned bit = 0; bit < 8; ++bit) pinMode(kData + bit, INPUT);
+}
+void write_data(uint8_t byte) {
+  for (unsigned bit = 0; bit < 8; ++bit) {
+    // Arduino-Pico pinMode(OUTPUT) clears the output latch. Set the mode
+    // before writing each bit, with both bus strobes still inactive.
+    pinMode(kData + bit, OUTPUT);
+    digitalWrite(kData + bit, (byte & (1u << bit)) ? HIGH : LOW);
+  }
+}
 void release_bus() {
-  gpio_put(kWrite, true); gpio_put(kRead, true); gpio_put(kAddress, true);
-  release_data(); gpio_put(kClock, false);
+  digitalWrite(kWrite, HIGH); digitalWrite(kRead, HIGH); digitalWrite(kAddress, HIGH);
+  release_data(); digitalWrite(kClock, LOW);
   // Keep scanout alive for diagnosis. Only explicit initialization asserts
   // GPU_RESET_N; a failed/partial packet is never retried in this session.
-  gpio_put(kReset, true);
+  digitalWrite(kReset, HIGH);
   selected_address = -1;
 }
 bool write_cycle(uint8_t byte, bool address) {
-  gpio_put(kRead, true); gpio_put(kWrite, true); low();
-  gpio_put_masked(kDataMask, (uint32_t)byte << kData);
-  gpio_set_dir_out_masked(kDataMask);
-  gpio_put(kAddress, !address); gpio_put(kWrite, false);
-  busy_wait_us_32(1);
+  digitalWrite(kRead, HIGH); digitalWrite(kWrite, HIGH); low();
+  write_data(byte);
+  digitalWrite(kAddress, address ? LOW : HIGH); digitalWrite(kWrite, LOW);
+  delayMicroseconds(1);
   if (address) {
-    address_sent = byte; address_sensed = 0;
-    for (unsigned bit = 0; bit < 8; ++bit)
-      address_sensed |= (uint8_t)(gpio_get(kData + bit) << bit);
+    address_sent = byte; address_sensed = read_data_pins();
   }
-  const uint32_t start = time_us_32();
+  const uint32_t start = micros();
   do {
-    const bool accepted = gpio_get(kReady); // Before the rising edge.
+    const bool accepted = digitalRead(kReady) == HIGH; // Before the rising edge.
     high(); low();
     if (accepted) {
-      gpio_put(kWrite, true); gpio_put(kAddress, true); release_data();
+      digitalWrite(kWrite, HIGH); digitalWrite(kAddress, HIGH); release_data();
       service(); return true;
     }
-  } while ((uint32_t)(time_us_32() - start) < kTimeoutUs);
+  } while ((uint32_t)(micros() - start) < kTimeoutUs);
   release_bus(); return false;
 }
 bool select(unsigned address) {
@@ -67,19 +80,21 @@ bool write_byte(void *, uint8_t byte) {
 }
 bool read_at(unsigned address, uint8_t *out) {
   if (!select(address)) return false;
-  gpio_put(kWrite, true); gpio_put(kRead, true); release_data(); low();
-  gpio_put(kAddress, true); gpio_put(kRead, false); busy_wait_us_32(1);
-  const uint32_t start = time_us_32();
+  digitalWrite(kWrite, HIGH); digitalWrite(kRead, HIGH); release_data(); low();
+  digitalWrite(kAddress, HIGH); digitalWrite(kRead, LOW); delayMicroseconds(1);
+  const uint32_t start = micros();
   do {
     high();
-    const bool valid = gpio_get(kValid);
+    const bool valid = digitalRead(kValid) == HIGH;
     if (valid) {
-      *out = (uint8_t)(gpio_get_all() >> kData);
-      gpio_put(kRead, true); // End this read before another rising edge.
+      // Keep RD_N asserted and HCLK HIGH throughout both observations.
+      data_pins = read_data_pins();
+      *out = data_pins;
+      digitalWrite(kRead, HIGH); // End this read before another rising edge.
     }
     low();
     if (valid) { service(); return true; }
-  } while ((uint32_t)(time_us_32() - start) < kTimeoutUs);
+  } while ((uint32_t)(micros() - start) < kTimeoutUs);
   release_bus(); return false;
 }
 bool read_byte(void *, uint8_t *out) { return read_at(0, out); }
@@ -87,24 +102,24 @@ bool read_register(void *, uint8_t address, uint8_t *out) { return read_at(addre
 }
 
 bool gpu_display_begin() {
-  // Latch safe levels before enabling output drivers. GP39/40 are inputs;
-  // GP39's onboard LED must never be driven by RP LED code.
-  for (unsigned pin : {kClock, kWrite, kAbort, kReset, kAddress, kRead}) {
-    gpio_init(pin);
-    gpio_put(pin, pin == kWrite || pin == kAddress || pin == kRead);
-    gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);
-    gpio_set_dir(pin, GPIO_OUT);
+  // Assert reset first: pinMode(OUTPUT_12MA) initially drives LOW. Keep GPU
+  // logic reset while the other control outputs are configured.
+  pinMode(kReset, OUTPUT_12MA); digitalWrite(kReset, LOW);
+  delayMicroseconds(1);
+  for (unsigned pin : {kClock, kWrite, kAbort, kAddress, kRead}) {
+    pinMode(pin, OUTPUT_12MA);
+    digitalWrite(pin, (pin == kWrite || pin == kAddress || pin == kRead) ? HIGH : LOW);
   }
-  for (unsigned pin = kData; pin < kData + 8; ++pin) gpio_init(pin);
-  for (unsigned pin : {kReady, kValid}) { gpio_init(pin); gpio_disable_pulls(pin); }
+  for (unsigned pin : {kReady, kValid}) pinMode(pin, INPUT);
   release_data(); selected_address = -1;
   address_sent = 0; address_sensed = 0;
+  data_pins = 0;
   // Flash configuration can take several hundred milliseconds. Keep GPU
   // logic reset asserted and the bus released before attempting any transfer.
   // This is a startup allowance, not a configuration-DONE measurement.
-  sleep_ms(kConfigurationWaitMs);
+  delay(kConfigurationWaitMs);
   for (unsigned i = 0; i < 32; ++i) { high(); low(); }
-  gpio_put(kReset, true);
+  digitalWrite(kReset, HIGH);
   for (unsigned i = 0; i < 64; ++i) { high(); low(); }
   const bool ok = gpu.begin({nullptr, write_byte, read_byte, read_register}, font);
   if (!ok) release_bus();
@@ -123,9 +138,9 @@ void gpu_display_diagnostics() {
   Serial.print("NANO GPU: "); Serial.print(gpu.ready() ? "READY" : "OFFLINE");
   Serial.print("; "); Serial.print(gpu.error());
   Serial.print("; presents="); Serial.print(gpu.presents());
-  Serial.print("; RESET_N="); Serial.print(gpio_get(kReset));
-  Serial.print("; WREADY="); Serial.print(gpio_get(kReady));
-  Serial.print("; RVALID="); Serial.println(gpio_get(kValid));
+  Serial.print("; RESET_N="); Serial.print(digitalRead(kReset));
+  Serial.print("; WREADY="); Serial.print(digitalRead(kReady));
+  Serial.print("; RVALID="); Serial.println(digitalRead(kValid));
   const uint8_t *status = gpu.boot_status();
   const uint32_t core_fault = (uint32_t)status[32] | ((uint32_t)status[33] << 8) |
       ((uint32_t)status[34] << 16) | ((uint32_t)status[35] << 24);
@@ -134,6 +149,8 @@ void gpu_display_diagnostics() {
   Serial.print("; link_fault="); Serial.println(status[56]);
   Serial.print("GPU ADDRESS: sent=0x"); Serial.print(address_sent, HEX);
   Serial.print("; sensed=0x"); Serial.println(address_sensed, HEX);
+  Serial.print("GPU DATA: pins=0x"); Serial.print(data_pins, HEX);
+  Serial.println("");
 }
 
 void gpu_display_probe() {

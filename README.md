@@ -47,6 +47,16 @@ The three LED-loaded Tang control nets use 12 mA RP drive. Keep the VGA DAC and
 Tang LCD disconnected and follow the guide's pulls, series resistors and grounding.
 Remove any local GPU-reset release jumper before the RP drives GPU_RESET_N.
 
+The transport uses Arduino `digitalRead()`, `digitalWrite()`, `pinMode()`,
+`delayMicroseconds()`, `delay()` and `micros()`. Controls use Arduino-Pico's
+`OUTPUT_12MA`; data uses `OUTPUT` for writes and `INPUT` for reads/release.
+GP39/40 stay `INPUT`. Read bytes are assembled from eight `digitalRead()` calls
+with RD_N LOW and HCLK HIGH throughout. `GPU DATA` shows the last received byte.
+The address echo also uses `digitalRead()`.
+The driver checks the fixed sideband capability prefix before polling ready
+status. Zero or otherwise incorrect capability bytes report `invalid capability
+readback`; they are not treated as an SDRAM initialization timeout.
+
 1. Install the full-board Nano GPU image and compile/install this RP firmware with
    signal links isolated during programming. Connect only while both boards are off.
 2. Power normally and connect HDMI. Expect the MPC-2350 banner, black text on white,
@@ -90,12 +100,15 @@ packet/terminal client, first build the Nano GPU oracle objects with its
 python tests/gpu/run_tests.py --gpu <Nano-20K-GPU-checkout> --compiler <matching-g++>
 ```
 
-The GPIO host mock compiles the actual board glue and checks that write/read
+The Arduino API host mock compiles the actual board glue and checks all 256
+write/read byte patterns, data direction changes, and that write/read
 timeouts, startup faults and malformed replies leave reset HIGH, strobes
 inactive and data released. It also checks reset pulse polarity and retained
 startup diagnostics. A simulated 800 ms FPGA configuration delay checks that
 host transfers begin after the one-second guard. GPIO/time are stubbed;
-electrical behavior is not tested.
+electrical behavior is not tested. The mock models Arduino-Pico clearing the
+output latch in `pinMode(OUTPUT)`, so each data bit is written after setting
+its output mode while the bus strobes are inactive.
 
 The GPU client test reads every pixel back through packets and checks font upload, full
 redraw, idle behavior, edits across swaps, scrolling, invalid glyphs and latched
