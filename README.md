@@ -47,6 +47,15 @@ The three LED-loaded Tang control nets use 12 mA RP drive. Keep the VGA DAC and
 Tang LCD disconnected and follow the guide's pulls, series resistors and grounding.
 Remove any local GPU-reset release jumper before the RP drives GPU_RESET_N.
 
+The user reports A2 silicon and **one 100 Ω series resistor per signal wire**
+(16 total), with no separate WREADY/RVALID pull-downs. A2 E9 can affect weak
+or floating inputs; these series parts do not provide pull-down bias. The
+first proposed test adds **4.7 kΩ from GPIO39 to common GND and 4.7 kΩ from
+GPIO40 to common GND**, with power off, retaining the series parts. Fitment
+and results are not yet reported. Keep using this firmware for that test;
+Arduino `digitalRead()` does not remove the silicon leakage. See the GPU guide
+and [RP2350 E9 notes](https://arduino-pico.readthedocs.io/en/stable/rp2350.html).
+
 The transport uses Arduino `digitalRead()`, `digitalWrite()`, `pinMode()`,
 `delayMicroseconds()`, `delay()` and `micros()`. Controls use Arduino-Pico's
 `OUTPUT_12MA`; data uses `OUTPUT` for writes and `INPUT` for reads/release.
