@@ -159,7 +159,7 @@ void mc_game_draw_pause(void)
     else if(mc_player_status==2)mc_menu_draw_centered_string("Block collision port pending",160,196,0xffff55);
     else if(mc_player_status>=3)mc_menu_draw_centered_string("Player workspace exhausted",160,196,0xff5555);
     mc_menu_draw_centered_string("World saving is not implemented",160,210,0xa0a0a0);
-    mc_menu_draw_pointer();narm_half_present();
+    narm_half_present();
 }
 void mc_game_pause(void)
 {
@@ -173,6 +173,9 @@ void mc_game_pause(void)
 }
 void mc_game_resume(void)
 {
+#ifdef MC10_MOUSE
+    narm_mouse_set_cursor_visible(0);
+#endif
     mc_game_apply_render_settings();
 #ifdef MC10_PLAYER_FOUNDATION
     if(mc_stream_status<0)mc_stream_retry();
@@ -219,7 +222,12 @@ void mc_game_pump(void)
         if(key==NARM_KEY_ESCAPE)
         {if(mc_game_paused)mc_game_resume();else mc_game_pause();}
         else if(key==NARM_KEY_ENTER&&mc_game_paused)
+        {
+#ifdef MC10_MOUSE
+            mc_mouse_ui_sync_pointer();
+#endif
             mc_game_pause_click();
+        }
     }
     event=narm_poll_system_event();
     if(event==NARM_EVENT_CLOSE_REQUESTED){mc_game_exit=1;return;}
@@ -323,14 +331,14 @@ void mc_game_run(struct MCWorldInfo *world)
 #endif
     mc_game_profile_toggle_pending=0;
     mc_profile_cancel();mc_profile_valid=0;
-    if(!mc_math_init()) {mc_ui_draw_status("BAD/MISSING /MC10/math10.dat");mc_wait_for_return();return;}
+    if(!mc_math_init()) {mc_ui_draw_status("BAD OR MISSING MATH10.DAT");mc_wait_for_return();return;}
     mc_player_init();
     if(mc_player_status){mc_ui_draw_status("UNSUPPORTED PLAYER NUMERIC STATE");mc_wait_for_return();return;}
 #ifdef MC10_WORLD_SYSTEMS
     struct MCU64 biome_seed;biome_seed.lo=world->random_seed_lo;biome_seed.hi=world->random_seed_hi;
     mc_biome_seed(&biome_seed);
     mc_world_clock_init();
-    if(!mc_sky_init()){mc_ui_draw_status("BAD/MISSING /MC10/sky10.dat");mc_wait_for_return();return;}
+    if(!mc_sky_init()){mc_ui_draw_status("BAD OR MISSING SKY10.DAT");mc_wait_for_return();return;}
     mc_game_camera_toggle_pending=0;
 #endif
 #ifdef MC10_PLAYER_FOUNDATION
@@ -400,6 +408,9 @@ void mc_game_run(struct MCWorldInfo *world)
             {
                 mc_profile_cancel();mc_game_inventory_pending=0;
                 if(mc_inventory_run()<0){mc_game_exit=1;break;}
+#ifdef MC10_MOUSE
+                narm_mouse_set_cursor_visible(0);
+#endif
                 mc_game_clear_input();mc_render_fps_reset();continue;
             }
         }

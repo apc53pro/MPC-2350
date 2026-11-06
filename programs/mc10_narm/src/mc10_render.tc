@@ -1293,6 +1293,30 @@ void mc_render_cached_group_legacy(int cursor)
     mc_render_cached_block=0;mc_render_cached_standard=0;
 }
 
+#if defined(MC10_INTERACTIVE) && defined(MC10_WORLD_SYSTEMS) && defined(MC10_PLAYER_FOUNDATION) && !defined(MC10_AUTOPROFILE)
+#define MC_RENDER_LAZY_STREAM_GEOMETRY 1
+#define MC_RENDER_GEOMETRY_UNBUILT 1u
+void mc_render_rebuild_geometry_group(int i);
+
+/* A surface group has already passed the full resident validation. Capture
+ * only after the same frustum test used by the uncached block path. */
+int mc_render_prepare_visible_group(int cursor)
+{
+    uint key=mc_render_cached_keys[cursor];
+    int index=(int)(key&32767),slot=(int)((key>>15)&15);
+    int x=mc_runtime_chunks[slot].chunk.x_position*16+(index>>11);
+    int z=mc_runtime_chunks[slot].chunk.z_position*16+((index>>7)&15);
+    int blocks_drawn=mc_render_blocks_drawn;
+    if(!mc_render_block_in_view(x,index&127,z))return 0;
+    if(mc_render_geometry_count<mc_render_geometry_limit)
+        mc_render_rebuild_geometry_group(cursor);
+    else
+        mc_render_geometry_range[cursor]=0;
+    mc_render_blocks_drawn=blocks_drawn;
+    return 1;
+}
+#endif
+
 void mc_render_cached_group(int cursor)
 {
     uint range;float *center;float bx,by,bz,depth,screen,bound;
@@ -1300,6 +1324,13 @@ void mc_render_cached_group(int cursor)
        mc_render_origin_x!=mc_render_geometry_origin_x||mc_render_origin_z!=mc_render_geometry_origin_z)
     {mc_render_cached_group_legacy(cursor);return;}
     range=mc_render_geometry_range[cursor];
+#ifdef MC_RENDER_LAZY_STREAM_GEOMETRY
+    if(range==MC_RENDER_GEOMETRY_UNBUILT)
+    {
+        if(!mc_render_prepare_visible_group(cursor))return;
+        range=mc_render_geometry_range[cursor];
+    }
+#endif
     if(!(range&0x80000000)||!(range&0x7fffc000))
     {mc_render_cached_group_legacy(cursor);return;}
     center=&mc_render_geometry_center[(int)(range&16383)*3];
@@ -1683,16 +1714,18 @@ void mc_render_static_world_wait(struct MCWorldInfo *world)
     mc_game_run(world);
 }
 #if defined(MC10_PLAYER_FOUNDATION) && !defined(MC10_AUTOPROFILE)
-/* Streaming recompiles the SAME slot/cell-ordered display list in bounded
- * pumps. No frame may use it until completion. The synchronous compiler above
- * remains the profiler/oracle path; capacity overflow still selects its exact
- * non-dropping scan fallback. No framebuffer operation occurs in these pumps. */
+/* Streaming validates every cell and rebuilds the slot/cell-ordered surface
+ * list before publishing it. Interactive play then captures visible geometry
+ * on demand. Capacity overflow still selects the exact scan fallback. */
 int mc_render_rebuild_state;
 int mc_render_rebuild_chunk,mc_render_rebuild_cell_index;
 int mc_render_rebuild_cursor,mc_render_rebuild_first,mc_render_rebuild_previous;
 uint mc_render_rebuild_started;
 int mc_render_rebuild_bad_id;
 int mc_render_rebuild_bad_x,mc_render_rebuild_bad_y,mc_render_rebuild_bad_z;
+#ifdef MC_RENDER_LAZY_STREAM_GEOMETRY
+unsigned char mc_render_rebuild_opaque[256];
+#endif
 
 int mc_render_rebuild_block_error(void)
 {return mc_render_rebuild_bad_id!=0;}
@@ -1726,6 +1759,9 @@ void mc_render_rebuild_begin(void)
     mc_render_geometry_origin_x=mc_render_origin_x;
     mc_render_geometry_origin_z=mc_render_origin_z;
     for(i=0;i<576;i=i+1)mc_render_section_state[i]=0;
+#ifdef MC_RENDER_LAZY_STREAM_GEOMETRY
+    for(i=0;i<256;i=i+1)mc_render_rebuild_opaque[i]=(unsigned char)mc_block_is_opaque((uint)i);
+#endif
     mc_render_refresh_light_lookup();
     mc_render_rebuild_started=narm_millis();mc_render_rebuild_state=1;
 #ifdef MC10_WORLD_SYSTEMS
@@ -1737,22 +1773,43 @@ void mc_render_rebuild_begin(void)
 #endif
 }
 
-/* Same integer packing, visibility/light calls and traversal as build_cache. */
-void mc_render_rebuild_surface_cell(int c,int index)
+/* The full-cube visibility predicate reduces to adjacent opacity for these
+ * ordinary IDs inside the chunk. Borders and source overrides use the
+ * general visibility path below. Block arrays are ordered x,z,y. */
+#ifdef MC_RENDER_LAZY_STREAM_GEOMETRY
+uint mc_render_rebuild_cube_mask(char *blocks,int index)
 {
-    int x,y,z,lx,lz,side,standard,type;uint id,metadata,style,mask;
+    uint mask=0;
+    if(!mc_render_rebuild_opaque[(uint)blocks[index-1]&255])mask=mask|1;
+    if(!mc_render_rebuild_opaque[(uint)blocks[index+1]&255])mask=mask|2;
+    if(!mc_render_rebuild_opaque[(uint)blocks[index-128]&255])mask=mask|4;
+    if(!mc_render_rebuild_opaque[(uint)blocks[index+128]&255])mask=mask|8;
+    if(!mc_render_rebuild_opaque[(uint)blocks[index-2048]&255])mask=mask|16;
+    if(!mc_render_rebuild_opaque[(uint)blocks[index+2048]&255])mask=mask|32;
+    return mask;
+}
+#endif
+
+void mc_render_rebuild_surface_cell(int c,int index,uint id)
+{
+    int x,y,z,lx,lz,side,standard;uint metadata,style,mask=0;
     struct MCResidentChunk *resident=&mc_runtime_chunks[c];
     float x0,y0,z0,x1,y1,z1;
+#ifdef MC10_WORLD_SYSTEMS
+    int status=mc_block_static_status(id);
+#else
+    int type=-1;if(mc_blocks[id].present)type=mc_blocks[id].render_type;
+#endif
+#ifdef MC_RENDER_LAZY_STREAM_GEOMETRY
+    int simple;
+#endif
     lx=index>>11;lz=(index>>7)&15;y=index&127;
-    id=mc_chunk_get_block_id(&resident->chunk,lx,y,lz);
-    if(id==0)return;
     x=resident->chunk.x_position*16+lx;z=resident->chunk.z_position*16+lz;
-    type=-1;if(id<256&&mc_blocks[id].present)type=mc_blocks[id].render_type;
     /* Never publish an invisible/unsafe resident block. All loaded cells,
      * including buried cells and validation-only overflow tails, are checked.
      * The exact supported RenderBlocks cases are unchanged, not approximated. */
 #ifdef MC10_WORLD_SYSTEMS
-    if(mc_block_static_status(id)==0||mc_block_static_status(id)==4)
+    if(status==0||status==4)
 #else
     if(type!=0&&type!=1&&type!=2&&type!=4&&type!=6&&type!=7&&type!=8&&
        type!=10&&type!=11&&type!=18)
@@ -1765,16 +1822,28 @@ void mc_render_rebuild_surface_cell(int c,int index)
         }
         return;
     }
-    metadata=mc_chunk_get_block_metadata(&resident->chunk,lx,y,lz);
 #ifdef MC10_WORLD_SYSTEMS
-    if(mc_block_static_status(id)>=2&&mc_block_static_status(id)<=3)mc_render_pending_dynamic=mc_render_pending_dynamic+1;
-    if(mc_render_is_tesr(id)){mc_render_tesr_add(c,index,id,metadata);return;}
+    if(status>=2&&status<=3)mc_render_pending_dynamic=mc_render_pending_dynamic+1;
+    if(mc_render_is_tesr(id)){mc_render_tesr_add(c,index,id,mc_chunk_get_block_metadata(&resident->chunk,lx,y,lz));return;}
     if(id==119)return; /* Animated End-portal layer is explicitly unported. */
 #endif
     if(mc_render_cache_error)return; /* Same pass, validation only after full. */
-    standard=id<256&&mc_blocks[id].present&&mc_blocks[id].render_type==0;
-    mask=0;
+    standard=mc_blocks[id].render_type==0;
+#ifdef MC_RENDER_LAZY_STREAM_GEOMETRY
+    simple=standard&&id<=17&&(id<8||id>=12)&&mc_render_rebuild_opaque[id]&&
+           lx>0&&lx<15&&lz>0&&lz<15&&y>0&&y<127;
+    if(simple)
+    {
+        mask=mc_render_rebuild_cube_mask(resident->chunk.blocks,index);
+        if(!mask)return;
+    }
+#endif
+    metadata=mc_chunk_get_block_metadata(&resident->chunk,lx,y,lz);
+#ifdef MC_RENDER_LAZY_STREAM_GEOMETRY
+    if(standard&&!simple)
+#else
     if(standard)
+#endif
     {
         mc_render_source_bounds(id,metadata,x,y,z,&x0,&y0,&z0,&x1,&y1,&z1);
         for(side=0;side<6;side=side+1)
@@ -1785,12 +1854,14 @@ void mc_render_rebuild_surface_cell(int c,int index)
         if(mc_render_cache_group_count>=mc_render_cache_limit)
         {mc_render_cache_error=1;return;}
         style=mask<<24;
+#ifndef MC_RENDER_LAZY_STREAM_GEOMETRY
         if(id<256&&mc_blocks[id].present)
             for(side=0;side<6;side=side+1)
             {
                 mc_render_set_light(x,y,z,side,mc_blocks[id].light_value);
                 style=style|((uint)(mc_render_light_key>>3)<<(side*4));
             }
+#endif
         mc_render_cached_keys[mc_render_cache_group_count]=(uint)index|((uint)c<<15)|(id<<19)|(metadata<<27)|(standard?0x80000000:0);
         mc_render_cached_style[mc_render_cache_group_count]=style;
         mc_render_cache_group_count=mc_render_cache_group_count+1;
@@ -1846,15 +1917,21 @@ void mc_render_rebuild_geometry_group(int i)
  * overrun 4ms; an arbitrary half-block suspension would change capture state. */
 int mc_render_rebuild_step(void)
 {
-    int count=0,i,section;uint started=narm_millis();
+    int count=0,i,section;uint id,started=narm_millis();
+#ifdef MC_RENDER_LAZY_STREAM_GEOMETRY
+    int batch_limit=512;
+#else
+    int batch_limit=128;
+#endif
     if(mc_render_rebuild_state==0)return 1;
     if(mc_render_rebuild_state==1)
     {
-        while(mc_render_rebuild_chunk<MC_RUNTIME_CHUNKS&&count<128)
+        while(mc_render_rebuild_chunk<MC_RUNTIME_CHUNKS&&count<batch_limit)
         {
             if(mc_runtime_chunks[mc_render_rebuild_chunk].state!=1)
             {mc_render_rebuild_chunk=mc_render_rebuild_chunk+1;mc_render_rebuild_cell_index=0;continue;}
-            mc_render_rebuild_surface_cell(mc_render_rebuild_chunk,mc_render_rebuild_cell_index);
+            id=(uint)mc_runtime_chunks[mc_render_rebuild_chunk].chunk.blocks[mc_render_rebuild_cell_index]&255;
+            if(id)mc_render_rebuild_surface_cell(mc_render_rebuild_chunk,mc_render_rebuild_cell_index,id);
             mc_render_rebuild_cell_index=mc_render_rebuild_cell_index+1;count=count+1;
             if(mc_render_rebuild_bad_id)
             {
@@ -1880,9 +1957,12 @@ int mc_render_rebuild_step(void)
     }
     if(mc_render_rebuild_state==2)
     {
-        while(mc_render_rebuild_cursor<mc_render_cache_group_count&&count<128)
+        while(mc_render_rebuild_cursor<mc_render_cache_group_count&&count<batch_limit)
         {
             i=mc_render_rebuild_cursor;section=mc_render_section_id(mc_render_cached_keys[i]);
+#ifdef MC_RENDER_LAZY_STREAM_GEOMETRY
+            mc_render_geometry_range[i]=MC_RENDER_GEOMETRY_UNBUILT;
+#endif
             mc_render_run_end[i]=0;
             if(section!=mc_render_rebuild_previous)
             {
@@ -1890,11 +1970,20 @@ int mc_render_rebuild_step(void)
                 mc_render_rebuild_first=i;mc_render_rebuild_previous=section;
             }
             mc_render_rebuild_cursor=i+1;count=count+1;
+#ifdef MC_RENDER_LAZY_STREAM_GEOMETRY
+            if((count&31)==0&&(uint)(narm_millis()-started)>=4)break;
+#endif
         }
         if(mc_render_rebuild_cursor==mc_render_cache_group_count)
         {
             if(mc_render_cache_group_count)mc_render_run_end[mc_render_rebuild_first]=(uint)mc_render_cache_group_count;
+#ifdef MC_RENDER_LAZY_STREAM_GEOMETRY
+            mc_render_cache_ready=1;mc_render_rebuild_state=0;
+            mc_render_cache_build_ms=(uint)(narm_millis()-mc_render_rebuild_started);
+            return 1;
+#else
             mc_render_rebuild_cursor=0;mc_render_rebuild_state=3;
+#endif
         }
         return 0;
     }

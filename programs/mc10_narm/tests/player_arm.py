@@ -24,6 +24,10 @@ def execute(path):
   value=arena+target if kind==1 else (text+target)|(1 if kind==3 else 0) if kind in (2,3) else ctx
   uc.mem_write(arena+patch,struct.pack('<I',value))
  uc.mem_write(stop,b'\x70\x47');uc.reg_write(UC_ARM_REG_R9,arena);uc.reg_write(UC_ARM_REG_R10,ctx)
+ imports=[struct.unpack_from('<I',image,u32(0x58)+i*8)[0] for i in range(u32(0x5c))]
+ if 0x12 in imports:
+  from native_numeric_probe import install
+  install(uc,ctx)
  uc.reg_write(UC_ARM_REG_SP,stack+0xf000);uc.reg_write(UC_ARM_REG_LR,stop|1);uc.reg_write(UC_ARM_REG_FPEXC,1<<30)
  uc.hook_add(UC_HOOK_CODE,lambda u,a,s,d:u.emu_stop(),begin=stop,end=stop)
  uc.emu_start((text+u32(0x18))|1,stop,count=100000000)
@@ -61,7 +65,7 @@ def run_case(project,tmp,compiler,name,blocks,metadata,pos,yaw,controls,oracle):
   code.append(f'if(*((uint *)&mc_player.y_size)!=expected[{tick*28+26}]||*((uint *)&mc_player.fall_distance)!=expected[{tick*28+27}])return {tick*32+27};')
  code.append('return 0;}')
  source=tmp/(name+'-arm.tc');source.write_text('\n'.join(code),encoding='utf-8');output=source.with_suffix('.narm')
- result=subprocess.run([str(compiler),str(source),'-I',str(project/'tests'),'-O3','--stack-bytes','32768','-o',str(output)],capture_output=True,text=True)
+ result=subprocess.run([str(compiler),str(source),'-I',str(project/'tests'),'-O3','--legacy-float-literals','--stack-bytes','32768','-o',str(output)],capture_output=True,text=True)
  assert result.returncode==0,result.stderr+result.stdout
  result=execute(output);assert result==0,(name,'actual ARM trajectory mismatch',result)
  print('NARM ARM trajectory:',name,'PASS',min(8,len(controls)),'ticks',flush=True)

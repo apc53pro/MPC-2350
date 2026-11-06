@@ -208,10 +208,14 @@ int mc_biome_evaluate(int n,int x,int z,int width,int height)
             pz=kind==17?((z-2+j)>>2)-sz:((z+j)>>1)-sz;
             a=mc_biome_work[source+px+pz*sw];b=mc_biome_work[source+px+1+pz*sw];
             c=mc_biome_work[source+px+(pz+1)*sw];d=mc_biome_work[source+px+1+(pz+1)*sw];
-            mc_biome_chunk_seed(n,(sx+px)*step,(sz+pz)*step,&state);
-            if(kind==17)value=mc_biome_voronoi(n,sx+px,sz+pz,u,v,a,b,c,d);
+            /* The RNG is reseeded per cell. Uniform corners always produce
+             * the same value, and the unzoomed corner already holds a. */
+            if(a==b&&a==c&&a==d)value=a;
+            else if(kind==17)value=mc_biome_voronoi(n,sx+px,sz+pz,u,v,a,b,c,d);
+            else if(!u&&!v)value=a;
             else
             {
+                mc_biome_chunk_seed(n,(sx+px)*step,(sz+pz)*step,&state);
                 if(kind==12)
                 {
                     lower=a+(c-a)*mc_biome_next(n,&state,256)/256;

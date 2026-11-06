@@ -6,6 +6,7 @@ int narm_file_read(char *name,void *data,int offset,int size,int storage){return
 #include "../src/mc10_u64.tc"
 #include "../src/mc10_java_double.tc"
 #include "../src/mc10_fp64.tc"
+#include "../src/mc10_paths.tc"
 #include "../src/mc10_math.tc"
 struct ClockInfo {uint world_time_lo,world_time_hi;int raining,thundering;};
 struct ClockInfo clock_info;

@@ -65,7 +65,7 @@ void mc_third_init(void)
     for(i=0;i<3;i=i+1){mc_tp_tick_position[i].lo=mc_fp_values[i].lo;mc_tp_tick_position[i].hi=mc_fp_values[i].hi;mc_tp_old_position[i].lo=mc_fp_values[i].lo;mc_tp_old_position[i].hi=mc_fp_values[i].hi;}
     /* BlockGrass.getBlockColor: ColorizerGrass(temperature=.5,humidity=1).
      * Consume the already converted RGB332 lookup, not a biome substitute. */
-    if(mc_asset_find("misc/grasscolor.png")){offset=mc_asset_read_u32(&mc_asset_record[0],20)+(uint)(127*256+127);if(narm_file_read(&mc_asset_path[0],&color,offset,1,NARM_STORAGE_SD)==1)mc_tp_inventory_grass332=(uint)color&255;}
+    if(mc_asset_find("misc/grasscolor.png")){offset=mc_asset_read_u32(&mc_asset_record[0],20)+(uint)(127*256+127);if(narm_file_read(&mc_asset_path[0],&color,offset,1,mc_game_storage)==1)mc_tp_inventory_grass332=(uint)color&255;}
 }
 void mc_third_cycle(void)
 {mc_third_mode=mc_third_mode+1;if(mc_third_mode>2)mc_third_mode=0;}

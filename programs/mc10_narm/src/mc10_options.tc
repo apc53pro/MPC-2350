@@ -69,7 +69,6 @@ int mc_options_enter_blocked;
 #ifdef MC10_MOUSE
 int mc_options_drag_mouse;
 #endif
-char mc_options_path[18] = {'/','M','C','1','0','/','o','p','t','i','o','n','s','.','t','x','t',0};
 
 char *mc_options_fallback_label(int index)
 {
@@ -313,10 +312,10 @@ void mc_options_load(void)
     int colon;
     int end;
     mc_options_defaults();
-    if (!narm_file_exists(&mc_options_path[0],NARM_STORAGE_SD)) return;
-    if (narm_file_size(&mc_options_path[0],NARM_STORAGE_SD,&size)<0 ||
+    if (!narm_file_exists(&mc_options_path[0],mc_game_storage)) return;
+    if (narm_file_size(&mc_options_path[0],mc_game_storage,&size)<0 ||
         size==0 || size>=MC_OPTIONS_FILE_BYTES) return;
-    got=narm_file_read(&mc_options_path[0],&mc_options_file[0],0,size,NARM_STORAGE_SD);
+    got=narm_file_read(&mc_options_path[0],&mc_options_file[0],0,size,mc_game_storage);
     if (got!=(int)size) return;
     mc_options_file[size]=0;
     while (mc_options_file[line]!=0)
@@ -422,10 +421,10 @@ int mc_options_save(void)
         mc_options_append("\n");
     }
     size=0; while (mc_options_file[size]!=0) size=size+1;
-    if (narm_file_exists(&mc_options_path[0],NARM_STORAGE_SD))
-        if (narm_file_delete(&mc_options_path[0],NARM_STORAGE_SD)<0) return 0;
-    if (narm_file_create(&mc_options_path[0],NARM_STORAGE_SD)<=0) return 0;
-    wrote=narm_file_write(&mc_options_path[0],&mc_options_file[0],0,size,NARM_STORAGE_SD);
+    if (narm_file_exists(&mc_options_path[0],mc_game_storage))
+        if (narm_file_delete(&mc_options_path[0],mc_game_storage)<0) return 0;
+    if (narm_file_create(&mc_options_path[0],mc_game_storage)<=0) return 0;
+    wrote=narm_file_write(&mc_options_path[0],&mc_options_file[0],0,size,mc_game_storage);
     return wrote==size;
 }
 
@@ -709,7 +708,7 @@ void mc_options_draw(void)
         if (mc_options_screen==MC_OPTIONS_CONTROLS && i<MC_OPTIONS_KEYS)
             mc_menu_draw_string(mc_options_label(51+i),mc_options_buttons[i].x_position+76,mc_options_buttons[i].y_position+7,0xffffff);
     }
-    mc_menu_draw_pointer(); narm_half_present();
+    narm_half_present();
 }
 
 void mc_options_activate(int index)

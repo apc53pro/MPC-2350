@@ -12,7 +12,7 @@ char fixture_mc10_root[1024];
 uint mc_asset_read_u32(char *data,int offset)
 {uint a=(unsigned char)data[offset],b=(unsigned char)data[offset+1],c=(unsigned char)data[offset+2],d=(unsigned char)data[offset+3];return a|(b<<8)|(c<<16)|(d<<24);}
 FILE *fixture_open(const char *path)
-{char full[1200];snprintf(full,sizeof(full),"%s/%s",fixture_mc10_root,path+6);return fopen(full,"rb");}
+{char full[1300];if(path[0]!='/')return NULL;snprintf(full,sizeof(full),"%s%s",fixture_mc10_root,path);return fopen(full,"rb");}
 int narm_file_read(const char *path,void *buffer,uint offset,uint count,uint storage)
 {FILE *f=fixture_open(path);int got;if(!f)return -1;fseek(f,offset,SEEK_SET);got=fread(buffer,1,count,f);fclose(f);return got;}
 int narm_file_size(const char *path,uint storage,uint *out)

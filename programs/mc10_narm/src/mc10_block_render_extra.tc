@@ -5,8 +5,6 @@
 #define MC_BLOCK_MESH_SLOTS 8
 #define MC_BLOCK_MESH_QUADS 48
 #define MC_BLOCK_TINT_SLOTS 63
-char mc_block_mesh_path[19]="/MC10/blocks10.dat";
-char mc_block_tint_path[22]="/MC10/blocktint10.dat";
 uint mc_block_mesh_cache[MC_BLOCK_MESH_SLOTS*MC_BLOCK_MESH_QUADS*24];
 uint mc_block_mesh_keys[MC_BLOCK_MESH_SLOTS];
 uint mc_block_mesh_ages[MC_BLOCK_MESH_SLOTS];
@@ -137,19 +135,19 @@ int mc_block_mesh_open(void)
     char header[32];uint tint_size,payload,masks;int i;
     mc_block_mesh_ready=0;mc_block_mesh_error=0;mc_render_source_tint_slot=0;
     for(i=0;i<MC_BLOCK_MESH_SLOTS;i=i+1){mc_block_mesh_keys[i]=0;mc_block_mesh_ages[i]=0;mc_block_mesh_counts[i]=0;}
-    if(narm_file_size(mc_block_mesh_path,NARM_STORAGE_SD,&mc_block_mesh_size)<0)return 0;
-    if(narm_file_read(mc_block_mesh_path,header,0,32,NARM_STORAGE_SD)!=32)return 0;
+    if(narm_file_size(mc_block_mesh_path,mc_game_storage,&mc_block_mesh_size)<0)return 0;
+    if(narm_file_read(mc_block_mesh_path,header,0,32,mc_game_storage)!=32)return 0;
     if(header[0]!='M'||header[1]!='C'||header[2]!='B'||header[3]!='M'||header[4]!='1'||header[5]!='0'||header[6]||header[7])return 0;
     if(mc_asset_read_u32(header,8)!=1||mc_asset_read_u32(header,16)!=32||mc_asset_read_u32(header,24)!=96)return 0;
     mc_block_mesh_count=mc_asset_read_u32(header,12);payload=mc_asset_read_u32(header,20);
     if(mc_block_mesh_count==0||mc_block_mesh_count>100000||payload!=32+mc_block_mesh_count*12||payload>mc_block_mesh_size)return 0;
-    if(narm_file_size(mc_block_tint_path,NARM_STORAGE_SD,&tint_size)<0)return 0;
-    if(narm_file_read(mc_block_tint_path,header,0,32,NARM_STORAGE_SD)!=32)return 0;
+    if(narm_file_size(mc_block_tint_path,mc_game_storage,&tint_size)<0)return 0;
+    if(narm_file_read(mc_block_tint_path,header,0,32,mc_game_storage)!=32)return 0;
     if(header[0]!='M'||header[1]!='C'||header[2]!='B'||header[3]!='T'||header[4]!='1'||header[5]!='0'||header[6]||header[7])return 0;
     mc_block_tint_count=mc_asset_read_u32(header,12);masks=mc_asset_read_u32(header,28);
     if(mc_asset_read_u32(header,8)!=1||mc_block_tint_count>MC_BLOCK_TINT_SLOTS||mc_asset_read_u32(header,16)!=256||mc_asset_read_u32(header,20)!=16||mc_asset_read_u32(header,24)!=32||masks!=32+mc_block_tint_count*4096||tint_size!=masks+mc_block_tint_count*32)return 0;
-    if(narm_file_read(mc_block_tint_path,&mc_block_tint_pixels[0],32,mc_block_tint_count*4096,NARM_STORAGE_SD)!=(int)(mc_block_tint_count*4096))return 0;
-    if(narm_file_read(mc_block_tint_path,&mc_block_tint_masks[0],masks,mc_block_tint_count*32,NARM_STORAGE_SD)!=(int)(mc_block_tint_count*32))return 0;
+    if(narm_file_read(mc_block_tint_path,&mc_block_tint_pixels[0],32,mc_block_tint_count*4096,mc_game_storage)!=(int)(mc_block_tint_count*4096))return 0;
+    if(narm_file_read(mc_block_tint_path,&mc_block_tint_masks[0],masks,mc_block_tint_count*32,mc_game_storage)!=(int)(mc_block_tint_count*32))return 0;
     mc_block_mesh_ready=1;return 1;
 }
 
@@ -164,15 +162,15 @@ int mc_block_mesh_load(uint key)
     while(low<high)
     {
         mid=low+(high-low)/2;
-        if(narm_file_read(mc_block_mesh_path,entry,32+mid*12,12,NARM_STORAGE_SD)!=12){mc_block_mesh_error=2;return -1;}
+        if(narm_file_read(mc_block_mesh_path,entry,32+mid*12,12,mc_game_storage)!=12){mc_block_mesh_error=2;return -1;}
         found=mc_asset_read_u32(entry,0);
         if(found<key)low=mid+1;else high=mid;
     }
     if(low>=mc_block_mesh_count){mc_block_mesh_error=3;return -1;}
-    if(narm_file_read(mc_block_mesh_path,entry,32+low*12,12,NARM_STORAGE_SD)!=12){mc_block_mesh_error=2;return -1;}
+    if(narm_file_read(mc_block_mesh_path,entry,32+low*12,12,mc_game_storage)!=12){mc_block_mesh_error=2;return -1;}
     found=mc_asset_read_u32(entry,0);offset=mc_asset_read_u32(entry,4);count=mc_asset_read_u32(entry,8)&65535;
     if(found!=key||count>MC_BLOCK_MESH_QUADS||offset>mc_block_mesh_size||count*96>mc_block_mesh_size-offset){mc_block_mesh_error=3;return -1;}
-    if(count&&narm_file_read(mc_block_mesh_path,&mc_block_mesh_cache[slot*MC_BLOCK_MESH_QUADS*24],offset,count*96,NARM_STORAGE_SD)!=(int)(count*96)){mc_block_mesh_error=2;return -1;}
+    if(count&&narm_file_read(mc_block_mesh_path,&mc_block_mesh_cache[slot*MC_BLOCK_MESH_QUADS*24],offset,count*96,mc_game_storage)!=(int)(count*96)){mc_block_mesh_error=2;return -1;}
     mc_block_mesh_keys[slot]=key;mc_block_mesh_ages[slot]=mc_block_mesh_age;mc_block_mesh_counts[slot]=count;mc_block_mesh_disk_reads=mc_block_mesh_disk_reads+1;return slot;
 }
 int mc_block_mesh_render(uint id,uint metadata,int x,int y,int z)

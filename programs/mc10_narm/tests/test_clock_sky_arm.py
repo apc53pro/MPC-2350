@@ -87,7 +87,7 @@ def main():
   return result.stdout
  for name in ('world_clock','sky'):
   fixture=(a.game/'tests'/f'{name}_fixture.c').read_text()
-  for module in ('mc10_u64.tc','mc10_java_double.tc','mc10_fp64.tc','mc10_math.tc','mc10_cos_celestial.tc','mc10_world_clock.tc','mc10_sky.tc'):
+  for module in ('mc10_u64.tc','mc10_java_double.tc','mc10_fp64.tc','mc10_paths.tc','mc10_math.tc','mc10_cos_celestial.tc','mc10_world_clock.tc','mc10_sky.tc'):
    path=a.sky if module=='mc10_sky.tc'else a.game/'src'/module
    fixture=fixture.replace('../src/'+module,path.as_posix())
   if name=='sky':

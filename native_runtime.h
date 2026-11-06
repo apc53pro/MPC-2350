@@ -45,6 +45,8 @@ NarmStatus native_run_fs(const String &path);
 NarmStatus native_last_status();
 int32_t native_last_exit_status();
 uint32_t native_running_processes();
+// Core 0 terminal playback must leave NARM-reserved mixer channels alone.
+bool native_audio_voice_reserved(uint8_t voice);
 bool native_request_stop();
 bool native_request_focus_next();
 bool native_request_toggle_mode();

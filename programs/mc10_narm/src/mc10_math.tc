@@ -12,9 +12,9 @@ int mc_math_init(void)
 {
     uint header[4];
     mc_math_ready=0;
-    if(narm_file_read("/MC10/math10.dat",&header[0],0,16,NARM_STORAGE_SD)!=16) return 0;
+    if(narm_file_read(mc_math_path,&header[0],0,16,mc_game_storage)!=16) return 0;
     if(header[0]!=0x544d434d || header[1]!=1 || header[2]!=65536) return 0;
-    if(narm_file_read("/MC10/math10.dat",&mc_math_sine[0],16,262144,NARM_STORAGE_SD)!=262144) return 0;
+    if(narm_file_read(mc_math_path,&mc_math_sine[0],16,262144,mc_game_storage)!=262144) return 0;
     if(mc_math_crc32()!=header[3])return 0;
     mc_math_ready=1;return 1;
 }

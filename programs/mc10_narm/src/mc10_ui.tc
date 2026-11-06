@@ -45,6 +45,38 @@ uint mc_ui_glyph(char c)
     return 0;
 }
 
+/* The startup error path can run even when the shared RGB332 buffers fail. */
+void mc_ui_startup_error_line(int y, char *text)
+{
+    int length = 0;
+    int x;
+    int row;
+    int col;
+    uint glyph;
+    while (text[length] != 0) length = length + 1;
+    x = (640 - (length * 16 - 4)) / 2;
+    while (*text != 0)
+    {
+        glyph = mc_ui_glyph(*text);
+        for (row = 0; row < 5; row = row + 1)
+            for (col = 0; col < 3; col = col + 1)
+                if (glyph & (1 << (row * 3 + 2 - col)))
+                    narm_fill_rect(x + col * 4, y + row * 4,
+                                   x + col * 4 + 3, y + row * 4 + 3, 15);
+        x = x + 16;
+        text = text + 1;
+    }
+}
+
+int mc_ui_draw_startup_error(char *heading, char *detail)
+{
+    if (narm_clear(0) < 0) return 0;
+    mc_ui_startup_error_line(185, heading);
+    mc_ui_startup_error_line(225, detail);
+    mc_ui_startup_error_line(275, "ESC OR ENTER TO EXIT");
+    return narm_present() >= 0;
+}
+
 void mc_ui_char(int x, int y, char c, int scale, uint color)
 {
     uint bits = mc_ui_glyph(c);

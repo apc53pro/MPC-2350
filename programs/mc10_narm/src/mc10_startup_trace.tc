@@ -3,7 +3,7 @@
  * measurements. A completed readback is a checkpoint, not proof of causation
  * or a guarantee against SD-controller/power-loss caching.
  */
-char mc_startup_path[64];
+char mc_startup_path[MC_GAME_PATH_CAP];
 char mc_startup_line[192];
 char mc_startup_verify[192];
 uint mc_startup_offset,mc_startup_sequence;
@@ -21,14 +21,14 @@ int mc_startup_write_line(void)
     while(offset<length)
     {
         count=narm_file_write(mc_startup_path,&mc_startup_line[offset],
-                             mc_startup_offset+offset,length-offset,NARM_STORAGE_SD);
+                             mc_startup_offset+offset,length-offset,mc_game_storage);
         if(count<=0||(uint)count>length-offset){mc_startup_error=1;return 0;}
         offset=offset+(uint)count;
     }
-    if(narm_file_size(mc_startup_path,NARM_STORAGE_SD,&size)<0||
+    if(narm_file_size(mc_startup_path,mc_game_storage,&size)<0||
        size!=mc_startup_offset+length){mc_startup_error=2;return 0;}
     amount=length;
-    count=narm_file_read(mc_startup_path,mc_startup_verify,mc_startup_offset,amount,NARM_STORAGE_SD);
+    count=narm_file_read(mc_startup_path,mc_startup_verify,mc_startup_offset,amount,mc_game_storage);
     if(count!=(int)amount){mc_startup_error=3;return 0;}
     for(i=0;i<count;i=i+1)
         if(mc_startup_verify[i]!=mc_startup_line[i]){mc_startup_error=4;return 0;}
@@ -66,29 +66,29 @@ int mc_startup_checkpoint(char *stage,int status)
 }
 int mc_startup_trace_begin(void)
 {
+    char name[16];
     int run,result;uint size;
     mc_startup_ready=0;mc_startup_error=0;mc_startup_screen_ready=0;
     mc_startup_offset=0;mc_startup_sequence=0;
     mc_startup_chunk=0;mc_startup_x=0;mc_startup_z=0;
-    if(narm_storage_mount(NARM_STORAGE_SD)<=0)return 0;
-    if(narm_dir_make("/MC10",NARM_STORAGE_SD)<=0&&
-       narm_file_exists("/MC10",NARM_STORAGE_SD)<=0)return 0;
-    if(narm_dir_make("/MC10/profiles",NARM_STORAGE_SD)<=0&&
-       narm_file_exists("/MC10/profiles",NARM_STORAGE_SD)<=0)return 0;
+    if(narm_storage_mount(mc_game_storage)<=0)return 0;
+    if(narm_dir_make(mc_game_profiles_path,mc_game_storage)<=0&&
+       narm_file_exists(mc_game_profiles_path,mc_game_storage)<=0)return 0;
     for(run=1;run<=9999;run=run+1)
     {
-        mc_world_copy(mc_startup_path,64,"/MC10/profiles/s16_");
-        mc_world_append_char(mc_startup_path,64,(char)('0'+run/1000));
-        mc_world_append_char(mc_startup_path,64,(char)('0'+(run/100)%10));
-        mc_world_append_char(mc_startup_path,64,(char)('0'+(run/10)%10));
-        mc_world_append_char(mc_startup_path,64,(char)('0'+run%10));
-        mc_world_append(mc_startup_path,64,".log");
-        result=narm_file_size(mc_startup_path,NARM_STORAGE_SD,&size);
-        if(result==0||narm_file_exists(mc_startup_path,NARM_STORAGE_SD)>0)continue;
+        mc_world_copy(name,16,"s16_");
+        mc_world_append_char(name,16,(char)('0'+run/1000));
+        mc_world_append_char(name,16,(char)('0'+(run/100)%10));
+        mc_world_append_char(name,16,(char)('0'+(run/10)%10));
+        mc_world_append_char(name,16,(char)('0'+run%10));
+        mc_world_append(name,16,".log");
+        if(!mc_game_join_path(mc_startup_path,mc_game_profiles_path,name))return 0;
+        result=narm_file_size(mc_startup_path,mc_game_storage,&size);
+        if(result==0||narm_file_exists(mc_startup_path,mc_game_storage)>0)continue;
         if(result!=-3)return 0;
         break;
     }
-    if(run>9999||narm_file_create(mc_startup_path,NARM_STORAGE_SD)<=0)return 0;
+    if(run>9999||narm_file_create(mc_startup_path,mc_game_storage)<=0)return 0;
     mc_startup_ready=1;
     mc_world_copy(mc_startup_line,192,"MC10 Build 16 startup isolation; legacy pixel font; no 3D benchmark\n");
     if(!mc_startup_write_line())return 0;

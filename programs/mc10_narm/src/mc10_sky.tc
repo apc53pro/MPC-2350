@@ -19,10 +19,10 @@ uint mc_sky_crc(uint crc,char *bytes,int length)
 int mc_sky_init(void)
 {
     uint header[8],crc;mc_sky_ready=0;
-    if(narm_file_read("/MC10/sky10.dat",header,0,32,NARM_STORAGE_SD)!=32)return 0;
+    if(narm_file_read(mc_sky_path,header,0,32,mc_game_storage)!=32)return 0;
     if(header[0]!=0x4b53434d||header[1]!=1||header[2]>1500||header[3]!=32||header[4]!=36864||header[5]!=36864+header[2]*48)return 0;
-    if(narm_file_read("/MC10/sky10.dat",mc_sky_texture,32,36864,NARM_STORAGE_SD)!=36864)return 0;
-    if(narm_file_read("/MC10/sky10.dat",mc_sky_stars,36896,header[2]*48,NARM_STORAGE_SD)!=(int)(header[2]*48))return 0;
+    if(narm_file_read(mc_sky_path,mc_sky_texture,32,36864,mc_game_storage)!=36864)return 0;
+    if(narm_file_read(mc_sky_path,mc_sky_stars,36896,header[2]*48,mc_game_storage)!=(int)(header[2]*48))return 0;
     crc=mc_sky_crc(0xffffffff,(char *)mc_sky_texture,36864);
     crc=mc_sky_crc(crc,(char *)mc_sky_stars,header[2]*48)^0xffffffff;
     if(crc!=header[6])return 0;mc_sky_count=(int)header[2];mc_sky_ready=1;return 1;

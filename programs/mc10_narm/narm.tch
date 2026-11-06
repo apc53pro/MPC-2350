@@ -24,6 +24,37 @@ int narm_run_program(const char *path, unsigned storage);
 int narm_spawn_program(const char *path, unsigned storage);
 float narm_sin(float value);
 float narm_cos(float value);
+// Generic binary64 square root, firmware API 1.17+.
+double narm_sqrt(double value);
+
+// Compiler intrinsics. These emit Cortex-M33 instructions and require no
+// additional firmware services. Wide results store low word then high word.
+void narm_umul32(unsigned a, unsigned b, unsigned *lo, unsigned *hi);
+void narm_smul32(int a, int b, unsigned *lo, unsigned *hi);
+// Multiplication modulo 2^64, independent of signed interpretation.
+void narm_mul_u64(unsigned a_lo, unsigned a_hi, unsigned b_lo, unsigned b_hi,
+                  unsigned *lo, unsigned *hi);
+unsigned narm_bswap32(unsigned value);
+unsigned narm_rbit32(unsigned value);
+// Both zero-count operations return 32 for zero.
+unsigned narm_clz32(unsigned value);
+unsigned narm_ctz32(unsigned value);
+// Hardware binary32 square root, using the runtime floating-point mode.
+// This is not a replacement for a source-required binary64 calculation.
+float narm_sqrtf(float value);
+// Aligned word copies/fills with bounded scheduler polls. memcpy requires
+// nonoverlapping spans; memmove permits overlap. Return the original dst.
+#ifdef __NARM__
+float sqrtf(float value);
+void *memcpy(void *dst, const void *src, unsigned bytes);
+void *memmove(void *dst, const void *src, unsigned bytes);
+void *memset(void *dst, int value, unsigned bytes);
+#else
+#include <math.h>
+#include <string.h>
+#endif
+
+
 
 // Process identity, focus and scheduler state (firmware API 1.10+).
 #define NARM_RUN_MODE_AUTO 0
@@ -35,6 +66,9 @@ float narm_cos(float value);
 #define NARM_EVENT_CLOSE_REQUESTED 3
 #define NARM_EVENT_MODE_CHANGED 4
 unsigned narm_get_pid(void);
+// API 1.14. Copies the rooted path used to load this process and its volume.
+// Returns path length without the terminator, or a negative service error.
+int narm_get_program_path(char *path, unsigned capacity, unsigned *storage_out);
 int narm_has_focus(void);
 int narm_get_run_mode(void);
 int narm_get_effective_run_mode(void);

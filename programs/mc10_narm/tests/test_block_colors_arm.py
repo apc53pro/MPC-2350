@@ -18,10 +18,11 @@ int probe_file_read(char*p,void*out,uint off,uint bytes,uint storage){uint i;uns
 uint mc_asset_read_u32(char*d,int i){return((uint)d[i]&255)|(((uint)d[i+1]&255)<<8)|(((uint)d[i+2]&255)<<16)|(((uint)d[i+3]&255)<<24);}
 struct MCBiomeSample{int biome;float temperature;float rainfall;};
 int mc_biome_query(int x,int z,struct MCBiomeSample*s){s->biome=((x^z)&3)==0?6:1;s->temperature=(float)((uint)(x*3129871+z*17)&65535)/65536.0f;s->rainfall=(float)((uint)(z*116129781+x*31)&65535)/65536.0f;return 1;}
+#include "mc10_paths.tc"
 #include "mc10_block_colors.tc"
 int main(void){int i,j;uint hash=0x811c9dc5,word;for(i=0;i<PROBE_VECTORS;i=i+1)if(mc_block_color_index(probe_vectors[i*3],probe_vectors[i*3+1])!=probe_vectors[i*3+2])return 100+i;
  if(!mc_block_colors_open())return 2;mc_block_colors_begin(-2,-3);if(mc_block_color_at(2,0,-48,-64)!=-1)return 3;for(i=0;i<9;i=i+1)if(mc_block_colors_pump()!=(i==8?1:0))return 10+i;
- for(i=0;i<2304;i=i+1){word=mc_block_column_grass[i];for(j=0;j<4;j=j+1){hash=(hash^(word&255))*0x1000193;word=word>>8;}word=mc_block_column_foliage[i];for(j=0;j<4;j=j+1){hash=(hash^(word&255))*0x1000193;word=word>>8;}}
+ for(i=0;i<2304;i=i+1){word=mc_block_color_at(2,0,-48+i%48,-64+i/48);for(j=0;j<4;j=j+1){hash=(hash^(word&255))*0x1000193;word=word>>8;}word=mc_block_color_at(18,0,-48+i%48,-64+i/48);for(j=0;j<4;j=j+1){hash=(hash^(word&255))*0x1000193;word=word>>8;}}
  if(hash!=PROBE_COLOR_HASH)return 20;
  if(mc_block_color_at(18,1,10000,10000)!=6396257||mc_block_color_at(18,2,10000,10000)!=8431445)return 21;
  if(mc_block_color_at(2,0,0,-64)!=-1)return 22;

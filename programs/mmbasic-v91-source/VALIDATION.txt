@@ -1,0 +1,17 @@
+NARM MMBASIC v91 validation
+
+Compiled with the current project NARMCC, -O2.
+Image is accepted by native_image validation; loader regression suite passes.
+Header requires API 1.13. Optional numeric service 0x12 is not imported.
+
+12 mode scenarios pass under ARM Thumb execution with mocked native services.
+11 previous interpreter regression scenarios pass.
+SD-loaded COLORMODES.BAS toggles MODE 3 -> 5 -> 3 and exits in MODE 5.
+Its published framebuffer images contain 16 and 256 distinct colours.
+High-resolution editor selection, scrolling, toolbar and modal clicks pass.
+GFXLAB.BAS submits all 360 timed frames across five scenes, 383 presents total.
+CORRIDOR.BAS submits 14 scripted frames with WASD, raw mouse rotation,
+collision, idle handling and Escape verified.
+
+Physical RP2350 output and PS/2 interaction have not been tested.
+Emulation timings and instruction counts are not hardware frame rates.

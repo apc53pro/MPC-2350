@@ -10,6 +10,7 @@ float narm_cos(float value);
 #include "mc10_u64.tc"
 #include "mc10_java_double.tc"
 #include "mc10_fp64.tc"
+#include "mc10_paths.tc"
 #include "mc10_math.tc"
 struct MCJDouble mc_tp_old_position[3],mc_tp_tick_position[3];
 #include "third_eye_getter.tc"

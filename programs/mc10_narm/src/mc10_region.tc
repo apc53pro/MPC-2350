@@ -57,19 +57,19 @@ int mc_region_floor_div(int value, int divisor)
 
 int mc_region_read_exact(char *path, void *buffer, uint offset, uint bytes)
 {
-    return narm_file_read(path, buffer, offset, bytes, NARM_STORAGE_SD) ==
+    return narm_file_read(path, buffer, offset, bytes, mc_game_storage) ==
            (int)bytes;
 }
 
 int mc_region_make_path(struct MCWorldInfo *world)
 {
-    mc_world_path_begin(world->folder);
-    mc_world_append(mc_world_path, MC_WORLD_PATH_CAP, "/region/r.");
-    mc_world_append_int(mc_world_path, MC_WORLD_PATH_CAP, mc_region_region_x);
-    mc_world_append(mc_world_path, MC_WORLD_PATH_CAP, ".");
-    mc_world_append_int(mc_world_path, MC_WORLD_PATH_CAP, mc_region_region_z);
-    mc_world_append(mc_world_path, MC_WORLD_PATH_CAP, ".mcr");
-    return mc_world_strlen(mc_world_path) < MC_WORLD_PATH_CAP - 1;
+    char leaf[40];
+    mc_world_copy(leaf, 40, "region/r.");
+    mc_world_append_int(leaf, 40, mc_region_region_x);
+    mc_world_append(leaf, 40, ".");
+    mc_world_append_int(leaf, 40, mc_region_region_z);
+    mc_world_append(leaf, 40, ".mcr");
+    return mc_world_save_path(world->folder, leaf);
 }
 
 int mc_region_copy_array(int level, char *key, char *destination,
@@ -77,12 +77,10 @@ int mc_region_copy_array(int level, char *key, char *destination,
 {
     int offset;
     int length;
-    int i;
     if (mc_nbt_get_byte_array(level, key, &offset, &length) != 1)
         return MC_REGION_ERR_ARRAY;
     if (length != expected_length) return MC_REGION_ERR_ARRAY;
-    for (i = 0; i < length; i = i + 1)
-        destination[i] = (char)mc_nbt_bytes[offset + i];
+    mc_nbt_copy_bytes((unsigned char *)destination, &mc_nbt_bytes[offset], (uint)length);
     return MC_REGION_OK;
 }
 
@@ -142,10 +140,9 @@ int mc_region_load_chunk(struct MCWorldInfo *world, int chunk_x, int chunk_z,
 #ifdef MC10_STARTUP_DIAGNOSTIC
     if(!mc_startup_checkpoint("region_path_ready",0))return MC_REGION_ERR_IO;
 #endif
-    if (!narm_file_exists(mc_world_path, NARM_STORAGE_SD))
-        return MC_REGION_ERR_MISSING;
-    if (narm_file_size(mc_world_path, NARM_STORAGE_SD, &file_size) < 0)
-        return MC_REGION_ERR_IO;
+    result = narm_file_size(mc_world_path, mc_game_storage, &file_size);
+    if (result == -3) return MC_REGION_ERR_MISSING; /* FILE_IO_ERR_NOT_FOUND */
+    if (result < 0) return MC_REGION_ERR_IO;
     if (file_size < 8192 || (file_size & 4095) != 0)
         return MC_REGION_ERR_HEADER;
 

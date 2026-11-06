@@ -33,21 +33,23 @@ constexpr uint8_t kMaxMixBlocksPerPoll = 24;
 
 // Large contiguous WAVs are refilled by SPI DMA on Core 1. Fragmented files
 // use the cooperative Core-0 fallback, so retain generous ring headroom for
-// either path. The rings remain in PSRAM: eight voices consume exactly 1 MiB.
-constexpr uint32_t kSdRingFrames = 32768;
+// either path. Keep all 32 rings within the 1 MiB audio budget on the 8 MiB board.
+constexpr uint32_t kSdRingFrames = 8192;
 constexpr uint32_t kSdRingMask = kSdRingFrames - 1;
-constexpr uint32_t kStartPrefillFrames = 16384;
+constexpr uint32_t kStartPrefillFrames = kSdRingFrames / 2;
 constexpr uint16_t kSdReadFrames = 4096;
 constexpr uint16_t kSdMinimumRefillFrames = 4096;
 constexpr uint32_t kCore0ServiceIntervalUs = 1000;
 constexpr uint8_t kMaximumWaveBlockAlign = 8;
-constexpr uint8_t kCommandQueueLength = 16;
+constexpr uint8_t kCommandQueueLength = 32;
 constexpr uint16_t kSdSectorBytes = 512;
 constexpr uint8_t kSdDmaBurstSectors = 32;
 constexpr uint32_t kSdTokenTimeoutMs = 300;
 
 static_assert((kSdRingFrames & (kSdRingFrames - 1)) == 0,
               "The SD audio ring size must be a power of two");
+
+static_assert(AUDIO_VOICE_CHANNELS <= 32, "Audio voice masks must fit in 32 bits");
 
 struct StereoFrame
 {
@@ -80,6 +82,7 @@ struct AudioCommand
   uint32_t startFrame;
   uint32_t totalFrames;
   const int16_t* arraySamples;
+  uint32_t sequence;
 };
 
 struct StreamRingControl
@@ -205,11 +208,13 @@ volatile uint32_t g_commandWriteIndex = 0;
 volatile uint32_t g_commandReadIndex = 0;
 // Dequeuing releases a queue slot before the command has changed the mixer.
 // A separate acknowledgement is published only after the new snapshot exists.
-volatile uint32_t g_commandAppliedIndex = 0;
+volatile uint32_t g_voiceCommandEnqueued[AUDIO_VOICE_CHANNELS]{};
+volatile uint32_t g_voiceCommandApplied[AUDIO_VOICE_CHANNELS]{};
 
 // PCM rings live in PSRAM. DMA never accesses them directly: Core 1 mixes from
 // these rings into the I2S library's internal SRAM buffers.
 PSRAM StereoFrame g_sdPcm[AUDIO_VOICE_CHANNELS][kSdRingFrames];
+static_assert(sizeof(g_sdPcm) <= 1024u * 1024u, "SD audio exceeds its PSRAM budget");
 
 alignas(4) uint32_t g_mixBlock[kMixBlockFrames];
 alignas(4) MixAccumulator g_mixAccumulator[kMixBlockFrames];
@@ -788,12 +793,15 @@ static void serviceSdDma()
 {
   if(g_sdDma.state == SdDmaState::Idle)
   {
+    const uint32_t streamMask = atomicLoadAcquire(&g_dmaStreamMask);
+    if(streamMask == 0) return;
+
     for(uint8_t checked = 0; checked < AUDIO_VOICE_CHANNELS; checked++)
     {
       const uint8_t voiceChannel = g_sdDmaRoundRobinCursor;
       g_sdDmaRoundRobinCursor = (uint8_t)((g_sdDmaRoundRobinCursor + 1)
                                         % AUDIO_VOICE_CHANNELS);
-      if((atomicLoadAcquire(&g_dmaStreamMask) & (1u << voiceChannel)) != 0 &&
+      if((streamMask & (1u << voiceChannel)) != 0 &&
          startSdDmaBurstForVoice(voiceChannel))
       {
         break;
@@ -882,7 +890,11 @@ static bool enqueueCommand(const AudioCommand& command)
     return false;
   }
 
-  g_commandQueue[writeIndex % kCommandQueueLength] = command;
+  AudioCommand& queued = g_commandQueue[writeIndex % kCommandQueueLength];
+  queued = command;
+  volatile uint32_t* enqueued = &g_voiceCommandEnqueued[command.voiceChannel];
+  queued.sequence = atomicLoadRelaxed(enqueued) + 1u;
+  atomicStoreRelease(enqueued, queued.sequence);
   atomicStoreRelease(&g_commandWriteIndex, writeIndex + 1);
   return true;
 }
@@ -1132,15 +1144,12 @@ static int16_t clampToInt16(int32_t value)
   return (int16_t)value;
 }
 
-static bool mixOutputBlock()
+static bool mixOutputBlock(uint32_t voiceMask)
 {
   memset(g_mixAccumulator, 0, sizeof(g_mixAccumulator));
   bool producedAnySample = false;
-  uint32_t voiceMask = atomicLoadAcquire(&g_activeVoiceMask) &
-                       ~atomicLoadAcquire(&g_pausedVoiceMask);
-
   // Process one complete block per active voice. Each voice therefore walks
-  // its PSRAM ring sequentially instead of jumping between eight rings for
+  // its PSRAM ring sequentially instead of switching rings for
   // every output frame. Inactive channels do not enter the hot loop at all.
   while(voiceMask != 0)
   {
@@ -1172,17 +1181,19 @@ static bool mixOutputBlock()
   return producedAnySample;
 }
 
-static void refreshActiveVoiceMask()
+static void refreshActiveVoiceMask(uint32_t changedVoices)
 {
-  uint32_t mask = 0;
-  for(uint8_t voiceChannel = 0; voiceChannel < AUDIO_VOICE_CHANNELS; voiceChannel++)
+  uint32_t mask = atomicLoadRelaxed(&g_activeVoiceMask) & ~changedVoices;
+  while(changedVoices != 0)
   {
-    if(g_voices[voiceChannel].active)
+    const uint8_t voiceChannel = (uint8_t)__builtin_ctz(changedVoices);
+    changedVoices &= changedVoices - 1u;
+    VoicePositionSnapshot &snapshot = g_voicePositions[voiceChannel];
+    const MixerVoice &voice = g_voices[voiceChannel];
+    if(voice.active)
     {
       mask |= 1u << voiceChannel;
     }
-    VoicePositionSnapshot &snapshot = g_voicePositions[voiceChannel];
-    const MixerVoice &voice = g_voices[voiceChannel];
     __atomic_fetch_add(&snapshot.sequence, 1u, __ATOMIC_ACQ_REL);
     __atomic_store_n(&snapshot.currentFrame, voice.playbackFrame, __ATOMIC_RELAXED);
     __atomic_store_n(&snapshot.totalFrames, voice.totalFrames, __ATOMIC_RELAXED);
@@ -1203,13 +1214,12 @@ static void resetMixerVoice(MixerVoice& voice)
 static void processAudioCommands()
 {
   AudioCommand command;
+  uint32_t changedVoices = 0;
+  uint32_t applied[AUDIO_VOICE_CHANNELS];
   while(dequeueCommand(command))
   {
-    if(command.voiceChannel >= AUDIO_VOICE_CHANNELS)
-    {
-      continue;
-    }
-
+    changedVoices |= 1u << command.voiceChannel;
+    applied[command.voiceChannel] = command.sequence;
     MixerVoice& voice = g_voices[command.voiceChannel];
     resetMixerVoice(voice);
 
@@ -1252,8 +1262,15 @@ static void processAudioCommands()
     }
   }
 
-  refreshActiveVoiceMask();
-  atomicStoreRelease(&g_commandAppliedIndex, atomicLoadRelaxed(&g_commandReadIndex));
+  if(changedVoices == 0) return;
+
+  refreshActiveVoiceMask(changedVoices);
+  while(changedVoices != 0)
+  {
+    const uint8_t voiceChannel = (uint8_t)__builtin_ctz(changedVoices);
+    changedVoices &= changedVoices - 1u;
+    atomicStoreRelease(&g_voiceCommandApplied[voiceChannel], applied[voiceChannel]);
+  }
 }
 
 static bool submitPendingMixBlock()
@@ -1292,7 +1309,6 @@ bool audio_runtime_init()
 
   atomicStoreRelease(&g_commandReadIndex, 0);
   atomicStoreRelease(&g_commandWriteIndex, 0);
-  atomicStoreRelease(&g_commandAppliedIndex, 0);
   atomicStoreRelease(&g_dmaStreamMask, 0);
 
   for(uint8_t voiceChannel = 0; voiceChannel < AUDIO_VOICE_CHANNELS; voiceChannel++)
@@ -1438,7 +1454,9 @@ void audio_core1_poll()
       break;
     }
 
-    if(atomicLoadAcquire(&g_activeVoiceMask) == 0)
+    const uint32_t mixingVoices = atomicLoadRelaxed(&g_activeVoiceMask) &
+                                  ~atomicLoadAcquire(&g_pausedVoiceMask);
+    if(mixingVoices == 0)
     {
       break;
     }
@@ -1448,13 +1466,13 @@ void audio_core1_poll()
       break;
     }
 
-    if(!mixOutputBlock())
+    const bool produced = mixOutputBlock(mixingVoices);
+    refreshActiveVoiceMask(mixingVoices);
+    if(!produced)
     {
-      refreshActiveVoiceMask();
       break;
     }
 
-    refreshActiveVoiceMask();
     g_pendingByteOffset = 0;
     g_pendingByteCount = sizeof(g_mixBlock);
   }
@@ -1742,8 +1760,9 @@ uint32_t audio_stream_starvation_count()
   return atomicLoadRelaxed(&g_streamStarvations);
 }
 
-bool audio_command_queue_idle()
+bool audio_voice_commands_idle(uint8_t voiceChannel)
 {
-  return atomicLoadAcquire(&g_commandAppliedIndex) ==
-         atomicLoadAcquire(&g_commandWriteIndex);
+  return voiceChannel < AUDIO_VOICE_CHANNELS &&
+         atomicLoadAcquire(&g_voiceCommandApplied[voiceChannel]) ==
+         atomicLoadRelaxed(&g_voiceCommandEnqueued[voiceChannel]);
 }

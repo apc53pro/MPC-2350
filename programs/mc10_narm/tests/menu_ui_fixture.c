@@ -49,6 +49,7 @@ void mc_world_append_int(char *d,int cap,int value)
 #include "menu_ui_under_test.tc"
 /* Pointer shape is orthogonal to text; keep it out of the text oracle. */
 void mc_menu_draw_pointer(void){}
+#include "../src/mc10_paths.tc"
 #include "options_ui_under_test.tc"
 #include "pause_ui_under_test.tc"
 void fixture_reset(int text_enabled)

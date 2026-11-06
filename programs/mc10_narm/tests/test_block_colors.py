@@ -24,14 +24,15 @@ CPP=r'''
 typedef unsigned int uint;
 #define MC10_WORLD_SYSTEMS 1
 #define NARM_STORAGE_SD 1
-char file[1024];int fail_read;
+char file[1024];int fail_read,query_calls,lookup_reads;
 int narm_file_size(char*,uint,uint*out){std::ifstream f(file,std::ios::binary|std::ios::ate);if(!f)return-1;*out=(uint)f.tellg();return 0;}
-int narm_file_read(char*,void*out,uint off,uint n,uint){if(fail_read)return-1;std::ifstream f(file,std::ios::binary);f.seekg(off);f.read((char*)out,n);return(int)f.gcount();}
+int narm_file_read(char*,void*out,uint off,uint n,uint){if(n==6)lookup_reads++;if(fail_read)return-1;std::ifstream f(file,std::ios::binary);f.seekg(off);f.read((char*)out,n);return(int)f.gcount();}
 #include "mc10_types.tc"
 #include "mc10_u64.tc"
 uint mc_asset_read_u32(char*d,int i){return(uint)(unsigned char)d[i]|((uint)(unsigned char)d[i+1]<<8)|((uint)(unsigned char)d[i+2]<<16)|((uint)(unsigned char)d[i+3]<<24);}
 struct MCBiomeSample{int biome;float temperature;float rainfall;};
-int mc_biome_query(int x,int z,MCBiomeSample*s){s->biome=((x^z)&3)==0?6:1;s->temperature=(float)((uint)(x*3129871+z*17)&65535)/65536.0f;s->rainfall=(float)((uint)(z*116129781+x*31)&65535)/65536.0f;return 1;}
+int mc_biome_query(int x,int z,MCBiomeSample*s){query_calls++;s->biome=((x^z)&3)==0?6:1;s->temperature=(float)((uint)(x*3129871+z*17)&65535)/65536.0f;s->rainfall=(float)((uint)(z*116129781+x*31)&65535)/65536.0f;return 1;}
+#include "mc10_paths.tc"
 #include "mc10_block_colors.tc"
 extern "C" uint index_for(uint t,uint r){return mc_block_color_index(t,r);}
 extern "C" uint swamp(uint rgb){return mc_block_color_swamp(rgb);}
@@ -41,6 +42,8 @@ extern "C" void begin(int x,int z){mc_block_colors_begin(x,z);}
 extern "C" int color(uint id,uint meta,int x,int z){return mc_block_color_at(id,meta,x,z);}
 extern "C" uint*tile(int tile){return mc_block_color_tile(tile);}
 extern "C" void failure(int n){fail_read=n;}
+extern "C" int queries(){return query_calls;}
+extern "C" int reads(){return lookup_reads;}
 '''
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--source',type=Path,required=True);ap.add_argument('--game',type=Path,required=True);ap.add_argument('--pack',type=Path,default=ROOT/'converted/biomecolor10.dat');ap.add_argument('--output',type=Path,default=ROOT/'color_test_temp');a=ap.parse_args()
@@ -74,9 +77,32 @@ def main():
         assert dll.color(2,0,x,z)==g;assert dll.color(31,1,x,z)==g;assert dll.color(31,0,x,z)==0xffffff
         assert dll.color(18,0,x,z)==f;assert dll.color(106,0,x,z)==f
     assert dll.color(2,0,0,-64)==-1;assert dll.color(18,0,-49,-64)==-1
-    for i,tile in enumerate((0,38,39,56,52,53,132,133,143)):assert ctypes.string_at(dll.tile(tile),1024)==data[393248+i*1024:394272+i*1024]
-    dll.begin(0,0);dll.failure(1);assert dll.pump()==-1;dll.failure(0);dll.begin(-2,-3)
+    assert dll.queries()==2304 and 0<dll.reads()<2304
+    queries=dll.queries()
+    dll.begin(-1,-3)
+    assert dll.color(2,0,-32,-64)==-1
     for i in range(9):assert dll.pump()==int(i==8)
-    print('Owned Colorizer double/Q16 and swamp parity PASS',len(vectors),'climate vectors;2304exactnegative-coordinate columns;9RGBA tiles;cooperativefailure/retry')
+    assert dll.queries()-queries==3*256
+    for z in range(-64,-16):
+        for x in range(-32,16):
+            index=dll.index_for((x*3129871+z*17)&65535,(z*116129781+x*31)&65535)
+            pair=32+index*6
+            grass=int.from_bytes(data[pair:pair+3],'big')
+            foliage=int.from_bytes(data[pair+3:pair+6],'big')
+            if (x^z)&3==0:grass=dll.swamp(grass);foliage=dll.swamp(foliage)
+            assert (dll.color(2,0,x,z),dll.color(18,0,x,z))==(grass,foliage)
+    queries=dll.queries()
+    dll.begin(0,-2)
+    for i in range(9):assert dll.pump()==int(i==8)
+    assert dll.queries()-queries==5*256
+    for i,tile in enumerate((0,38,39,56,52,53,132,133,143)):assert ctypes.string_at(dll.tile(tile),1024)==data[393248+i*1024:394272+i*1024]
+    dll.begin(20,20);dll.failure(1);assert dll.pump()==-1;dll.failure(0);dll.begin(-2,-3)
+    for i in range(9):assert dll.pump()==int(i==8)
+    queries=dll.queries()
+    assert dll.init(str(a.pack.resolve()).encode())==1
+    dll.begin(-2,-3)
+    for i in range(9):assert dll.pump()==int(i==8)
+    assert dll.queries()-queries==2304
+    print('Owned Colorizer parity PASS',len(vectors),'climate vectors, exact column colors, cardinal and diagonal reuse, failure/retry, and world reopen')
 if __name__=='__main__':main()
 

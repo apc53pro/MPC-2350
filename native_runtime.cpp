@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "native_numeric_runtime.h"
 
 namespace
 {
@@ -102,9 +103,15 @@ struct NativeProcess
   NativeAllocation stack;
   uintptr_t lowest_hardware_psp;
   NativeContextV1 context;
-  uint32_t audio_voice_mask;
-  uint32_t audio_manual_pause_mask;
+  uint8_t audio_voice_slot;  // Physical channel plus one. Zero means unallocated.
+  uint8_t audio_voice_handle;
+  bool audio_manual_paused;
+  bool audio_has_playback;
+  bool audio_releasing;
   uint32_t parent_pid;
+  // Up to 255 input bytes, a leading slash if needed, and the terminator.
+  char program_path[257];
+  uint32_t program_storage;
   char launch_path[256];
   uint32_t launch_storage;
   bool launch_requested;
@@ -452,15 +459,12 @@ NativeRunMode effective_mode(const NativeProcess &process)
 
 void update_process_audio_pause(NativeProcess &process)
 {
-  const bool paused = !process.focused &&
-                      effective_mode(process) == NARM_RUN_MODE_FOREGROUND;
-  for (uint8_t voice = 0; voice < AUDIO_VOICE_CHANNELS; ++voice)
-  {
-    if ((process.audio_voice_mask & (1u << voice)) != 0u &&
-        audio_voice_owners[voice] == &process)
-      audio_set_voice_paused(voice, paused ||
-          (process.audio_manual_pause_mask & (1u << voice)) != 0u);
-  }
+  if (process.audio_voice_slot == 0u) return;
+
+  const bool unfocused = !process.focused &&
+                         effective_mode(process) == NARM_RUN_MODE_FOREGROUND;
+  audio_set_voice_paused(process.audio_voice_slot - 1u,
+                        unfocused || process.audio_manual_paused);
 }
 
 void push_system_event(NativeProcess &process, NativeSystemEvent event)
@@ -508,6 +512,8 @@ bool service_supported(void *, uint32_t service_id, uint16_t minimum_version)
     case NARM_SERVICE_USB_STORAGE_ENABLE:
     case NARM_SERVICE_USB_STORAGE_DISABLE:
     case NARM_SERVICE_USB_STORAGE_STATUS:
+    case NARM_SERVICE_GET_PROGRAM_PATH:
+    case NARM_SERVICE_NUMERIC:
     case NARM_INTERFACE_KEYBOARD:
     case NARM_INTERFACE_MOUSE:
     case NARM_INTERFACE_FILE_IO:
@@ -918,6 +924,15 @@ int32_t api_invoke(NativeContextV1 *context,
       if (!has_capability(context, NARM_CAP_USB_STORAGE))
         return NARM_SERVICE_ERR_CAPABILITY;
       return (int32_t)usb_storage_status();
+    case NARM_SERVICE_NUMERIC:
+    {
+      if (arg_words != 2u || args[0] >= NARM_NUM_OPERATION_COUNT)
+        return NARM_SERVICE_ERR_ARGUMENTS;
+      uint32_t *record = (uint32_t *)(uintptr_t)args[1];
+      if (!native_pointer_valid(context, record, 6u * sizeof(uint32_t)))
+        return NARM_SERVICE_ERR_ARGUMENTS;
+      return narm_numeric::execute(args[0], record) ? NARM_SERVICE_OK : NARM_SERVICE_ERR_ARGUMENTS;
+    }
     case NARM_SERVICE_SIN_F32:
     case NARM_SERVICE_COS_F32:
     {
@@ -932,6 +947,33 @@ int32_t api_invoke(NativeContextV1 *context,
     case NARM_SERVICE_GET_PID:
       if (arg_words != 0u) return NARM_SERVICE_ERR_ARGUMENTS;
       return (int32_t)((NativeProcess *)context->process_handle)->pid;
+    case NARM_SERVICE_GET_PROGRAM_PATH:
+    {
+      if (arg_words != 3u) return NARM_SERVICE_ERR_ARGUMENTS;
+      char *out = (char *)(uintptr_t)args[0];
+      const uint32_t capacity = args[1];
+      uint32_t *storage_out = (uint32_t *)(uintptr_t)args[2];
+      if (!native_pointer_valid(context, out, capacity, 1u) ||
+          !native_pointer_valid(context, storage_out, sizeof(*storage_out)))
+        return NARM_SERVICE_ERR_ARGUMENTS;
+
+      const NativeProcess &process = *(NativeProcess *)context->process_handle;
+      const size_t bytes = strnlen(process.program_path, sizeof(process.program_path));
+      if (bytes == 0u || bytes == sizeof(process.program_path))
+        return NARM_SERVICE_ERR_UNKNOWN;
+      if (bytes >= capacity)
+        return NARM_SERVICE_ERR_ARGUMENTS;
+
+      const uintptr_t out_address = (uintptr_t)out;
+      const uintptr_t storage_address = (uintptr_t)storage_out;
+      if (out_address < storage_address + sizeof(*storage_out) &&
+          storage_address < out_address + bytes + 1u)
+        return NARM_SERVICE_ERR_ARGUMENTS;
+
+      memcpy(out, process.program_path, bytes + 1u);
+      *storage_out = process.program_storage;
+      return (int32_t)bytes;
+    }
     case NARM_SERVICE_HAS_FOCUS:
       if (arg_words != 0u) return NARM_SERVICE_ERR_ARGUMENTS;
       return __atomic_load_n(&focused_process, __ATOMIC_ACQUIRE) ==
@@ -1047,6 +1089,82 @@ uint32_t native_audio_status(NativeContextV1 *context)
   return status;
 }
 
+int32_t reserve_audio_voice(NativeProcess &process, int32_t legacy_handle)
+{
+  if (process.audio_voice_slot != 0u)
+    return process.audio_releasing ? NARM_SERVICE_ERR_BUSY
+                                   : process.audio_voice_handle;
+  if (!audio_runtime_ready()) return NARM_SERVICE_ERR_BUSY;
+
+  for (uint8_t voice = 0; voice < AUDIO_VOICE_CHANNELS; ++voice)
+  {
+    if (audio_voice_owners[voice] || !audio_voice_commands_idle(voice) ||
+        voice_channel_active(voice))
+      continue;
+
+    audio_voice_owners[voice] = &process;
+    process.audio_voice_slot = voice + 1u;
+    process.audio_voice_handle = legacy_handle < 0 ? voice : (uint8_t)legacy_handle;
+    update_process_audio_pause(process);
+    return process.audio_voice_handle;
+  }
+  return NARM_SERVICE_ERR_BUSY;
+}
+
+int32_t owned_audio_voice(const NativeProcess &process, uint32_t handle)
+{
+  if (process.audio_voice_slot == 0u || process.audio_voice_handle != handle)
+    return NARM_SERVICE_ERR_BUSY;
+  return process.audio_voice_slot - 1u;
+}
+
+int32_t audio_voice_for_playback(NativeProcess &process, int32_t handle)
+{
+  if (process.audio_releasing) return NARM_SERVICE_ERR_BUSY;
+  if (handle < 0)
+    return process.audio_voice_slot == 0u ? NARM_SERVICE_ERR_BUSY
+                                         : (int32_t)process.audio_voice_slot - 1;
+  // Older images supply a private channel number on their first play call.
+  // Assign a mixer slot for it without requiring changes to their binaries.
+  if (process.audio_voice_slot == 0u &&
+      process.image.api_minor < NARM_AUDIO_ALLOCATION_API_MINOR)
+    reserve_audio_voice(process, handle);
+  return owned_audio_voice(process, (uint32_t)handle);
+}
+
+bool try_release_audio_voice(NativeProcess &process)
+{
+  if (process.audio_voice_slot == 0u) return true;
+
+  const uint8_t voice = process.audio_voice_slot - 1u;
+  if (!audio_voice_commands_idle(voice) || voice_channel_active(voice))
+  {
+    if (!process.audio_releasing && stop_voice_channel(voice))
+      process.audio_releasing = true;
+    return false;
+  }
+
+  audio_set_voice_paused(voice, false);
+  audio_voice_owners[voice] = nullptr;
+  process.audio_voice_slot = 0u;
+  process.audio_manual_paused = false;
+  process.audio_has_playback = false;
+  process.audio_releasing = false;
+  return true;
+}
+
+bool wait_for_audio_release(NativeProcess &process, NativeContextV1 *context)
+{
+  const uint32_t deadline = millis() + 250u;
+  while (!try_release_audio_voice(process))
+  {
+    if ((int32_t)(deadline - millis()) <= 0) return false;
+    if (context) abort_if_stop_requested(context);
+    delay(1);
+  }
+  return true;
+}
+
 int32_t native_audio_submit(NativeContextV1 *context,
                             uint32_t command,
                             const uint32_t *args,
@@ -1061,54 +1179,64 @@ int32_t native_audio_submit(NativeContextV1 *context,
   if (!native_owns_audio(context)) return NARM_SERVICE_ERR_BUSY;
 
   NativeProcess *process = (NativeProcess *)context->process_handle;
-  auto claim_voice = [&](uint32_t voice) -> bool {
-    NativeProcess *owner = audio_voice_owners[voice];
-    if (owner && owner != process &&
-        (!audio_command_queue_idle() || voice_channel_active((uint8_t)voice)))
-      return false;
-    if (owner && owner != process)
-      owner->audio_voice_mask &= ~(1u << voice);
-    audio_voice_owners[voice] = process;
-    process->audio_voice_mask |= 1u << voice;
-    process->audio_manual_pause_mask &= ~(1u << voice);
-    audio_set_voice_paused((uint8_t)voice, false);
-    return true;
-  };
+
   switch (command)
   {
+    case NARM_AUDIO_ALLOCATE_VOICE:
+      if (arg_words != 0u) return NARM_SERVICE_ERR_ARGUMENTS;
+      return reserve_audio_voice(*process, -1);
+    case NARM_AUDIO_DEALLOCATE_VOICE:
+      if (arg_words != 1u || args[0] >= AUDIO_VOICE_CHANNELS)
+        return NARM_SERVICE_ERR_ARGUMENTS;
+      if (owned_audio_voice(*process, args[0]) < 0)
+        return NARM_SERVICE_ERR_BUSY;
+      return wait_for_audio_release(*process, context)
+               ? NARM_SERVICE_OK : NARM_SERVICE_ERR_BUSY;
     case NARM_AUDIO_PLAY_WAV:
     case NARM_AUDIO_PLAY_WAV_FROM:
+    case NARM_AUDIO_PLAY_OWNED_WAV:
+    case NARM_AUDIO_PLAY_OWNED_WAV_FROM:
     {
-      const bool from_frame = command == NARM_AUDIO_PLAY_WAV_FROM;
-      if (arg_words != (from_frame ? 3u : 2u) ||
-          args[0] >= AUDIO_VOICE_CHANNELS)
+      const bool indexed = command == NARM_AUDIO_PLAY_WAV ||
+                           command == NARM_AUDIO_PLAY_WAV_FROM;
+      const bool from_frame = command == NARM_AUDIO_PLAY_WAV_FROM ||
+                              command == NARM_AUDIO_PLAY_OWNED_WAV_FROM;
+      if (arg_words != (from_frame ? 2u : 1u) + (indexed ? 1u : 0u) ||
+          (indexed && args[0] >= AUDIO_VOICE_CHANNELS))
         return NARM_SERVICE_ERR_ARGUMENTS;
-      const char *path = (const char *)(uintptr_t)args[1];
+      const int32_t handle = indexed ? (int32_t)args[0] : -1;
+      const uint32_t *play_args = args + (indexed ? 1u : 0u);
+      const char *path = (const char *)(uintptr_t)play_args[0];
       if (!native_c_string_valid(context, path, 256u) || path[0] == 0)
         return NARM_SERVICE_ERR_ARGUMENTS;
-      const uint32_t start_frame = from_frame ? args[2] : 0u;
-      if (!claim_voice(args[0])) return NARM_SERVICE_ERR_BUSY;
-      if (!play_sound_SD_from_frame((uint8_t)args[0], String(path),
-                                    start_frame))
-      {
-        // A failed replacement can leave the previous PCM voice alive until
-        // Core 1 sees a stop/invalidation. Retain ownership so exit cleanup
-        // cannot release caller-owned samples while the mixer references them.
+      const uint32_t start_frame = from_frame ? play_args[1] : 0u;
+      const int32_t voice = audio_voice_for_playback(*process, handle);
+      if (voice < 0) return voice;
+      if (!play_sound_SD_from_frame((uint8_t)voice, String(path), start_frame))
         return NARM_SERVICE_ERR_BUSY;
-      }
+      process->audio_has_playback = true;
+      process->audio_manual_paused = false;
+      update_process_audio_pause(*process);
       return NARM_SERVICE_OK;
     }
     case NARM_AUDIO_PLAY_PCM:
     case NARM_AUDIO_PLAY_PCM_FROM:
+    case NARM_AUDIO_PLAY_OWNED_PCM:
+    case NARM_AUDIO_PLAY_OWNED_PCM_FROM:
     {
-      const bool from_frame = command == NARM_AUDIO_PLAY_PCM_FROM;
-      if (arg_words != (from_frame ? 6u : 5u) ||
-          args[0] >= AUDIO_VOICE_CHANNELS)
+      const bool indexed = command == NARM_AUDIO_PLAY_PCM ||
+                           command == NARM_AUDIO_PLAY_PCM_FROM;
+      const bool from_frame = command == NARM_AUDIO_PLAY_PCM_FROM ||
+                              command == NARM_AUDIO_PLAY_OWNED_PCM_FROM;
+      if (arg_words != (from_frame ? 5u : 4u) + (indexed ? 1u : 0u) ||
+          (indexed && args[0] >= AUDIO_VOICE_CHANNELS))
         return NARM_SERVICE_ERR_ARGUMENTS;
-      const uint32_t frame_count = args[2];
-      const uint32_t start_frame = from_frame ? args[3] : 0u;
-      const uint32_t sample_rate = from_frame ? args[4] : args[3];
-      const uint32_t channel_count = from_frame ? args[5] : args[4];
+      const int32_t handle = indexed ? (int32_t)args[0] : -1;
+      const uint32_t *play_args = args + (indexed ? 1u : 0u);
+      const uint32_t frame_count = play_args[1];
+      const uint32_t start_frame = from_frame ? play_args[2] : 0u;
+      const uint32_t sample_rate = from_frame ? play_args[3] : play_args[2];
+      const uint32_t channel_count = from_frame ? play_args[4] : play_args[3];
       if (frame_count == 0u || start_frame >= frame_count ||
           (channel_count != 1u && channel_count != 2u) ||
           sample_rate < 8000u || sample_rate > 192000u)
@@ -1117,39 +1245,41 @@ int32_t native_audio_submit(NativeContextV1 *context,
       const uint64_t byte_count = sample_count * sizeof(int16_t);
       if (byte_count == 0u || byte_count > UINT32_MAX)
         return NARM_SERVICE_ERR_ARGUMENTS;
-      const int16_t *samples = (const int16_t *)(uintptr_t)args[1];
+      const int16_t *samples = (const int16_t *)(uintptr_t)play_args[0];
       if (!native_pointer_valid(context, samples, (uint32_t)byte_count,
                                 alignof(int16_t)))
         return NARM_SERVICE_ERR_ARGUMENTS;
-      if (!claim_voice(args[0])) return NARM_SERVICE_ERR_BUSY;
-      if (!play_sound_array_from_frame((uint8_t)args[0], samples, frame_count,
+      const int32_t voice = audio_voice_for_playback(*process, handle);
+      if (voice < 0) return voice;
+      if (!play_sound_array_from_frame((uint8_t)voice, samples, frame_count,
                                        start_frame, sample_rate,
                                        (uint8_t)channel_count))
-      {
-        // Keep lifecycle responsibility for an older voice on this channel.
         return NARM_SERVICE_ERR_BUSY;
-      }
+      process->audio_has_playback = true;
+      process->audio_manual_paused = false;
+      update_process_audio_pause(*process);
       return NARM_SERVICE_OK;
     }
     case NARM_AUDIO_STOP_VOICE:
+    {
       if (arg_words != 1u || args[0] >= AUDIO_VOICE_CHANNELS)
         return NARM_SERVICE_ERR_ARGUMENTS;
-      if (audio_voice_owners[args[0]] != process)
-        return NARM_SERVICE_ERR_BUSY;
-      return stop_voice_channel((uint8_t)args[0])
+      const int32_t voice = owned_audio_voice(*process, args[0]);
+      if (voice < 0) return voice;
+      return stop_voice_channel((uint8_t)voice)
                ? NARM_SERVICE_OK : NARM_SERVICE_ERR_BUSY;
+    }
     case NARM_AUDIO_STOP_ALL:
       if (arg_words != 0u) return NARM_SERVICE_ERR_ARGUMENTS;
-      for (uint8_t voice = 0; voice < AUDIO_VOICE_CHANNELS; ++voice)
-        if (audio_voice_owners[voice] == process) stop_voice_channel(voice);
-      return NARM_SERVICE_OK;
+      return process->audio_voice_slot == 0u ||
+             stop_voice_channel(process->audio_voice_slot - 1u)
+               ? NARM_SERVICE_OK : NARM_SERVICE_ERR_BUSY;
     case NARM_AUDIO_PAUSE:
       if (arg_words != 2u || args[0] >= AUDIO_VOICE_CHANNELS || args[1] > 1u)
         return NARM_SERVICE_ERR_ARGUMENTS;
-      if (audio_voice_owners[args[0]] != process)
+      if (owned_audio_voice(*process, args[0]) < 0)
         return NARM_SERVICE_ERR_BUSY;
-      if (args[1]) process->audio_manual_pause_mask |= 1u << args[0];
-      else process->audio_manual_pause_mask &= ~(1u << args[0]);
+      process->audio_manual_paused = args[1] != 0u;
       update_process_audio_pause(*process);
       return NARM_SERVICE_OK;
     case NARM_AUDIO_POSITION:
@@ -1163,13 +1293,14 @@ int32_t native_audio_submit(NativeContextV1 *context,
         if (!native_pointer_valid(context, outputs[i], sizeof(uint32_t)))
           return NARM_SERVICE_ERR_ARGUMENTS;
       }
-      if (audio_voice_owners[args[0]] != process)
-        return NARM_SERVICE_ERR_BUSY;
-      // A successful play command may still be waiting for Core 1. Avoid
-      // reporting the previous track's metadata while that command is queued.
-      if (!audio_command_queue_idle()) return NARM_SERVICE_ERR_BUSY;
+      const int32_t voice = owned_audio_voice(*process, args[0]);
+      if (voice < 0) return voice;
+      // A newly reserved channel may still contain a previous owner's snapshot.
+      // Only return a track position after this process queues its own playback.
+      if (!audio_voice_commands_idle((uint8_t)voice)) return NARM_SERVICE_ERR_BUSY;
       AudioVoicePosition position{};
-      if (!audio_get_voice_position((uint8_t)args[0], position))
+      if (process->audio_has_playback &&
+          !audio_get_voice_position((uint8_t)voice, position))
         return NARM_SERVICE_ERR_BUSY;
       *outputs[0] = position.current_frame;
       *outputs[1] = position.total_frames;
@@ -1192,8 +1323,10 @@ int32_t native_audio_voice_active(NativeContextV1 *context,
   if (!has_capability(context, NARM_CAP_AUDIO))
     return NARM_SERVICE_ERR_CAPABILITY;
   NativeProcess *process = (NativeProcess *)context->process_handle;
-  if (audio_voice_owners[voice_channel] != process) return 0;
-  return voice_channel_active((uint8_t)voice_channel) ? 1 : 0;
+  const int32_t voice = owned_audio_voice(*process, voice_channel);
+  if (voice < 0) return 0;
+  return !audio_voice_commands_idle((uint8_t)voice) ||
+         voice_channel_active((uint8_t)voice) ? 1 : 0;
 }
 
 uint32_t native_audio_output_underflows(NativeContextV1 *context)
@@ -1215,7 +1348,7 @@ uint32_t native_audio_stream_starvations(NativeContextV1 *context)
 const NativeAudioApiV1 native_audio_api = {
   sizeof(NativeAudioApiV1),
   1,
-  1,
+  3,
   native_audio_status,
   native_audio_submit,
   native_audio_voice_active,
@@ -1326,57 +1459,6 @@ const NativeFileApiV1 native_file_api = {
   0,
   native_file_submit
 };
-
-void native_audio_release(NativeProcess &process)
-{
-  uint32_t pending = process.audio_voice_mask;
-  if (pending == 0u) return;
-  const uint32_t deadline = millis() + 250u;
-  while (pending != 0u && (int32_t)(deadline - millis()) > 0)
-  {
-    for (uint8_t voice = 0; voice < AUDIO_VOICE_CHANNELS; ++voice)
-    {
-      const uint32_t bit = 1u << voice;
-      if ((pending & bit) != 0u)
-      {
-        if (audio_voice_owners[voice] != &process)
-        {
-          pending &= ~bit;
-          continue;
-        }
-        audio_set_voice_paused(voice, false);
-        if (stop_voice_channel(voice)) pending &= ~bit;
-      }
-    }
-    audio_core0_poll_if_due();
-    delay(1);
-  }
-  while ((int32_t)(deadline - millis()) > 0)
-  {
-    bool active = false;
-    for (uint8_t voice = 0; voice < AUDIO_VOICE_CHANNELS; ++voice)
-    {
-      if ((process.audio_voice_mask & (1u << voice)) != 0u &&
-          voice_channel_active(voice))
-      {
-        active = true;
-        break;
-      }
-    }
-    if (audio_command_queue_idle() && !active) break;
-    audio_core0_poll_if_due();
-    delay(1);
-  }
-  for (uint8_t voice = 0; voice < AUDIO_VOICE_CHANNELS; ++voice)
-  {
-    if (audio_voice_owners[voice] == &process)
-    {
-      audio_set_voice_paused(voice, false);
-      audio_voice_owners[voice] = nullptr;
-    }
-  }
-  process.audio_voice_mask = 0u;
-}
 
 int32_t video_pixel(NativeContextV1 *context,
                     const NativeVideoPixelV1 *command)
@@ -2211,7 +2293,10 @@ bool initialize_process_context(NativeProcess &process)
   return true;
 }
 
-NarmStatus load_process(const NarmReader &reader, NativeProcess *&loaded_process)
+NarmStatus load_process(const NarmReader &reader,
+                        const String &source_path,
+                        FileIoStorage source_storage,
+                        NativeProcess *&loaded_process)
 {
   loaded_process = nullptr;
   native_scheduler_begin();
@@ -2387,6 +2472,15 @@ NarmStatus load_process(const NarmReader &reader, NativeProcess *&loaded_process
     release_process(*process);
     return NARM_ERR_LAYOUT;
   }
+  const size_t source_bytes = source_path.length();
+  const size_t prefix_bytes = source_path.startsWith("/") ? 0u : 1u;
+  process->program_path[0] = '\0';
+  if (source_bytes != 0u && source_bytes < sizeof(process->program_path) - prefix_bytes)
+  {
+    if (prefix_bytes) process->program_path[0] = '/';
+    memcpy(process->program_path + prefix_bytes, source_path.c_str(), source_bytes + 1u);
+  }
+  process->program_storage = source_storage;
   process->state = NATIVE_PROCESS_READY;
 
   Serial.print("\nNARM START: ");
@@ -2600,14 +2694,15 @@ void finish_process(NativeProcess &process, int32_t status)
   process.exit_status = status;
   process.state = NATIVE_PROCESS_EXITED;
   last_exit_status = status;
-  native_audio_release(process);
+  const bool audio_released = wait_for_audio_release(process, nullptr);
   if (was_focused) native_graphics_release();
   Serial.print("NARM EXIT PID=");
   Serial.print(process.pid);
   Serial.print(" STATUS=");
   Serial.println(status);
   if (was_focused) set_process_focus(nullptr);
-  release_process(process);
+  // Keep the process memory alive if Core 1 has yet to acknowledge the stop.
+  if (audio_released) release_process(process);
   if (was_focused && parent_pid != 0u)
   {
     for (uint32_t i = 0; i < NARM_MAX_PROCESSES; ++i)
@@ -2819,6 +2914,11 @@ void poll_native_serial_diagnostics()
 }
 } // namespace
 
+bool native_audio_voice_reserved(uint8_t voice)
+{
+  return voice < AUDIO_VOICE_CHANNELS && audio_voice_owners[voice] != nullptr;
+}
+
 NarmStatus native_run_sd(const String &path)
 {
   FirmwareFile file;
@@ -2849,7 +2949,7 @@ NarmStatus native_run_sd(const String &path)
 
   NarmReader reader = {&file, (uint32_t)size, sd_read_at};
   NativeProcess *loaded = nullptr;
-  last_status = load_process(reader, loaded);
+  last_status = load_process(reader, path, FILE_IO_SD, loaded);
   {
     SdBusGuard sdBusGuard;
     file.close();
@@ -2888,7 +2988,7 @@ NarmStatus native_run_fs(const String &path)
 
   NarmReader reader = {&file, (uint32_t)size, fs_read_at};
   NativeProcess *loaded = nullptr;
-  last_status = load_process(reader, loaded);
+  last_status = load_process(reader, normalized, FILE_IO_FLASH, loaded);
   file.close();
   if (last_status == NARM_OK && loaded) set_process_focus(loaded);
   return last_status;
@@ -3018,6 +3118,12 @@ void native_scheduler_begin()
 void native_scheduler_poll()
 {
   native_scheduler_begin();
+  for (NativeProcess &process : processes)
+  {
+    if (process.state == NATIVE_PROCESS_EXITED && try_release_audio_voice(process))
+      release_process(process);
+  }
+
   native_fault_heartbeat();
   native_fault_checkpoint(NARM_PHASE_SERIAL);
   poll_native_serial_diagnostics();

@@ -3,11 +3,13 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "narm_numeric_ops.h"
 
 static const uint16_t NARM_ABI_MAJOR = 1;
 static const uint16_t NARM_ABI_MINOR = 0;
 static const uint16_t NARM_API_MAJOR = 1;
-static const uint16_t NARM_API_MINOR = 13;
+static const uint16_t NARM_API_MINOR = 17;
+static const uint16_t NARM_AUDIO_ALLOCATION_API_MINOR = 15;
 
 enum NativeControlFlag : uint32_t
 {
@@ -66,7 +68,11 @@ enum NativeServiceId : uint32_t
   NARM_SERVICE_SPAWN_PROGRAM = 0x000d,
   NARM_SERVICE_USB_STORAGE_ENABLE = 0x000e,
   NARM_SERVICE_USB_STORAGE_DISABLE = 0x000f,
-  NARM_SERVICE_USB_STORAGE_STATUS = 0x0010
+  NARM_SERVICE_USB_STORAGE_STATUS = 0x0010,
+  NARM_SERVICE_GET_PROGRAM_PATH = 0x0011,
+  // args: operation, pointer to six words [a_lo,a_hi,b_lo,b_hi,out_lo,out_hi].
+  // Generic binary64 math/conversions and 64-bit integer divide/remainder.
+  NARM_SERVICE_NUMERIC = 0x0012
 };
 
 enum NativeUsbStorageStatus : uint32_t
@@ -102,7 +108,13 @@ enum NativeAudioCommandV1 : uint32_t
   NARM_AUDIO_PLAY_WAV_FROM = 0x0004,
   NARM_AUDIO_PLAY_PCM_FROM = 0x0005,
   NARM_AUDIO_POSITION = 0x0006,
-  NARM_AUDIO_PAUSE = 0x0007
+  NARM_AUDIO_PAUSE = 0x0007,
+  NARM_AUDIO_ALLOCATE_VOICE = 0x0008,
+  NARM_AUDIO_DEALLOCATE_VOICE = 0x0009,
+  NARM_AUDIO_PLAY_OWNED_WAV = 0x000a,
+  NARM_AUDIO_PLAY_OWNED_PCM = 0x000b,
+  NARM_AUDIO_PLAY_OWNED_WAV_FROM = 0x000c,
+  NARM_AUDIO_PLAY_OWNED_PCM_FROM = 0x000d
 };
 
 enum NativeAudioPositionFlag : uint32_t

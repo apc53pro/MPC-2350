@@ -8,6 +8,17 @@ The normal build verifies the SHA-256 of each audited reference file and writes
 `MC10/source_manifest.json`. A changed or different decompilation stops the
 build until the corresponding port is reviewed again.
 
+## Build 39 numeric backend
+
+The NARM branch of `mc10_fp64.tc` now uses genuine C `double` arithmetic,
+conversions and square root. The owned Java movement reference, temporary-slot
+consumption, signed-zero handling and error flags retain their existing contract.
+The portable integer branch remains the host oracle. Native Thumb movement
+execution matches the Java reference in all 17 trajectories tested (136 ticks).
+The generic firmware service is a platform adapter; no game mechanics moved to
+firmware. Existing renderer/UI unsuffixed literals retain binary32 behavior via
+`--legacy-float-literals`; explicit double expressions remain binary64.
+
 ## Build 29 additions (supersede historical placeholder rows below)
 
 | Owned reference | Implementation / validation | Boundary |
@@ -372,4 +383,15 @@ Native terrain-path inspection: the MC10 quad adapter submits the unchanged
 take that fast path. This is a future investigation target, not a measured
 attribution of the complete Draw interval. Build 15 makes no sampler, UV,
 projection, mask, firmware or rasterizer change.
+
+# Build 38 arithmetic/code-generation note
+
+The original Java `long` multiply result is still modulo 2^64. The native
+adapter uses general compiler `narm_umul32` / `narm_mul_u64` intrinsics, replacing
+the equivalent limb products. Inputs are captured before aliased result stores.
+The host fallback remains available for the existing Java and IEEE reference
+tests. Binary64 intermediates are retained, with each float operation rounded
+separately by the FPU. NBT byte-array copies use general `memcpy` on NARM and the
+existing portable byte-copy fallback in host oracles. There are no new gameplay
+rules, firmware services, or asset transformations in this build.
 

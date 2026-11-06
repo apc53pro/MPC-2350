@@ -6,10 +6,15 @@
 #ifdef MC10_WORLD_SYSTEMS
 #define MC_BLOCK_COLOR_COLUMNS 2304
 #define MC_BLOCK_COLOR_TILES 9
-char mc_block_color_path[23]={'/','M','C','1','0','/','b','i','o','m','e','c','o','l','o','r','1','0','.','d','a','t',0};
+#define MC_BLOCK_COLOR_LOOKUPS 256
+struct MCBlockColorLookup {uint key;uint grass;uint foliage;};
+struct MCBlockColorChunk {int x;int z;int valid;};
 uint mc_block_column_grass[MC_BLOCK_COLOR_COLUMNS];
 uint mc_block_column_foliage[MC_BLOCK_COLOR_COLUMNS];
 uint mc_block_color_tiles[MC_BLOCK_COLOR_TILES*256];
+struct MCBlockColorLookup mc_block_color_lookups[MC_BLOCK_COLOR_LOOKUPS];
+struct MCBlockColorChunk mc_block_color_chunks[9];
+int mc_block_color_window_slots[9];
 int mc_block_colors_ready,mc_block_colors_state,mc_block_colors_error;
 int mc_block_colors_x,mc_block_colors_z,mc_block_colors_chunk;
 uint mc_block_colors_tile_offset;
@@ -30,43 +35,83 @@ uint mc_block_color_swamp(uint rgb)
 {return((rgb&0xfefefe)+5115470)/2;}
 int mc_block_colors_open(void)
 {
-    char header[32];uint size;
+    char header[32];uint size;int i;
     mc_block_colors_ready=0;mc_block_colors_state=0;mc_block_colors_error=0;
-    if(narm_file_size(mc_block_color_path,NARM_STORAGE_SD,&size)<0)return 0;
-    if(narm_file_read(mc_block_color_path,header,0,32,NARM_STORAGE_SD)!=32)return 0;
+    for(i=0;i<9;i=i+1)mc_block_color_chunks[i].valid=0;
+    for(i=0;i<MC_BLOCK_COLOR_LOOKUPS;i=i+1)mc_block_color_lookups[i].key=0;
+    if(narm_file_size(mc_block_color_path,mc_game_storage,&size)<0)return 0;
+    if(narm_file_read(mc_block_color_path,header,0,32,mc_game_storage)!=32)return 0;
     if(header[0]!='M'||header[1]!='C'||header[2]!='B'||header[3]!='C'||header[4]!='1'||header[5]!='0'||header[6]||header[7])return 0;
     if(mc_asset_read_u32(header,8)!=1||mc_asset_read_u32(header,12)!=65536||mc_asset_read_u32(header,16)!=6||mc_asset_read_u32(header,20)!=32||mc_asset_read_u32(header,24)!=MC_BLOCK_COLOR_TILES)return 0;
     mc_block_colors_tile_offset=mc_asset_read_u32(header,28);
     if(mc_block_colors_tile_offset!=393248||size!=mc_block_colors_tile_offset+MC_BLOCK_COLOR_TILES*1024)return 0;
-    if(narm_file_read(mc_block_color_path,mc_block_color_tiles,mc_block_colors_tile_offset,MC_BLOCK_COLOR_TILES*1024,NARM_STORAGE_SD)!=MC_BLOCK_COLOR_TILES*1024)return 0;
+    if(narm_file_read(mc_block_color_path,mc_block_color_tiles,mc_block_colors_tile_offset,MC_BLOCK_COLOR_TILES*1024,mc_game_storage)!=MC_BLOCK_COLOR_TILES*1024)return 0;
     return 1;
 }
+
+int mc_block_color_slot(int x,int z)
+{
+    int col=x%3,row=z%3;
+    if(col<0)col=col+3;
+    if(row<0)row=row+3;
+    return row*3+col;
+}
+
 void mc_block_colors_begin(int center_x,int center_z)
 {
+    int i;
     if(mc_block_colors_ready&&mc_block_colors_x==(center_x-1)*16&&mc_block_colors_z==(center_z-1)*16)return;
     mc_block_colors_ready=0;mc_block_colors_state=1;mc_block_colors_error=0;
     mc_block_colors_x=(center_x-1)*16;mc_block_colors_z=(center_z-1)*16;mc_block_colors_chunk=0;
+    for(i=0;i<9;i=i+1)
+        mc_block_color_window_slots[i]=mc_block_color_slot(center_x-1+i%3,center_z-1+i/3);
+}
+
+/* Cache unmodified RGB888 pairs. Swamp blending remains column-specific. */
+struct MCBlockColorLookup *mc_block_color_lookup(uint index)
+{
+    char colors[6];
+    struct MCBlockColorLookup *entry=&mc_block_color_lookups[(index*0x9e3779b1)>>24];
+    if(entry->key!=index+1)
+    {
+        if(narm_file_read(mc_block_color_path,colors,32+index*6,6,mc_game_storage)!=6)return 0;
+        entry->grass=(((uint)colors[0]&255)<<16)|(((uint)colors[1]&255)<<8)|((uint)colors[2]&255);
+        entry->foliage=(((uint)colors[3]&255)<<16)|(((uint)colors[4]&255)<<8)|((uint)colors[5]&255);
+        entry->key=index+1;
+    }
+    return entry;
 }
 /* -1 error, 0 still preparing, 1 all 48x48 source colors ready. */
 int mc_block_colors_pump(void)
 {
-    struct MCBiomeSample sample;int x,z,cx,cz,index;uint lookup,grass,foliage;
-    char colors[6];uint temperature,rainfall;
+    struct MCBiomeSample sample;
+    struct MCBlockColorChunk *chunk;
+    struct MCBlockColorLookup *entry;
+    int x,z,cx,cz,index,slot;
+    uint lookup,grass,foliage,temperature,rainfall;
     if(mc_block_colors_ready)return 1;
     if(mc_block_colors_state!=1)return -1;
     cx=mc_block_colors_x+(mc_block_colors_chunk%3)*16;
     cz=mc_block_colors_z+(mc_block_colors_chunk/3)*16;
-    for(z=cz;z<cz+16;z=z+1)for(x=cx;x<cx+16;x=x+1)
+    slot=mc_block_color_window_slots[mc_block_colors_chunk];
+    chunk=&mc_block_color_chunks[slot];
+    if(!chunk->valid||chunk->x!=cx||chunk->z!=cz)
     {
-        if(!mc_biome_query(x,z,&sample)){mc_block_colors_error=1;mc_block_colors_state=0;return -1;}
-        temperature=(uint)(sample.temperature*65536.0f);rainfall=(uint)(sample.rainfall*65536.0f);
-        lookup=mc_block_color_index(temperature,rainfall);
-        if(narm_file_read(mc_block_color_path,colors,32+lookup*6,6,NARM_STORAGE_SD)!=6){mc_block_colors_error=2;mc_block_colors_state=0;return -1;}
-        grass=(((uint)colors[0]&255)<<16)|(((uint)colors[1]&255)<<8)|((uint)colors[2]&255);
-        foliage=(((uint)colors[3]&255)<<16)|(((uint)colors[4]&255)<<8)|((uint)colors[5]&255);
-        if(sample.biome==6){grass=mc_block_color_swamp(grass);foliage=mc_block_color_swamp(foliage);}
-        index=(z-mc_block_colors_z)*48+x-mc_block_colors_x;
-        mc_block_column_grass[index]=grass;mc_block_column_foliage[index]=foliage;
+        chunk->valid=0;
+        index=slot*256;
+        for(z=cz;z<cz+16;z=z+1)for(x=cx;x<cx+16;x=x+1)
+        {
+            if(!mc_biome_query(x,z,&sample)){mc_block_colors_error=1;mc_block_colors_state=0;return -1;}
+            temperature=(uint)(sample.temperature*65536.0f);rainfall=(uint)(sample.rainfall*65536.0f);
+            lookup=mc_block_color_index(temperature,rainfall);
+            entry=mc_block_color_lookup(lookup);
+            if(!entry){mc_block_colors_error=2;mc_block_colors_state=0;return -1;}
+            grass=entry->grass;foliage=entry->foliage;
+            if(sample.biome==6){grass=mc_block_color_swamp(grass);foliage=mc_block_color_swamp(foliage);}
+            mc_block_column_grass[index]=grass;mc_block_column_foliage[index]=foliage;
+            index=index+1;
+        }
+        chunk->x=cx;chunk->z=cz;chunk->valid=1;
     }
     mc_block_colors_chunk=mc_block_colors_chunk+1;
     if(mc_block_colors_chunk==9){mc_block_colors_ready=1;mc_block_colors_state=0;return 1;}
@@ -74,12 +119,14 @@ int mc_block_colors_pump(void)
 }
 int mc_block_color_at(uint id,uint metadata,int x,int z)
 {
-    int index;
+    int index,local_x,local_z,slot;
     if(id==18){if(metadata&1)return 6396257;if(metadata&2)return 8431445;}
     if(id==31&&metadata==0)return 0xffffff;
     if(id!=2&&id!=18&&id!=31&&id!=106)return 0xffffff;
     if(!mc_block_colors_ready||x<mc_block_colors_x||x>=mc_block_colors_x+48||z<mc_block_colors_z||z>=mc_block_colors_z+48)return -1;
-    index=(z-mc_block_colors_z)*48+x-mc_block_colors_x;
+    local_x=x-mc_block_colors_x;local_z=z-mc_block_colors_z;
+    slot=mc_block_color_window_slots[(local_z>>4)*3+(local_x>>4)];
+    index=slot*256+(local_z&15)*16+(local_x&15);
     return(int)((id==18||id==106)?mc_block_column_foliage[index]:mc_block_column_grass[index]);
 }
 int mc_block_color_tile_index(int tile)

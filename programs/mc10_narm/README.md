@@ -1,5 +1,92 @@
 # MC10 NARM compatibility project
 
+## Build 39: native wide scalars and generic numeric runtime
+
+This build requires firmware API 1.17. Compile and upload the main
+`MPC-2350_Firmware` sketch using your Arduino IDE settings before launching it.
+Build 38 remains available in its own folder for the earlier firmware.
+
+The compiler now supports C `long long`, `unsigned long long` and `double`,
+including expressions, storage, conversions, function arguments and returns.
+Eligible locals and parameters stay in callee-saved registers across the
+function. The firmware provides one generic numeric service, shared by all NARM
+programs. Compiler-generated calls obtain its address through the runtime API
+table; programs contain no fixed firmware function addresses.
+
+MC10's binary64 adapters use native double arithmetic and conversions on NARM,
+with the portable integer implementation retained for host reference tests.
+The DCP path defers scheduler preemption for each bounded arithmetic call while
+allowing higher-priority interrupts. Strict integer fallbacks handle IEEE edge
+cases in flash. There are no Minecraft-specific firmware operations.
+
+The build uses `--legacy-float-literals` to preserve the port's existing
+single-precision literals in renderer/UI source. Explicit `double` values in
+the numeric adapter retain binary64 precision. Owned assets, saves, RNG order
+and the interactive game loop are preserved. The package excludes saves and
+options. Merge its `MC10` contents into your existing game directory.
+
+Compiler/CPU execution checks and the full Minecraft compatibility suite pass,
+including native movement against the owned Java reference. Device performance
+has not yet been measured. See `BUILD_VALIDATION.md` for verification details.
+
+## Build 37: faster terrain preparation
+
+Chunk transitions validate every resident block, then publish the surface
+list. Interactive frames capture detailed geometry only for visible blocks.
+An ordinary cube inside its chunk can read adjacent block opacity directly.
+Chunk edges and blocks with special shapes retain the source visibility rules.
+
+On the staged save, a host run completed the blocking rebuild in 591 steps
+instead of 3,320. It submitted the same terrain quad streams in 24
+view, quality, and culling combinations. The first view of new blocks may
+spend some frame time filling the geometry cache. Device load times remain
+to be measured. Build 37 uses the same firmware and assets as Build 36.
+
+## Build 36: faster chunk loading
+
+Biome colors are cached by source lookup index and by resident chunk. Moving
+one chunk across reuses the six overlapping chunks' colors. Uniform GenLayer
+corners skip redundant random work. NBT byte arrays copy in batches and zlib
+still verifies the complete Adler-32 checksum.
+
+On the staged save, the first 3×3 window used one color lookup read compared
+with 2,304 in Build 35. The next cardinal crossing used zero, with identical
+RGB888 colors throughout both windows. These are host I/O counts.
+
+Use the same NARM API 1.14 firmware and companion assets as Build 35.
+
+## Build 35: firmware cursor
+
+Minecraft uses the regular firmware cursor on the title screen, world list,
+pause menu, settings, and inventory. The cursor hides during world loading
+and camera look. When a mouse is connected, its position controls hover and
+clicks. With the mouse disconnected, arrow keys still move the keyboard
+hover position. The firmware draws its cursor when a mouse is connected.
+
+Build 35 uses the same NARM API 1.14 firmware and companion files as Build 34.
+
+## Build 34: relocatable installation
+
+Keep `mc10_narm.narm` and its six data files together in any directory on
+the SD card. The directory and the executable can both be renamed. Launch
+the executable using its actual path. Keep `saves`, `options.txt`, and
+`profiles` beside it if you want to carry over worlds, settings, or logs.
+
+Build 34 requires the NARM API 1.14 firmware in the project sketch. It uses
+the generic program path query to find the executable's directory and
+storage volume. A previous `/MC10` installation works in place as well.
+
+## Build 33: terminal startup
+
+The main menu reads the owned asset directory in one SD transfer and presents
+before the platform self-tests or mouse initialization. Asset load and RGB332
+framebuffer errors now show a readable exit screen using the native 640x480
+display path. Build 33 uses the existing firmware.
+
+Merge the packaged `MC10` folder into the SD root, preserving `saves` and
+`options.txt`. Launch `/MC10/mc10_narm.narm` from the terminal. This package
+includes the executable and all six data files.
+
 ## Build 31: mouse startup recovery
 
 The mouse build presents the menu before its first mouse call, and limits
@@ -836,3 +923,24 @@ pause backdrop uses the existing owned-texture GUI background; the original
 translucent world overlay and saving indicator are not claimed. Noise/biome
 generation remains unported even though movement's binary64 foundation exists.
 
+# Build 38: general compiler improvements
+
+This interactive build uses the general NARMCC Cortex-M33 code-generation pass.
+It retains Build 37's deferred terrain compilation and executable-relative
+asset paths. No firmware change or upload is required for Build 38.
+
+The compiler keeps eligible float expressions in caller-saved FPU registers,
+folds constant array offsets, uses scaled addressing and recognizes safe bit
+extractions. MC10's two-word Java-long adapters now call generic `UMULL` and
+modulo-2^64 intrinsics; NBT byte-array copying uses the generic native `memcpy`
+helper. Source rounding, Java-long wraparound, random consumption, original
+assets, and save data are preserved. The binary64 adapter remains binary64.
+
+The native helpers and automatic optimizations apply to any NARM program.
+The compiler execution tests and Minecraft compatibility checks pass. Device
+frame and loading times still need measurement; instruction-count reductions
+in isolated tests are not an FPS claim.
+
+Use `MC10/mc10_narm.narm` in the build folder, merging its packaged `MC10`
+contents into the existing game directory. Retain your own `saves` and options.
+Run it from the terminal as before. The archive contains no saves or settings.

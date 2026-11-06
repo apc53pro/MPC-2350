@@ -1,4 +1,5 @@
-/* Integer IEEE-754 binary64 adapter. Player and AABB values are never narrowed
+/* IEEE-754 binary64 adapter, native on NARM and portable integer oracle on host.
+ * Player and AABB values are never narrowed
  * to float. A tick-local register pool replaces expression temporaries. */
 #define MC_FP_COUNT 16384
 #define MC_FP_TEMP_START 256
@@ -76,8 +77,28 @@ int mc_fp_pack(uint sign,int e,struct MCU64 *v)
     return mc_fp_bits(v->lo,(sign<<31)|(v->hi&0xfffff)|
         ((uint)(e==-1022 && v->hi<0x100000?0:e+1023)<<20));
 }
+#ifdef __NARM__
+/* Bit-preserving bridge to the compiler's binary64 scalar representation. */
+double mc_fp_native_value(int slot)
+{
+    double value;uint *words=(uint *)&value;
+    words[0]=mc_fp_values[slot].lo;words[1]=mc_fp_values[slot].hi;
+    return value;
+}
+int mc_fp_native_result(double value)
+{
+    uint *words=(uint *)&value;return mc_fp_bits(words[0],words[1]);
+}
+#endif
 int mc_fp_add(int a,int b)
 {
+#ifdef __NARM__
+    uint as=mc_fp_values[a].hi>>31,bs=mc_fp_values[b].hi>>31;
+    if(mc_fp_zero(a))return mc_fp_zero(b)?mc_fp_bits(0,(as&bs)<<31):b;
+    if(mc_fp_zero(b))return a;
+    return mc_fp_native_result(mc_fp_native_value(a)+mc_fp_native_value(b));
+#else
+
     struct MCU64 av;struct MCU64 bv;struct MCU64 result;
     int ae,be;uint as=mc_fp_values[a].hi>>31,bs=mc_fp_values[b].hi>>31;
     uint borrow;int swap;
@@ -92,10 +113,18 @@ int mc_fp_add(int a,int b)
     else {borrow=av.lo<bv.lo;result.lo=av.lo-bv.lo;result.hi=av.hi-bv.hi-borrow;}
     if (result.lo==0 && result.hi==0) as=0;
     return mc_fp_pack(as,ae,&result);
+
+#endif
 }
 int mc_fp_sub(int a,int b) { return mc_fp_add(a,mc_fp_neg(b)); }
 int mc_fp_mul(int a,int b)
 {
+#ifdef __NARM__
+    uint sign=(mc_fp_values[a].hi^mc_fp_values[b].hi)>>31;
+    if(mc_fp_zero(a)||mc_fp_zero(b))return mc_fp_bits(0,sign<<31);
+    return mc_fp_native_result(mc_fp_native_value(a)*mc_fp_native_value(b));
+#else
+
     struct MCU64 av;struct MCU64 bv;struct MCU64 sig;
     uint words[4]={0,0,0,0};uint aa[2];uint bb[2];uint lo,hi,old,c;
     int ae,be,i,j,k,shift,bit;
@@ -117,9 +146,18 @@ int mc_fp_mul(int a,int b)
     sig.hi=(words[2]>>(shift-32))|(words[3]<<(64-shift));
     if (words[0]!=0 || (words[1]<<(64-shift))!=0) sig.lo=sig.lo|1;
     return mc_fp_pack(sign,ae+be+(shift==50?1:0),&sig);
+
+#endif
 }
 int mc_fp_div(int a,int b)
 {
+#ifdef __NARM__
+    uint sign=(mc_fp_values[a].hi^mc_fp_values[b].hi)>>31;
+    if(mc_fp_zero(b)){mc_fp_error=2;return mc_fp_bits(0,(sign<<31)|0x7ff00000);}
+    if(mc_fp_zero(a))return mc_fp_bits(0,sign<<31);
+    return mc_fp_native_result(mc_fp_native_value(a)/mc_fp_native_value(b));
+#else
+
     struct MCU64 av;struct MCU64 bv;struct MCU64 q;uint borrow;int ae,be,i;
     uint sign=(mc_fp_values[a].hi^mc_fp_values[b].hi)>>31;
     if(mc_fp_zero(b)) {mc_fp_error=2;return mc_fp_bits(0,(sign<<31)|0x7ff00000);}
@@ -136,9 +174,17 @@ int mc_fp_div(int a,int b)
     }
     if(av.lo!=0||av.hi!=0) q.lo=q.lo|1;
     return mc_fp_pack(sign,ae-be,&q);
+
+#endif
 }
 int mc_fp_sqrt(int a)
 {
+#ifdef __NARM__
+    if(mc_fp_zero(a))return a;
+    if(mc_fp_values[a].hi>>31){mc_fp_error=3;return 16;}
+    return mc_fp_native_result(narm_sqrt(mc_fp_native_value(a)));
+#else
+
     struct MCU64 mant;struct MCU64 root;struct MCU64 rem;struct MCU64 trial;
     int e=mc_fp_mant(a,&mant);int shift=58+(e&1);int i,src;uint bits,borrow;
     if(mc_fp_zero(a)) return a;
@@ -157,17 +203,30 @@ int mc_fp_sqrt(int a)
     }
     if(rem.lo!=0||rem.hi!=0) root.lo=root.lo|1;
     return mc_fp_pack(0,(e-(e&1))/2,&root);
+
+#endif
 }
 int mc_fp_i32(int x)
 {
+#ifdef __NARM__
+    if(x==0)return 16;
+    return mc_fp_native_result((double)x);
+#else
+
     struct MCU64 v;uint sign=x<0;uint magnitude=sign?0-(uint)x:(uint)x;int e=0;
     if(magnitude==0) return 16;
     v.lo=magnitude;v.hi=0;
     while(v.hi<0x800000) {mc_u64_shift_left(&v,&v,1);e=e-1;}
     return mc_fp_pack(sign,e+55,&v);
+
+#endif
 }
 int mc_fp_f32(float value)
 {
+#ifdef __NARM__
+    return mc_fp_native_result((double)value);
+#else
+
     uint bits=*((uint *)&value);int e=(int)((bits>>23)&255)-127;
     struct MCU64 v;
     if((bits&0x7fffffff)==0) return mc_fp_bits(0,bits&0x80000000);
@@ -176,9 +235,15 @@ int mc_fp_f32(float value)
     else {e=-126;while(v.lo<0x800000){v.lo=v.lo<<1;e=e-1;}}
     mc_u64_shift_left(&v,&v,32);
     return mc_fp_pack(bits>>31,e,&v);
+
+#endif
 }
 float mc_fp_to_f32(int a)
 {
+#ifdef __NARM__
+    return (float)mc_fp_native_value(a);
+#else
+
     struct MCU64 v;int e;uint bits,rounding;
     if(mc_fp_zero(a)) {bits=mc_fp_values[a].hi&0x80000000;return *((float *)&bits);}
     e=mc_fp_mant(a,&v);mc_u64_shift_left(&v,&v,3);mc_fp_shr_jam(&v,29);
@@ -189,6 +254,8 @@ float mc_fp_to_f32(int a)
     bits=(mc_fp_values[a].hi&0x80000000)|(bits&0x7fffff)|
         ((uint)(e>127?255:(e==-126 && bits<0x800000?0:e+127))<<23);
     return *((float *)&bits);
+
+#endif
 }
 int mc_fp_floor(int a) { return mc_java_double_floor_i32(&mc_fp_values[a]); }
 int mc_fp_trunc(int a)

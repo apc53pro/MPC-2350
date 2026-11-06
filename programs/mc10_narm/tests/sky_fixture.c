@@ -11,6 +11,7 @@ float narm_sin(float v){return sinf(v);}float narm_cos(float v){return cosf(v);}
 #include "../src/mc10_u64.tc"
 #include "../src/mc10_java_double.tc"
 #include "../src/mc10_fp64.tc"
+#include "../src/mc10_paths.tc"
 #include "../src/mc10_math.tc"
 struct SkyInfo {uint world_time_lo;uint world_time_hi;int raining;int thundering;};
 struct SkyInfo sky_info;

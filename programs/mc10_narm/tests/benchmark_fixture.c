@@ -11,6 +11,9 @@ typedef unsigned int uint;
 #define MC_CHUNK_BLOCK_COUNT 32768
 #define MC_CHUNK_NIBBLE_BYTES 16384
 #define MC_COLOR_BLACK 0
+#define FIXTURE_ROOT "/Games/Profiler"
+#define FIXTURE_PROFILE_WORLD FIXTURE_ROOT "/profile_world.txt"
+#define FIXTURE_STORAGE NARM_STORAGE_FLASH
 struct MCJDouble {uint lo,hi;};
 struct MCWorldInfo {
  char folder[64],level_name[80];uint random_seed_hi,random_seed_lo,world_time_hi,world_time_lo,last_played_hi,last_played_lo;
@@ -226,29 +229,29 @@ char file_data[32768],created_path[64];uint file_length;
 #endif
 char file_presence[10000]={0,1};
 #ifdef MC10_CULL_PROFILE
-#define FIXTURE_LOG_PATTERN "/MC10/profiles/b26_%4d.csv"
-#define FIXTURE_SECOND_PATH "/MC10/profiles/b26_0002.csv"
+#define FIXTURE_LOG_PATTERN FIXTURE_ROOT "/profiles/b26_%4d.csv"
+#define FIXTURE_SECOND_PATH FIXTURE_ROOT "/profiles/b26_0002.csv"
 #elif defined(MC10_PREPARATION_PROFILE)
-#define FIXTURE_LOG_PATTERN "/MC10/profiles/b24_%4d.csv"
-#define FIXTURE_SECOND_PATH "/MC10/profiles/b24_0002.csv"
+#define FIXTURE_LOG_PATTERN FIXTURE_ROOT "/profiles/b24_%4d.csv"
+#define FIXTURE_SECOND_PATH FIXTURE_ROOT "/profiles/b24_0002.csv"
 #elif defined(MC10_GEOMETRY_PROFILE)
-#define FIXTURE_LOG_PATTERN "/MC10/profiles/b23_%4d.csv"
-#define FIXTURE_SECOND_PATH "/MC10/profiles/b23_0002.csv"
+#define FIXTURE_LOG_PATTERN FIXTURE_ROOT "/profiles/b23_%4d.csv"
+#define FIXTURE_SECOND_PATH FIXTURE_ROOT "/profiles/b23_0002.csv"
 #elif defined(MC10_STAGE_PROFILE)
-#define FIXTURE_LOG_PATTERN "/MC10/profiles/b22_%4d.csv"
-#define FIXTURE_SECOND_PATH "/MC10/profiles/b22_0002.csv"
+#define FIXTURE_LOG_PATTERN FIXTURE_ROOT "/profiles/b22_%4d.csv"
+#define FIXTURE_SECOND_PATH FIXTURE_ROOT "/profiles/b22_0002.csv"
 #elif defined(MC10_TILE_PROFILE)
-#define FIXTURE_LOG_PATTERN "/MC10/profiles/b21_%4d.csv"
-#define FIXTURE_SECOND_PATH "/MC10/profiles/b21_0002.csv"
+#define FIXTURE_LOG_PATTERN FIXTURE_ROOT "/profiles/b21_%4d.csv"
+#define FIXTURE_SECOND_PATH FIXTURE_ROOT "/profiles/b21_0002.csv"
 #elif defined(MC10_SAMPLER_PROFILE)
-#define FIXTURE_LOG_PATTERN "/MC10/profiles/b20_%4d.csv"
-#define FIXTURE_SECOND_PATH "/MC10/profiles/b20_0002.csv"
+#define FIXTURE_LOG_PATTERN FIXTURE_ROOT "/profiles/b20_%4d.csv"
+#define FIXTURE_SECOND_PATH FIXTURE_ROOT "/profiles/b20_0002.csv"
 #elif defined(MC10_LEGACY_FONT)
-#define FIXTURE_LOG_PATTERN "/MC10/profiles/b17_%4d.csv"
-#define FIXTURE_SECOND_PATH "/MC10/profiles/b17_0002.csv"
+#define FIXTURE_LOG_PATTERN FIXTURE_ROOT "/profiles/b17_%4d.csv"
+#define FIXTURE_SECOND_PATH FIXTURE_ROOT "/profiles/b17_0002.csv"
 #else
-#define FIXTURE_LOG_PATTERN "/MC10/profiles/b15_%4d.csv"
-#define FIXTURE_SECOND_PATH "/MC10/profiles/b15_0002.csv"
+#define FIXTURE_LOG_PATTERN FIXTURE_ROOT "/profiles/b15_%4d.csv"
+#define FIXTURE_SECOND_PATH FIXTURE_ROOT "/profiles/b15_0002.csv"
 #endif
 static int file_id(const char *path){int id=0;if(sscanf(path,FIXTURE_LOG_PATTERN,&id)!=1||id<1||id>9999)return 0;return id;}
 uint narm_micros(void){return fixture_us;}
@@ -346,25 +349,27 @@ int mc_render_step_frame(void)
 }
 /* These stubs reject any attempt to perform file I/O inside timed frames. */
 int narm_file_exists(const char *path,uint storage)
-{assert(!mc_profile_active);if(!strcmp(path,"/MC10/profile_world.txt"))return override_content!=NULL;return file_presence[file_id(path)];}
-int narm_dir_make(const char *path,uint storage){assert(!mc_profile_active);return 1;}
+{assert(!mc_profile_active&&storage==FIXTURE_STORAGE);if(!strcmp(path,FIXTURE_PROFILE_WORLD))return override_content!=NULL;return file_presence[file_id(path)];}
+int narm_dir_make(const char *path,uint storage)
+{assert(!mc_profile_active&&storage==FIXTURE_STORAGE&&!strcmp(path,FIXTURE_ROOT "/profiles"));return 1;}
 int narm_file_create(const char *path,uint storage)
-{assert(!fixture_game_entered&&!mc_profile_active);assert(file_id(path)&&!file_presence[file_id(path)]);file_presence[file_id(path)]=1;creates++;snprintf(created_path,64,"%s",path);file_length=0;fixture_verified_bytes=0;return 1;}
+{assert(!fixture_game_entered&&!mc_profile_active&&storage==FIXTURE_STORAGE);assert(file_id(path)&&!file_presence[file_id(path)]);file_presence[file_id(path)]=1;creates++;snprintf(created_path,64,"%s",path);file_length=0;fixture_verified_bytes=0;return 1;}
 int narm_file_write(const char *path,const void *data,uint off,uint n,uint storage)
 {
- assert(!fixture_game_entered&&!mc_profile_active);assert(!strcmp(path,created_path));io_writes++;
+ assert(!fixture_game_entered&&!mc_profile_active&&storage==FIXTURE_STORAGE);assert(!strcmp(path,created_path));io_writes++;
  if(write_zero)return 0;if(n>(uint)max_write)n=max_write;
  assert(off+n<=sizeof(file_data));memcpy(file_data+off,data,n);if(off+n>file_length)file_length=off+n;return n;
 }
 int narm_file_size(const char *path,uint storage,uint *n)
-{assert(!mc_profile_active);if(!strcmp(path,"/MC10/profile_world.txt")){*n=(uint)strlen(override_content);return 0;}if(!file_presence[file_id(path)])return -3;*n=!strcmp(path,created_path)?file_length:0;return 0;}
+{assert(!mc_profile_active&&storage==FIXTURE_STORAGE);if(!strcmp(path,FIXTURE_PROFILE_WORLD)){*n=(uint)strlen(override_content);return 0;}if(!file_presence[file_id(path)])return -3;*n=!strcmp(path,created_path)?file_length:0;return 0;}
 int narm_file_read(const char *path,void *out,uint off,uint n,uint storage)
 {
- assert(!mc_profile_active);
- if(!strcmp(path,"/MC10/profile_world.txt")){memcpy(out,override_content+off,n);return n;}
+ assert(!mc_profile_active&&storage==FIXTURE_STORAGE);
+ if(!strcmp(path,FIXTURE_PROFILE_WORLD)){memcpy(out,override_content+off,n);return n;}
  assert(off+n<=file_length);memcpy(out,file_data+off,n);if(corrupt_read)((char *)out)[0]^=1;
  if(!corrupt_read)fixture_verified_bytes+=n;return n;
 }
+#include "../src/mc10_paths.tc"
 #include "../src/mc10_benchmark.tc"
 
 void mc_game_run(struct MCWorldInfo *w)
@@ -390,7 +395,12 @@ void mc_game_run(struct MCWorldInfo *w)
 }
 
 static void reset_view(void)
-{frames=0;batch=0;cancel_after=-1;mc_render_show_hud=1;mc_profile_cancel();mc_runtime_player.yaw_bits=0x41200000;mc_runtime_player.pitch_bits=0x41a00000;mc_runtime_player.present=1;}
+{
+ strcpy(mc_game_profiles_path,FIXTURE_ROOT "/profiles");
+ strcpy(mc_game_profile_world_path,FIXTURE_PROFILE_WORLD);
+ mc_game_storage=FIXTURE_STORAGE;
+ frames=0;batch=0;cancel_after=-1;mc_render_show_hud=1;mc_profile_cancel();mc_runtime_player.yaw_bits=0x41200000;mc_runtime_player.pitch_bits=0x41a00000;mc_runtime_player.present=1;
+}
 
 /* Exercise the same result-screen handoff in every profiler configuration.
  * The old fixtures always pressed Escape and never covered the advertised

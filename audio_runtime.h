@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-static constexpr uint8_t AUDIO_VOICE_CHANNELS = 8;
+static constexpr uint8_t AUDIO_VOICE_CHANNELS = 32;
 static constexpr uint32_t AUDIO_OUTPUT_SAMPLE_RATE = 48000;
 
 // Call on Core 0 after VGA has claimed and started its PIO/DMA resources.
@@ -96,8 +96,8 @@ bool audio_get_voice_position(uint8_t voice_channel, AudioVoicePosition &positio
 uint32_t audio_output_underflow_count();
 uint32_t audio_stream_starvation_count();
 
-// True after Core 1 has consumed every queued playback command. Used by the
-// NARM lifecycle to ensure caller-owned PCM is no longer referenced at exit.
-bool audio_command_queue_idle();
+// True after Core 1 has applied every queued command for this voice and
+// published its new playback state.
+bool audio_voice_commands_idle(uint8_t voice_channel);
 
 #endif

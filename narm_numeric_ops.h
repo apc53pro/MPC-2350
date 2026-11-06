@@ -1,0 +1,18 @@
+#ifndef NARM_NUMERIC_OPS_H
+#define NARM_NUMERIC_OPS_H
+#include <stdint.h>
+// API 1.17 generic numeric service. Record is six little-endian uint32 words:
+// a low/high, b low/high, output low/high. No application-specific operations.
+enum NativeNumericOperation : uint32_t {
+    NARM_NUM_F64_ADD, NARM_NUM_F64_SUB, NARM_NUM_F64_MUL, NARM_NUM_F64_DIV,
+    NARM_NUM_F64_SQRT, NARM_NUM_F64_EQ, NARM_NUM_F64_NE, NARM_NUM_F64_LT,
+    NARM_NUM_F64_LE, NARM_NUM_F64_GT, NARM_NUM_F64_GE,
+    NARM_NUM_F32_TO_F64, NARM_NUM_I32_TO_F64, NARM_NUM_U32_TO_F64,
+    NARM_NUM_I64_TO_F64, NARM_NUM_U64_TO_F64, NARM_NUM_F64_TO_F32,
+    NARM_NUM_F64_TO_I32, NARM_NUM_F64_TO_U32, NARM_NUM_F64_TO_I64,
+    NARM_NUM_F64_TO_U64, NARM_NUM_I64_TO_F32, NARM_NUM_U64_TO_F32,
+    NARM_NUM_F32_TO_I64, NARM_NUM_F32_TO_U64,
+    NARM_NUM_I64_DIV, NARM_NUM_U64_DIV, NARM_NUM_I64_MOD, NARM_NUM_U64_MOD,
+    NARM_NUM_OPERATION_COUNT
+};
+#endif

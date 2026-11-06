@@ -10,6 +10,7 @@
 #include "narm.tch"
 typedef unsigned int uint;
 #include "../src/mc10_types.tc"
+#include "../src/mc10_paths.tc"
 #include "../src/mc10_u64.tc"
 #include "../src/mc10_java_double.tc"
 #ifdef MC10_WORLD_SYSTEMS

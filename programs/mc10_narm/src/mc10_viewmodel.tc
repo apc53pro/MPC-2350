@@ -337,11 +337,11 @@ int mc_vm_load_block(int id,int damage)
         pixels=(char *)&mc_vm_block_pixels[side*64];
         for(row=0;row<16;row=row+1)
         {
-            if(narm_file_read(&mc_asset_path[0],pixels+row*16,data+(uint)((tile>>4)*4096+(tile&15)*16+row*256),16,NARM_STORAGE_SD)!=16)return 0;
+            if(narm_file_read(&mc_asset_path[0],pixels+row*16,data+(uint)((tile>>4)*4096+(tile&15)*16+row*256),16,mc_game_storage)!=16)return 0;
             bits=65535;
             if(mask)
             {
-                if(narm_file_read(&mc_asset_path[0],&word,mask+(uint)((tile>>4)*512+((tile&15)>>1)*4+row*32),4,NARM_STORAGE_SD)!=4)return 0;
+                if(narm_file_read(&mc_asset_path[0],&word,mask+(uint)((tile>>4)*512+((tile&15)>>1)*4+row*32),4,mc_game_storage)!=4)return 0;
                 bits=(tile&1)?(word&65535):(word>>16);
             }
             if((row&1)==0)mc_vm_block_masks[side*8+row/2]=bits<<16;

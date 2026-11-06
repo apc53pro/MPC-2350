@@ -33,6 +33,7 @@ int mc_runtime_try_get_block(int x,int y,int z,uint *out)
 int mc_runtime_try_get_metadata(int x,int y,int z,uint *out)
 {uint id;*out=0;if(!mc_runtime_try_get_block(x,y,z,&id))return 0;if(y<0||y>=128)return 1;*out=(uint)fixture_metadata[((x-fixture_x)*48+(z-fixture_z))*128+y]&255;return 1;}
 #include "../src/mc10_blocks.tc"
+#include "../src/mc10_paths.tc"
 #include "../src/mc10_math.tc"
 #include "../src/mc10_collision.tc"
 #include "../src/mc10_player.tc"

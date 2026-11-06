@@ -80,8 +80,9 @@ int narm_file_size(const char *path, unsigned storage, unsigned *size_out);
 int narm_file_read(const char *path, void *buffer, unsigned file_offset, unsigned byte_count, unsigned storage);
 int narm_file_write(const char *path, const void *buffer, unsigned file_offset, unsigned byte_count, unsigned storage);
 int narm_audio_ready(void);
-int narm_audio_play_wav(unsigned voice, const char *path);
-int narm_audio_play_wav_from(unsigned voice, const char *path, unsigned start_frame);
+int narm_audio_allocate_voice(void);
+int narm_audio_play_wav(const char *path);
+int narm_audio_play_wav_from(const char *path, unsigned start_frame);
 int narm_audio_stop_all(void);
 int narm_audio_active(unsigned voice);
 unsigned narm_audio_starvations(void);
@@ -280,6 +281,7 @@ int waveform_level = 1;
 int project_dirty = 1;
 int render_percent = 0;
 int playing = 0;
+int audio_voice = -1;
 int rendering = 0;
 int render_io_error = 0;
 int status_code = 0;
@@ -1416,8 +1418,13 @@ void start_playback(void){
      * SD bandwidth. Playback redraws will reuse this memory-only cache. */
     prepare_waveform_screen_cache(1);
     if(!narm_audio_ready()){set_error(-20,"AUDIO OUTPUT NOT READY");return;}
-    if(wav_start_frame==0u)r=narm_audio_play_wav(0u,play_path);
-    else r=narm_audio_play_wav_from(0u,play_path,wav_start_frame);
+    if(audio_voice<0){
+        r=narm_audio_allocate_voice();
+        if(r<0){set_error(r,"NO AUDIO VOICE AVAILABLE");return;}
+        audio_voice=r;
+    }
+    if(wav_start_frame==0u)r=narm_audio_play_wav(play_path);
+    else r=narm_audio_play_wav_from(play_path,wav_start_frame);
     if(r<0){set_error(-21,"WAV PLAYBACK START FAILED");return;}
     playback_start_frame=playhead_frame;playback_end_frame=render_end;playback_start_micros=narm_micros();last_transport_draw_ms=narm_millis();playing=1;playback_starvation_events=0u;last_starvations=narm_audio_starvations();
     if(dtrack<0)set_status(wav_start_frame?"PLAYING FROM CURSOR":"PLAYING");
@@ -1459,7 +1466,7 @@ int main(void){unsigned key,action,mods,ch;int redraw=1,transport_redraw=0,loade
         }
         if(redraw){draw_ui();redraw=0;transport_redraw=0;}
         else if(transport_redraw){draw_playback_dynamic();transport_redraw=0;}
-        if(playing&&!narm_audio_active(0u)){unsigned rend=playback_end_frame;update_transport_cursor();playing=0;playhead_frame=rend;ensure_project_capacity(playhead_frame+SAMPLE_RATE);keep_cursor_visible();last_starvations=narm_audio_starvations();set_status("END");redraw=1;}
+        if(playing&&!narm_audio_active(audio_voice)){unsigned rend=playback_end_frame;update_transport_cursor();playing=0;playhead_frame=rend;ensure_project_capacity(playhead_frame+SAMPLE_RATE);keep_cursor_visible();last_starvations=narm_audio_starvations();set_status("END");redraw=1;}
         while(narm_next_key_event(&key,&action,&mods,&ch)>0){
             if(action==KEY_RELEASE){if(key==cursor_hold_key){cursor_hold_key=0u;cursor_hold_start_ms=0u;}continue;}if(action!=KEY_PRESS&&action!=KEY_REPEAT)continue;
             if(focus_mode==FOCUS_PROJECT_NAME){if(key==KEY_ESCAPE&&action==KEY_PRESS){focus_mode=FOCUS_TIMELINE;set_status("SAVE CANCELLED");redraw=1;}else if(key==KEY_BACKSPACE&&action==KEY_PRESS){if(project_name_input_len>0){--project_name_input_len;project_name_input[project_name_input_len]=0;}redraw=1;}else if(key==KEY_ENTER&&action==KEY_PRESS){accept_project_name();redraw=1;}else if(action==KEY_PRESS&&valid_project_name_char(ch)&&project_name_input_len+1<PROJECT_NAME_MAX&&!(project_name_input_len==0&&ch==' ')){project_name_input[project_name_input_len++]=(char)ch;project_name_input[project_name_input_len]=0;redraw=1;}continue;}

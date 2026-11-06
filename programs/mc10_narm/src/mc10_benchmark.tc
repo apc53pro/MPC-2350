@@ -40,7 +40,7 @@ struct MCBenchmarkSample {
 struct MCBenchmarkSample mc_bench_samples[MC_BENCH_CASES*MC_BENCH_SAMPLES];
 char mc_bench_log[MC_BENCH_LOG_CAP];
 char mc_bench_verify[1024];
-char mc_bench_path[64];
+char mc_bench_path[MC_GAME_PATH_CAP];
 char mc_bench_folder[MC_WORLD_FOLDER_CAP];
 char mc_bench_value[192];
 char mc_bench_key[64];
@@ -456,14 +456,14 @@ void mc_bench_format_log(void)
 int mc_bench_choose_world(void)
 {
     uint size;int length,i;
-    mc_bench_override=narm_file_exists("/MC10/profile_world.txt",NARM_STORAGE_SD)>0;
+    mc_bench_override=narm_file_exists(mc_game_profile_world_path,mc_game_storage)>0;
     if(!mc_bench_override)
     {
         if(!mc_world_count)return 0;
         return mc_world_read_info(mc_world_list[0].folder,&mc_bench_world);
     }
-    if(narm_file_size("/MC10/profile_world.txt",NARM_STORAGE_SD,&size)<0||!size||size>=MC_WORLD_FOLDER_CAP)return 0;
-    length=narm_file_read("/MC10/profile_world.txt",mc_bench_folder,0,size,NARM_STORAGE_SD);
+    if(narm_file_size(mc_game_profile_world_path,mc_game_storage,&size)<0||!size||size>=MC_WORLD_FOLDER_CAP)return 0;
+    length=narm_file_read(mc_game_profile_world_path,mc_bench_folder,0,size,mc_game_storage);
     if(length!=(int)size)return 0;
     while(length>0&&(mc_bench_folder[length-1]=='\r'||mc_bench_folder[length-1]=='\n'))length=length-1;
     mc_bench_folder[length]=0;
@@ -474,52 +474,54 @@ int mc_bench_choose_world(void)
 }
 int mc_bench_write_log(void)
 {
+    char name[16];
     int run,i,count;uint offset,size,amount;
     if(mc_bench_full||!mc_bench_length)return 0;
-    if(narm_dir_make("/MC10/profiles",NARM_STORAGE_SD)<=0&&!narm_file_exists("/MC10/profiles",NARM_STORAGE_SD))return 0;
+    if(narm_dir_make(mc_game_profiles_path,mc_game_storage)<=0&&!narm_file_exists(mc_game_profiles_path,mc_game_storage))return 0;
     for(run=1;run<=9999;run=run+1)
     {
 #ifdef MC10_CULL_PROFILE
-        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b26_");
+        mc_world_copy(name,16,"b26_");
 #elif defined(MC10_PREPARATION_PROFILE)
-        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b24_");
+        mc_world_copy(name,16,"b24_");
 #elif defined(MC10_GEOMETRY_PROFILE)
-        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b23_");
+        mc_world_copy(name,16,"b23_");
 #elif defined(MC10_STAGE_PROFILE)
-        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b22_");
+        mc_world_copy(name,16,"b22_");
 #elif defined(MC10_TILE_PROFILE)
-        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b21_");
+        mc_world_copy(name,16,"b21_");
 #elif defined(MC10_SAMPLER_PROFILE)
-        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b20_");
+        mc_world_copy(name,16,"b20_");
 #elif defined(MC10_LEGACY_FONT)
-        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b17_");
+        mc_world_copy(name,16,"b17_");
 #else
-        mc_world_copy(mc_bench_path,64,"/MC10/profiles/b15_");
+        mc_world_copy(name,16,"b15_");
 #endif
-        mc_world_append_char(mc_bench_path,64,(char)('0'+run/1000));
-        mc_world_append_char(mc_bench_path,64,(char)('0'+(run/100)%10));
-        mc_world_append_char(mc_bench_path,64,(char)('0'+(run/10)%10));
-        mc_world_append_char(mc_bench_path,64,(char)('0'+run%10));mc_world_append(mc_bench_path,64,".csv");
-        count=narm_file_size(mc_bench_path,NARM_STORAGE_SD,&size);
-        if(count==0||narm_file_exists(mc_bench_path,NARM_STORAGE_SD)>0)continue;
+        mc_world_append_char(name,16,(char)('0'+run/1000));
+        mc_world_append_char(name,16,(char)('0'+(run/100)%10));
+        mc_world_append_char(name,16,(char)('0'+(run/10)%10));
+        mc_world_append_char(name,16,(char)('0'+run%10));mc_world_append(name,16,".csv");
+        if(!mc_game_join_path(mc_bench_path,mc_game_profiles_path,name))return 0;
+        count=narm_file_size(mc_bench_path,mc_game_storage,&size);
+        if(count==0||narm_file_exists(mc_bench_path,mc_game_storage)>0)continue;
         /* FILE_IO_ERR_NOT_FOUND is -3. Do not treat a storage/I/O failure
          * as permission to truncate an existing report. */
         if(count!=-3)return 0;
         break;
     }
-    if(run>9999||narm_file_create(mc_bench_path,NARM_STORAGE_SD)<=0)return 0;
+    if(run>9999||narm_file_create(mc_bench_path,mc_game_storage)<=0)return 0;
     offset=0;
     while(offset<mc_bench_length)
     {
-        count=narm_file_write(mc_bench_path,&mc_bench_log[offset],offset,mc_bench_length-offset,NARM_STORAGE_SD);
+        count=narm_file_write(mc_bench_path,&mc_bench_log[offset],offset,mc_bench_length-offset,mc_game_storage);
         if(count<=0||(uint)count>mc_bench_length-offset)return 0;
         offset=offset+(uint)count;
     }
-    if(narm_file_size(mc_bench_path,NARM_STORAGE_SD,&size)<0||size!=mc_bench_length)return 0;
+    if(narm_file_size(mc_bench_path,mc_game_storage,&size)<0||size!=mc_bench_length)return 0;
     for(offset=0;offset<mc_bench_length;offset=offset+amount)
     {
         amount=mc_bench_length-offset;if(amount>1024)amount=1024;
-        count=narm_file_read(mc_bench_path,mc_bench_verify,offset,amount,NARM_STORAGE_SD);
+        count=narm_file_read(mc_bench_path,mc_bench_verify,offset,amount,mc_game_storage);
         if(count!=(int)amount)return 0;
         for(i=0;i<count;i=i+1)if(mc_bench_verify[i]!=mc_bench_log[offset+(uint)i])return 0;
     }

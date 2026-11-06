@@ -2,8 +2,7 @@
  * Minecraft 1.0 SaveConverterMcRegion, WorldInfo, GuiSelectWorld,
  * GuiWorldSlot, and GuiSlot reproduction for NARM.
  *
- * Storage is adapted to /MC10/saves on the SD card. The device has no mouse
- * service, so the main-menu virtual pointer is reused and Enter is button 0.
+ * Saves live in the saves subdirectory beside the executable.
  * The date formatter is the en_US SimpleDateFormat shape in fixed UTC-03:00,
  * because NARM exposes no locale/time-zone service.
  */
@@ -11,7 +10,7 @@
 #define MC_WORLD_MAX 32
 #define MC_WORLD_FOLDER_CAP 64
 #define MC_WORLD_NAME_CAP 80
-#define MC_WORLD_PATH_CAP 192
+#define MC_WORLD_PATH_CAP MC_GAME_PATH_CAP
 #define MC_WORLD_LABEL_BYTES 256
 #define MC_WORLD_BG_WORDS 64
 #define MC_WORLD_SAVE_VERSION 19132
@@ -151,19 +150,17 @@ int mc_world_string_compare(char *a, char *b)
     return ((uint)a[i] & 255) - ((uint)b[i] & 255);
 }
 
-void mc_world_path_begin(char *folder)
+int mc_world_save_path(char *folder, char *leaf)
 {
-    mc_world_copy(mc_world_path, MC_WORLD_PATH_CAP, "/MC10/saves/");
-    mc_world_append(mc_world_path, MC_WORLD_PATH_CAP, folder);
+    return mc_game_join_path(mc_world_path, mc_game_saves_path, folder) &&
+           mc_game_join_path(mc_world_path, mc_world_path, leaf);
 }
 
 int mc_world_load_path(char *folder, char *leaf, int *root_out)
 {
-    mc_world_path_begin(folder);
-    mc_world_append(mc_world_path, MC_WORLD_PATH_CAP, "/");
-    mc_world_append(mc_world_path, MC_WORLD_PATH_CAP, leaf);
+    if (!mc_world_save_path(folder, leaf)) return MC_NBT_ERR_IO;
     mc_nbt_reset();
-    return mc_nbt_load_gzip_file(mc_world_path, NARM_STORAGE_SD, root_out);
+    return mc_nbt_load_gzip_file(mc_world_path, mc_game_storage, root_out);
 }
 
 int mc_world_get_int_default(int data, char *key, int fallback)
@@ -316,14 +313,13 @@ int mc_world_scan(void)
     mc_world_count = 0;
     mc_world_selected = -1;
     mc_world_scroll = 0;
-    narm_storage_mount(NARM_STORAGE_SD);
-    narm_dir_make("/MC10", NARM_STORAGE_SD);
-    narm_dir_make("/MC10/saves", NARM_STORAGE_SD);
+    narm_storage_mount(mc_game_storage);
+    narm_dir_make(mc_game_saves_path, mc_game_storage);
     while (index < 512 && mc_world_count < MC_WORLD_MAX)
     {
-        result = narm_dir_entry("/MC10/saves", index, mc_world_dir_name,
+        result = narm_dir_entry(mc_game_saves_path, index, mc_world_dir_name,
                                 MC_WORLD_FOLDER_CAP, &length, &type,
-                                NARM_STORAGE_SD);
+                                mc_game_storage);
         if (result <= 0) break;
         if (type == NARM_DIRECTORY_ENTRY &&
             mc_world_read_info(mc_world_dir_name,
@@ -569,7 +565,6 @@ void mc_world_draw(void)
     mc_menu_draw_centered_string(mc_world_label_title, MC_SCREEN_WIDTH / 2,
                                  20, 0xffffff);
     for (i = 0; i < 5; i = i + 1) mc_menu_draw_button(&mc_world_buttons[i]);
-    mc_menu_draw_pointer();
     narm_half_present();
 }
 
@@ -607,6 +602,9 @@ void mc_world_select_row(int row)
 
 void mc_world_loaded_wait(void)
 {
+#ifdef MC10_MOUSE
+    narm_mouse_set_cursor_visible(0);
+#endif
     mc_world_bootstrap_wait(mc_world_loaded);
 }
 

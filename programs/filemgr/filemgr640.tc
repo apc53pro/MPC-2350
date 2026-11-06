@@ -274,7 +274,7 @@ int imageCacheBuildX = 0;
 uint activeStorage = 1;       /* 0 internal flash, 1 SD card */
 uint PROGRAM_MIN_BYTES = 160;
 uint PROGRAM_MAX_BYTES = 8388608;
-uint AUDIO_VOICE = 0;         /* FILEMGR owns at most this one mixer voice */
+int audioVoice = -1;          /* Allocated on first WAV playback. */
 int audioLoaded = 0;
 int audioPlaying = 0;
 int audioPaused = 0;
@@ -2073,21 +2073,25 @@ int playSelectedWav()
     int result;
 
     if (activeStorage != (uint)1) return -1;
-    /* The play service replaces this voice and claims ownership.
-       Do not stop an unowned voice before the first playback. */
-    result = narm_audio_play_wav(AUDIO_VOICE, selectedPath);
+    if (audioVoice < 0)
+    {
+        result = narm_audio_allocate_voice();
+        if (result < 0) return result;
+        audioVoice = result;
+    }
+    result = narm_audio_play_wav(selectedPath);
     if (result >= 0) copyBuffer(audioPath, selectedPath, 128);
     if (result < 0)
     {
-        result = narm_audio_play_wav(AUDIO_VOICE, selectedRelPath);
+        result = narm_audio_play_wav(selectedRelPath);
         if (result >= 0) copyBuffer(audioPath, selectedRelPath, 128);
     }
     if (result < 0)
     {
         /* A rejected replacement may leave our previous source alive.
-           Stop only our owned voice; a foreign owner is protected by firmware.
+           Stop our voice before updating the player state.
            Keep the previous track metadata so its controls remain available. */
-        narm_audio_stop(AUDIO_VOICE);
+        narm_audio_stop(audioVoice);
         audioPlaying = 0;
         audioPaused = 0;
         audioStopped = 1;
@@ -2124,7 +2128,7 @@ void serviceAudio()
     now = millis();
     if ((int)(now - audioNextPollMs) < 0) return;
     audioNextPollMs = now + 100;
-    result = narm_audio_position(AUDIO_VOICE, &position, &total, &rate, &flags);
+    result = narm_audio_position(audioVoice, &position, &total, &rate, &flags);
     if (result < 0) return; /* queued commands still settling: keep the UI state */
     if (total == 0 || rate == 0) return;
     playing = (flags & 1) != 0;
@@ -2154,7 +2158,7 @@ void stopAudioPlayback()
 {
     int result;
     if (audioLoaded == 0) return;
-    result = narm_audio_stop(AUDIO_VOICE);
+    result = narm_audio_stop(audioVoice);
     if (result < 0)
     {
         statusCode = 24;
@@ -2184,14 +2188,14 @@ int audioSeekTo(uint frame)
         return 0;
     }
     remainPaused = audioPaused;
-    result = narm_audio_play_wav_from(AUDIO_VOICE, audioPath, frame);
+    result = narm_audio_play_wav_from(audioPath, frame);
     if (result < 0)
     {
         statusCode = 24;
         dirty = 1;
         return result;
     }
-    if (remainPaused != 0) narm_audio_pause(AUDIO_VOICE, 1);
+    if (remainPaused != 0) narm_audio_pause(audioVoice, 1);
     audioCurrentFrame = frame;
     audioPlaying = remainPaused == 0;
     audioPaused = remainPaused;
@@ -2234,7 +2238,7 @@ void toggleAudioPause()
     {
         start = audioCurrentFrame;
         if (start >= audioTotalFrames) start = 0;
-        result = narm_audio_play_wav_from(AUDIO_VOICE, audioPath, start);
+        result = narm_audio_play_wav_from(audioPath, start);
         if (result >= 0)
         {
             audioCurrentFrame = start;
@@ -2249,7 +2253,7 @@ void toggleAudioPause()
     }
     else
     {
-        result = narm_audio_pause(AUDIO_VOICE, audioPaused == 0);
+        result = narm_audio_pause(audioVoice, audioPaused == 0);
         if (result >= 0)
         {
             audioPaused = audioPaused == 0;

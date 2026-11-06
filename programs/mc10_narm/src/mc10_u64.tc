@@ -41,6 +41,9 @@ void mc_u64_xor(struct MCU64 *result, struct MCU64 *a, struct MCU64 *b)
 
 void mc_u32_multiply_full(uint a, uint b, uint *lo_out, uint *hi_out)
 {
+#ifdef __NARM__
+    narm_umul32(a, b, lo_out, hi_out);
+#else
     uint a0 = a & 0xffff;
     uint a1 = a >> 16;
     uint b0 = b & 0xffff;
@@ -64,10 +67,14 @@ void mc_u32_multiply_full(uint a, uint b, uint *lo_out, uint *hi_out)
 
     *lo_out = (t << 16) | w0;
     *hi_out = a1 * b1 + w2 + carry;
+#endif
 }
 
 void mc_u64_multiply(struct MCU64 *result, struct MCU64 *a, struct MCU64 *b)
 {
+#ifdef __NARM__
+    narm_mul_u64(a->lo, a->hi, b->lo, b->hi, &result->lo, &result->hi);
+#else
     uint low_lo;
     uint low_hi;
     uint cross_a_lo;
@@ -81,6 +88,7 @@ void mc_u64_multiply(struct MCU64 *result, struct MCU64 *a, struct MCU64 *b)
 
     result->lo = low_lo;
     result->hi = low_hi + cross_a_lo + cross_b_lo;
+#endif
 }
 
 int mc_u64_equal(struct MCU64 *a, struct MCU64 *b)

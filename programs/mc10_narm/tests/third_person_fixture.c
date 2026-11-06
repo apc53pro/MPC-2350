@@ -19,6 +19,7 @@ void mc_world_append(char*out,int n,char*text){strncat(out,text,n-strlen(out)-1)
 #include "src/mc10_u64.tc"
 #include "src/mc10_java_double.tc"
 #include "src/mc10_fp64.tc"
+#include "src/mc10_paths.tc"
 #include "src/mc10_math.tc"
 #include "src/mc10_assets.tc"
 #include "src/mc10_atan.tc"

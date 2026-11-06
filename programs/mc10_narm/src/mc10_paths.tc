@@ -1,0 +1,34 @@
+/* Paths to the data shipped beside the NARM executable. */
+#define MC_GAME_PATH_CAP 256
+
+unsigned mc_game_storage = NARM_STORAGE_SD;
+char mc_asset_path[MC_GAME_PATH_CAP] = "/assets.mc10";
+char mc_options_path[MC_GAME_PATH_CAP] = "/options.txt";
+char mc_block_mesh_path[MC_GAME_PATH_CAP] = "/blocks10.dat";
+char mc_block_tint_path[MC_GAME_PATH_CAP] = "/blocktint10.dat";
+char mc_block_color_path[MC_GAME_PATH_CAP] = "/biomecolor10.dat";
+char mc_math_path[MC_GAME_PATH_CAP] = "/math10.dat";
+char mc_sky_path[MC_GAME_PATH_CAP] = "/sky10.dat";
+char mc_game_saves_path[MC_GAME_PATH_CAP] = "/saves";
+char mc_game_profiles_path[MC_GAME_PATH_CAP] = "/profiles";
+char mc_game_profile_world_path[MC_GAME_PATH_CAP] = "/profile_world.txt";
+
+/* Base is a rooted directory. Output can also be the base for another join. */
+int mc_game_join_path(char *out, char *base, char *leaf)
+{
+    int length = 0;
+    int leaf_length = 0;
+    int index;
+    int separator;
+    while (base[length] != 0) length = length + 1;
+    if (length == 0) return 0;
+    while (leaf[leaf_length] != 0) leaf_length = leaf_length + 1;
+    separator = base[length - 1] != '/';
+    if (length + separator + leaf_length >= MC_GAME_PATH_CAP) return 0;
+    for (index = 0; index < length; index = index + 1)
+        out[index] = base[index];
+    if (separator) out[length++] = '/';
+    for (index = 0; index <= leaf_length; index = index + 1)
+        out[length + index] = leaf[index];
+    return 1;
+}

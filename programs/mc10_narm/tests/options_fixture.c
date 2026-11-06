@@ -44,7 +44,7 @@ int mc_asset_read_payload(char *name,void *out,uint cap,uint *bytes)
  if(strcmp(name,"mc10/options/labels")||!fixture_label_available)return 0;
  assert((uint)fixture_label_bytes<=cap);memcpy(out,fixture_labels,fixture_label_bytes);*bytes=(uint)fixture_label_bytes;return 1;
 }
-static void check_path(const char *path,uint storage){assert(!strcmp(path,"/MC10/options.txt")&&storage==NARM_STORAGE_SD);}
+static void check_path(const char *path,uint storage){assert(!strcmp(path,"/options.txt")&&storage==NARM_STORAGE_SD);}
 int narm_file_exists(const char *path,uint storage){check_path(path,storage);return fixture_file_exists;}
 int narm_file_size(const char *path,uint storage,uint *size){check_path(path,storage);*size=(uint)fixture_file_bytes;return 0;}
 int narm_file_read(const char *path,void *out,uint offset,uint bytes,uint storage)
@@ -53,6 +53,7 @@ int narm_file_delete(const char *path,uint storage){check_path(path,storage);fix
 int narm_file_create(const char *path,uint storage){check_path(path,storage);fixture_file_exists=1;fixture_file_bytes=0;return 1;}
 int narm_file_write(const char *path,const void *data,uint offset,uint bytes,uint storage)
 {check_path(path,storage);fixture_writes++;assert(offset+bytes<sizeof(fixture_disk));if(fixture_short_write&&bytes)bytes--;memcpy(fixture_disk+offset,data,bytes);fixture_file_bytes=(int)(offset+bytes);fixture_disk[fixture_file_bytes]=0;return (int)bytes;}
+#include "../src/mc10_paths.tc"
 #include "../src/mc10_options.tc"
 
 static void load_text(const char *text)

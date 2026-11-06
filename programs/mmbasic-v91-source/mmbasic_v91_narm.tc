@@ -1,0 +1,153 @@
+/*
+ * NARM build wrapper for MMBASIC v91.
+ *
+ * The shared interpreter is in mmbasic_v91.tc. Use narm.tch and
+ * narmcc from the MPC-2350 firmware's Compiler_For_NARM directory.
+ */
+#include "narm.tch"
+
+unsigned narm_mmbasic_legacy_key(unsigned scan_code)
+{
+    unsigned code = scan_code & 0xffu;
+    switch (code) {
+        case 0x1c: return NARM_KEY_A;
+        case 0x32: return NARM_KEY_B;
+        case 0x21: return NARM_KEY_C;
+        case 0x23: return NARM_KEY_D;
+        case 0x24: return NARM_KEY_E;
+        case 0x2b: return NARM_KEY_F;
+        case 0x34: return NARM_KEY_G;
+        case 0x33: return NARM_KEY_H;
+        case 0x43: return NARM_KEY_I;
+        case 0x3b: return NARM_KEY_J;
+        case 0x42: return NARM_KEY_K;
+        case 0x4b: return NARM_KEY_L;
+        case 0x3a: return NARM_KEY_M;
+        case 0x31: return NARM_KEY_N;
+        case 0x44: return NARM_KEY_O;
+        case 0x4d: return NARM_KEY_P;
+        case 0x15: return NARM_KEY_Q;
+        case 0x2d: return NARM_KEY_R;
+        case 0x1b: return NARM_KEY_S;
+        case 0x2c: return NARM_KEY_T;
+        case 0x3c: return NARM_KEY_U;
+        case 0x2a: return NARM_KEY_V;
+        case 0x1d: return NARM_KEY_W;
+        case 0x22: return NARM_KEY_X;
+        case 0x35: return NARM_KEY_Y;
+        case 0x1a: return NARM_KEY_Z;
+
+        case 0x16: return 0x1e; /* 1 */
+        case 0x1e: return 0x1f; /* 2 */
+        case 0x26: return 0x20; /* 3 */
+        case 0x25: return 0x21; /* 4 */
+        case 0x2e: return 0x22; /* 5 */
+        case 0x36: return 0x23; /* 6 */
+        case 0x3d: return 0x24; /* 7 */
+        case 0x3e: return 0x25; /* 8 */
+        case 0x46: return 0x26; /* 9 */
+        case 0x45: return 0x27; /* 0 */
+
+        case 0x5a: return NARM_KEY_ENTER;
+        case 0x76: return NARM_KEY_ESCAPE;
+        case 0x66: return NARM_KEY_BACKSPACE;
+        case 0x0d: return NARM_KEY_TAB;
+        case 0x29: return NARM_KEY_SPACE;
+        case 0x4e: return 0x2d; /* - */
+        case 0x55: return 0x2e; /* = */
+        case 0x54: return 0x2f; /* [ */
+        case 0x5b: return 0x30; /* ] */
+        case 0x5d: return 0x31; /* backslash */
+        case 0x4c: return 0x33; /* ; */
+        case 0x52: return 0x34; /* quote */
+        case 0x0e: return 0x35; /* grave */
+        case 0x41: return 0x36; /* comma */
+        case 0x49: return 0x37; /* period */
+        case 0x4a: return 0x38; /* slash */
+
+        case 0x05: return NARM_KEY_F1;
+        case 0x06: return NARM_KEY_F2;
+        case 0x04: return NARM_KEY_F3;
+        case 0x0c: return NARM_KEY_F4;
+        case 0x03: return NARM_KEY_F5;
+        case 0x0b: return NARM_KEY_F6;
+        case 0x83: return NARM_KEY_F7;
+        case 0x0a: return NARM_KEY_F8;
+        case 0x01: return NARM_KEY_F9;
+        case 0x09: return NARM_KEY_F10;
+        case 0x78: return NARM_KEY_F11;
+        case 0x07: return NARM_KEY_F12;
+
+        case 0x6b: return NARM_KEY_LEFT;
+        case 0x74: return NARM_KEY_RIGHT;
+        case 0x72: return NARM_KEY_DOWN;
+        case 0x75: return NARM_KEY_UP;
+        case 0x70: return 0x49; /* Insert */
+        case 0x71: return 0x4c; /* Delete */
+        case 0x6c: return 0x4a; /* Home */
+        case 0x69: return 0x4d; /* End */
+        case 0x7d: return 0x4b; /* Page Up */
+        case 0x7a: return 0x4e; /* Page Down */
+
+        case 0x12: return NARM_KEY_LEFT_SHIFT;
+        case 0x59: return NARM_KEY_RIGHT_SHIFT;
+        case 0x14: return NARM_KEY_LEFT_CONTROL;
+        case 0x11: return NARM_KEY_LEFT_ALT;
+    }
+    return 0u;
+}
+
+#define key(scanCode, keyDataOut, keyPressedOut) \
+    ((keyPressedOut) = narm_key_down(narm_mmbasic_legacy_key((unsigned)(scanCode))))
+#define millis() narm_millis()
+#define random() narm_random_u32()
+#define rand32() narm_random_u32()
+#define halt() narm_exit(0)
+
+/* Adapt the current byte-counted NARM file API to MMBASIC's legacy spellings. */
+#undef sdMount
+#undef sdFileExists
+#undef sdFileMake
+#undef sdFileDelete
+#undef sdFileSize
+#undef sdFileReadBytes
+#undef sdFileWriteBytes
+#undef sdDirMake
+#undef sdDirDelete
+
+unsigned narm_mmbasic_file_size(char *path)
+{
+    unsigned size = 0u;
+    if (narm_file_size(path, NARM_STORAGE_SD, &size) < 0) return 0u;
+    return size;
+}
+
+unsigned narm_mmbasic_dir_entry(char *path, int index, char *name,
+                                int *name_length, int *entry_type)
+{
+    unsigned length = 0u;
+    unsigned type = 0u;
+    int result = narm_dir_entry(path, (unsigned)index, name, 64u,
+                                &length, &type, NARM_STORAGE_SD);
+    *name_length = (int)length;
+    *entry_type = (int)type;
+    return result > 0 ? 1u : 0u;
+}
+
+#define sdMount() narm_storage_mount(NARM_STORAGE_SD)
+#define sdFileExists(path) narm_file_exists((path), NARM_STORAGE_SD)
+#define sdFileMake(path) narm_file_create((path), NARM_STORAGE_SD)
+#define sdFileDelete(path) narm_file_delete((path), NARM_STORAGE_SD)
+#define sdFileSize(path) narm_mmbasic_file_size((path))
+#define sdFileReadBytes(path, buffer, offset, bytes) narm_file_read((path), (buffer), (offset), (bytes), NARM_STORAGE_SD)
+#define sdFileWriteBytes(path, buffer, offset, bytes) narm_file_write((path), (buffer), (offset), (bytes), NARM_STORAGE_SD)
+#define sdDirMake(path) narm_dir_make((path), NARM_STORAGE_SD)
+#define sdDirDelete(path) narm_dir_delete((path), NARM_STORAGE_SD)
+#define sdDirEntry(path, index, name, name_length, entry_type) narm_mmbasic_dir_entry((path), (index), (name), &(name_length), &(entry_type))
+
+void pinMode(int pin, int mode) { }
+void gpioMode(int pin, int mode) { }
+void digitalWrite(int pin, int value) { }
+void gpioSet(int pin, int value) { }
+
+#include "mmbasic_v91.tc"

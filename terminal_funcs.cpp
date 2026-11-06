@@ -765,6 +765,15 @@ int8_t terminal_funcs(String code)
   }else if(tokens[0] == "MALLOC" && tokenTreeSize == 3) //
   {
     alloc_partition(tokens[1], USER, tokens[2].toInt());
+  }else if(tokens[0] == "AUDIO_VOICES" && tokenTreeSize == 1)
+  {
+    uint32_t allocated = 0;
+    for(uint8_t voice = 0; voice < AUDIO_VOICE_CHANNELS; ++voice)
+    {
+      if(native_audio_voice_reserved(voice)) ++allocated;
+    }
+    echo_message("=>" + String(allocated) + " / " +
+                 String((uint32_t)AUDIO_VOICE_CHANNELS) + " AUDIO VOICES ALLOCATED");
   }else if(tokens[0] == "PLAY_SOUND_SD" && tokens[2] == "\"" && tokens[4] == "\"" &&tokenTreeSize == 5) //
   {
     echo_message("=>TRYING TO PLAY SOUND.");
@@ -772,7 +781,16 @@ int8_t terminal_funcs(String code)
     {
       echo_message("=>AUDIO OUTPUT IS NOT READY.");
     }
-    else if(play_sound_SD(tokens[1].toInt(), tokens[3].c_str()))
+    else if(const long voice = tokens[1].toInt();
+            voice < 0 || voice >= AUDIO_VOICE_CHANNELS)
+    {
+      echo_message("=>INVALID AUDIO VOICE.");
+    }
+    else if(native_audio_voice_reserved((uint8_t)voice))
+    {
+      echo_message("=>AUDIO VOICE IS RESERVED BY A PROGRAM.");
+    }
+    else if(play_sound_SD((uint8_t)voice, tokens[3].c_str()))
     {
       echo_message("=>SOUND QUEUED ON VOICE " + tokens[1] + ".");
     }

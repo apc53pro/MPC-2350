@@ -17,6 +17,7 @@ int narm_half_blit_masked(int x,int y,int w,int h,const uint *p,const uint *m){r
 #include "src/mc10_u64.tc"
 #include "src/mc10_java_double.tc"
 #include "src/mc10_fp64.tc"
+#include "src/mc10_paths.tc"
 #include "src/mc10_math.tc"
 #include "src/mc10_assets.tc"
 #include "mc10_atan.tc"

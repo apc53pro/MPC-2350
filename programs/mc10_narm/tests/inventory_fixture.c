@@ -48,6 +48,7 @@ void mc_world_append(char *d,int cap,char *s){int n=(int)strlen(d),i=0;while(s[i
 void mc_world_append_int(char *d,int cap,int value){char text[32];snprintf(text,sizeof(text),"%d",value);mc_world_append(d,cap,text);}
 #include "nbt_under_test.tc"
 #include "random_under_test.tc"
+#include "../src/mc10_paths.tc"
 #include "assets_under_test.tc"
 #include "menu_under_test.tc"
 struct MCFixtureOptions {int key_codes[13];};

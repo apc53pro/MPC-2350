@@ -49,6 +49,7 @@ int mc_runtime_try_get_metadata(int x,int y,int z,uint*v){x-=ox;y-=oy;z-=oz;*v=0
 uint mc_asset_read_u32(char*d,int i){return(uint)(unsigned char)d[i]|((uint)(unsigned char)d[i+1]<<8)|((uint)(unsigned char)d[i+2]<<16)|((uint)(unsigned char)d[i+3]<<24);}
 #include "mc10_blocks.tc"
 #include "mc10_blocks_extra.tc"
+#include "mc10_paths.tc"
 #include "mc10_block_render_extra.tc"
 uint output[48*24];int output_count;
 void mc_render_source_quad(uint,int,int,int,float*v,uint desc){memcpy(&output[output_count*24],v,96);output[output_count*24+23]=desc;output_count++;}

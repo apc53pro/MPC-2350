@@ -2,8 +2,8 @@
  * Minecraft 1.0 GuiMainMenu / GuiButton / FontRenderer reproduction.
  *
  * The fixed 320x240 target and RGB332 quantization are presentation-boundary
- * adaptations. Arrow keys drive a virtual mouse because NARM currently
- * exposes keyboard events but no mouse service; Enter feeds mouse button 0.
+ * adaptations. The firmware draws the physical pointer. Without a mouse,
+ * arrow keys move the menu's hover position and Enter activates it.
  * The expensive panorama is intentionally disabled for the current milestone;
  * a black presentation placeholder is drawn behind the reproduced menu UI.
  */
@@ -87,11 +87,6 @@ uint mc_menu_rgb888_to_rgb332(uint color)
     return (((color >> 16) & 255) >> 5) << 5 |
            (((color >> 8) & 255) >> 5) << 2 |
            ((color & 255) >> 6);
-}
-
-void mc_menu_draw_background(void)
-{
-    narm_half_clear(MC_COLOR_BLACK);
 }
 
 int mc_menu_font_has_pixel(int glyph, int column, int row)
@@ -362,17 +357,6 @@ void mc_menu_draw_button(struct MCMenuButton *button)
         text_color);
 }
 
-void mc_menu_draw_pointer(void)
-{
-    int x = mc_menu_pointer_x;
-    int y = mc_menu_pointer_y;
-    narm_half_fill_triangle(x, y, x, y + 9, x + 6, y + 6, MC_COLOR_BLACK);
-    narm_half_fill_triangle(x + 1, y + 1, x + 1, y + 7,
-                            x + 4, y + 5, MC_COLOR_WHITE);
-    narm_half_line(x + 3, y + 5, x + 6, y + 9, MC_COLOR_BLACK);
-    narm_half_line(x + 4, y + 5, x + 7, y + 8, MC_COLOR_WHITE);
-}
-
 void mc_menu_set_button(int index, int id, int x, int y, int width,
                         char *display_string, int enabled)
 {
@@ -599,12 +583,25 @@ void mc_menu_move_pointer(int delta_x, int delta_y)
     if (mc_menu_pointer_y >= MC_SCREEN_HEIGHT) mc_menu_pointer_y = MC_SCREEN_HEIGHT - 1;
 }
 
+#ifdef MC10_MOUSE
+int mc_mouse_ui_sync_pointer(void);
+#endif
+
 int mc_menu_update_pointer_held(uint now)
 {
     int delta_x = 0;
     int delta_y = 0;
     int previous_x=mc_menu_pointer_x,previous_y=mc_menu_pointer_y;
     uint elapsed,steps;
+#ifdef MC10_MOUSE
+    int moved=mc_mouse_ui_sync_pointer();
+    if(moved>=0)
+    {
+        mc_menu_pointer_last_move=now;
+        mc_menu_pointer_pending_ms=0;
+        return moved;
+    }
+#endif
     if (narm_key_down(NARM_KEY_LEFT) > 0) delta_x = -2;
     if (narm_key_down(NARM_KEY_RIGHT) > 0) delta_x = delta_x + 2;
     if (narm_key_down(NARM_KEY_UP) > 0) delta_y = -2;
@@ -689,11 +686,11 @@ int mc_menu_self_test(void)
     return 1;
 }
 
-void mc_menu_draw(void)
+int mc_menu_draw(void)
 {
     int index;
     int logo_index;
-    mc_menu_draw_background();
+    if (narm_half_clear(MC_COLOR_BLACK) < 0) return 0;
     logo_index = mc_menu_update_counter < 0.0001f ? 1 : 0;
     narm_half_blit_masked(
         5, 30, 310, 44,
@@ -711,6 +708,5 @@ void mc_menu_draw(void)
         mc_menu_draw_button(&mc_menu_buttons[index]);
         index = index + 1;
     }
-    mc_menu_draw_pointer();
-    narm_half_present();
+    return narm_half_present() >= 0;
 }

@@ -35,6 +35,7 @@ int mc_region_floor_div(int n,int d){int q=n/d;return n<0&&n%d?q-1:q;}
 uint mc_asset_read_u32(char*d,int i){return((uint)d[i]&255)|(((uint)d[i+1]&255)<<8)|(((uint)d[i+2]&255)<<16)|(((uint)d[i+3]&255)<<24);}
 #include "mc10_blocks.tc"
 #include "mc10_blocks_extra.tc"
+#include "mc10_paths.tc"
 #include "mc10_block_render_extra.tc"
 #include "mc10_collision.tc"
 uint probe_hash,probe_count;

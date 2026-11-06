@@ -43,22 +43,25 @@ int narm_usb_storage_enable(void);
 int narm_usb_storage_disable(void);
 int narm_usb_storage_status(void);
 
-// Shared firmware audio mixer: 8 voices, 48 kHz output. WAV paths address SD
+// Shared firmware audio mixer: 32 voices, 48 kHz output. WAV paths address SD
 // files and PCM arrays contain signed 16-bit interleaved mono/stereo samples.
 // PCM storage must remain valid until the voice finishes or is stopped.
-#define NARM_AUDIO_VOICE_COUNT 8
+#define NARM_AUDIO_VOICE_COUNT 32
 #define NARM_AUDIO_OUTPUT_RATE 48000
 #define NARM_AUDIO_RUNTIME_READY 1
 #define NARM_AUDIO_OUTPUT_READY 2
 unsigned narm_audio_status(void);
 int narm_audio_ready(void);
-int narm_audio_play_wav(unsigned voice, const char *path);
-int narm_audio_play_wav_from(unsigned voice, const char *path,
+int narm_audio_allocate_voice(void);
+int narm_audio_deallocate_voice(unsigned voice);
+// Playback uses the allocated voice. These signatures require API 1.16+.
+int narm_audio_play_wav(const char *path);
+int narm_audio_play_wav_from(const char *path,
                              unsigned start_frame);
-int narm_audio_play_pcm(unsigned voice, const short *samples,
+int narm_audio_play_pcm(const short *samples,
                         unsigned frame_count, unsigned sample_rate,
                         unsigned channel_count);
-int narm_audio_play_pcm_from(unsigned voice, const short *samples,
+int narm_audio_play_pcm_from(const short *samples,
                              unsigned frame_count, unsigned start_frame,
                              unsigned sample_rate, unsigned channel_count);
 int narm_audio_stop(unsigned voice);

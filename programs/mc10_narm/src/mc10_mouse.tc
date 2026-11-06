@@ -14,6 +14,15 @@ int mc_mouse_ui_position(int x,int y)
     return moved;
 }
 
+int mc_mouse_ui_sync_pointer(void)
+{
+    struct NarmMouseState state;
+    uint required=NARM_MOUSE_CONNECTED|NARM_MOUSE_FOCUSED;
+    if(narm_mouse_get_state(&state)!=0||
+       (state.flags&(required|NARM_MOUSE_RELATIVE))!=required)return -1;
+    return mc_mouse_ui_position(state.x,state.y);
+}
+
 void mc_mouse_ui_reset(void)
 {
     struct NarmMouseMotion motion;
@@ -22,12 +31,11 @@ void mc_mouse_ui_reset(void)
     mc_mouse_ui_left=0;mc_mouse_ui_wheel=0;mc_mouse_ui_pending=0;
     if(narm_mouse_get_state(&state)!=0||!(state.flags&NARM_MOUSE_FOCUSED))return;
     if(state.flags&NARM_MOUSE_RELATIVE)narm_mouse_set_relative_mode(0);
-    narm_mouse_set_cursor_visible(0); /* Use Minecraft's software pointer. */
+    narm_mouse_set_cursor_visible(1);
     for(i=0;i<MC_MOUSE_POLL_LIMIT;i=i+1)
         if(narm_mouse_poll_event(&mc_mouse_ui_packet)!=1)break;
     narm_mouse_read_motion(&motion);
-    if(narm_mouse_get_state(&state)==0&&(state.flags&3)==3)
-        mc_mouse_ui_position(state.x,state.y);
+    mc_mouse_ui_sync_pointer();
 }
 
 int mc_mouse_ui_event(void)
@@ -43,7 +51,6 @@ int mc_mouse_ui_event(void)
             if(mc_mouse_ui_left){mc_mouse_ui_left=0;return 4;}
             continue;
         }
-        if(mc_mouse_ui_packet.type&NARM_MOUSE_EVENT_CONNECT)narm_mouse_set_cursor_visible(0);
         moved=mc_mouse_ui_position(mc_mouse_ui_packet.x,mc_mouse_ui_packet.y);
         pressed=mc_mouse_ui_packet.changed_buttons&mc_mouse_ui_packet.buttons;
         released=mc_mouse_ui_packet.changed_buttons&~mc_mouse_ui_packet.buttons;

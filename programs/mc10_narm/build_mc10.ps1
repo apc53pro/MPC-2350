@@ -182,7 +182,7 @@ if ($StageProfile) { $profileCompilerFlags += '-DMC10_STAGE_PROFILE=1' }
 if ($GeometryProfile) { $profileCompilerFlags += '-DMC10_GEOMETRY_PROFILE=1' }
 if ($PreparationProfile) { $profileCompilerFlags += '-DMC10_PREPARATION_PROFILE=1' }
 if ($CullProfile) { $profileCompilerFlags += '-DMC10_CULL_PROFILE=1' }
-& $Compiler $source -I $PSScriptRoot -O3 @profileCompilerFlags `
+& $Compiler $source -I $PSScriptRoot -O3 --legacy-float-literals @profileCompilerFlags `
     --default-mode foreground `
     --name 'Minecraft 1.0 NARM' `
     --stack-bytes 32768 `

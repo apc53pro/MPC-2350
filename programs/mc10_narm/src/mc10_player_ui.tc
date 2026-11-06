@@ -202,7 +202,7 @@ void mc_inventory_draw(void)
     if(mc_inventory_error==-4)mc_menu_draw_centered_string("Place the held stack before closing",160,224,0xffff55);
     else if(mc_inventory_error==-3)mc_menu_draw_centered_string("Crafting / dropping are not implemented",160,224,0xffff55);
     else mc_menu_draw_centered_string("? = item visual pending; changes are not saved",160,224,0xa0a0a0);
-    mc_menu_draw_pointer();narm_half_present();
+    narm_half_present();
 }
 int mc_inventory_close_key_held(void)
 {

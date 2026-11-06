@@ -23,6 +23,41 @@ void mc_show_menu_target_placeholder(int button_id)
     mc_wait_for_return();
 }
 
+int mc_main_startup_error(char *heading, char *detail, int status)
+{
+    if (mc_ui_draw_startup_error(heading, detail))
+        mc_wait_for_return();
+    return status;
+}
+
+int mc_main_video_error(void)
+{
+    return mc_main_startup_error("MINECRAFT VIDEO FAILED",
+                                 "320X240 FRAMEBUFFER UNAVAILABLE", 2);
+}
+
+int mc_main_find_paths(void)
+{
+    char directory[MC_GAME_PATH_CAP];
+    int length = narm_get_program_path(directory, MC_GAME_PATH_CAP,
+                                       &mc_game_storage);
+    if (length < 2 || length >= MC_GAME_PATH_CAP || directory[0] != '/')
+        return 0;
+    length = length - 1;
+    while (directory[length] != '/') length = length - 1;
+    directory[length + 1] = 0;
+    return mc_game_join_path(mc_asset_path, directory, "assets.mc10") &&
+           mc_game_join_path(mc_options_path, directory, "options.txt") &&
+           mc_game_join_path(mc_block_mesh_path, directory, "blocks10.dat") &&
+           mc_game_join_path(mc_block_tint_path, directory, "blocktint10.dat") &&
+           mc_game_join_path(mc_block_color_path, directory, "biomecolor10.dat") &&
+           mc_game_join_path(mc_math_path, directory, "math10.dat") &&
+           mc_game_join_path(mc_sky_path, directory, "sky10.dat") &&
+           mc_game_join_path(mc_game_saves_path, directory, "saves") &&
+           mc_game_join_path(mc_game_profiles_path, directory, "profiles") &&
+           mc_game_join_path(mc_game_profile_world_path, directory, "profile_world.txt");
+}
+
 int mc_main_activate_button(int button_id)
 {
     if (button_id == 4) return 1;
@@ -46,6 +81,9 @@ int mc_main_activate_button(int button_id)
 int main(void)
 {
 #ifdef MC10_AUTOPROFILE
+    if (!mc_main_find_paths())
+        return mc_main_startup_error("MINECRAFT PATH FAILED",
+                                     "CHECK PROGRAM FOLDER AND PATH LENGTH", 3);
     return mc_benchmark_main();
 #else
     unsigned key;
@@ -61,6 +99,14 @@ int main(void)
     int mouse_event, mouse_count;
 #endif
 
+    if (!mc_main_find_paths())
+        return mc_main_startup_error("MINECRAFT PATH FAILED",
+                                     "CHECK PROGRAM FOLDER AND PATH LENGTH", 3);
+    if (!mc_menu_init())
+        return mc_main_startup_error("MINECRAFT MENU ASSETS FAILED",
+                                     "KEEP ASSETS BESIDE THE GAME", 1);
+    if (!mc_menu_draw()) return mc_main_video_error();
+
     mc_blocks_init();
     mc_boot_blocks_ok = mc_blocks_self_test();
     mc_boot_u64_ok = mc_u64_self_test();
@@ -70,18 +116,15 @@ int main(void)
     mc_boot_chunk_ok = mc_chunk_self_test();
     mc_boot_assets_ok = mc_asset_self_test();
     mc_boot_perlin_ok = mc_noise_perlin_constructor_self_test();
-    if (!mc_menu_init()) mc_boot_assets_ok = 0;
-    else mc_boot_menu_ok = mc_menu_self_test();
+    mc_boot_menu_ok = mc_menu_self_test();
     if (!mc_options_init()) mc_boot_options_ok = 0;
     else mc_boot_options_ok = mc_options_self_test();
 
 #ifdef MC10_MOUSE
-    /* Present a usable frame before calling the optional input backend. */
-    mc_menu_draw();
     mc_mouse_ui_reset();
 #endif
     last_tick = narm_millis();
-    dirty = 1;
+    dirty = 0;
     for (;;)
     {
         now = narm_millis();
@@ -140,7 +183,7 @@ int main(void)
 #endif
         if (dirty)
         {
-            mc_menu_draw();
+            if (!mc_menu_draw()) return mc_main_video_error();
             dirty = 0;
         }
         narm_sleep_ms(2);
