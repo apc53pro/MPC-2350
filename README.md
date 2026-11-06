@@ -14,6 +14,8 @@ the general terminal allocation arena is 64 KiB and contains no graphics partiti
 1 us per clock phase. It claims no PIO or DMA resources. `nano_gpu.cpp` checks
 the N20K-SYS-0.2 capabilities and replies, uploads the font once as a 64 KiB
 RGB565 heap texture, and uses GPU `COPY_RECT`, `FENCE` and `PRESENT` commands.
+Startup keeps GPU_RESET_N LOW and data released for **1000 ms** before clocking
+the reset/release sequence and reading status, allowing for flash configuration.
 The first frame copies all characters. Later frames copy front to back, update
 changed characters, fence, then wait for the vertical-blank presentation reply.
 An unchanged terminal emits no packets. The CPU never rasterizes a screen buffer.
@@ -62,6 +64,9 @@ LOW, which also stopped HDMI video; that behavior was removed.
 No partial packet is retried. Correct the connection/image and use `GPU_RESET`
 to hard-reset and retry. `GPU BOOT` reports the last captured startup flags and
 core/link fault codes; it is a saved snapshot, not a new live status read.
+The one-second startup allowance is not a configuration-DONE detector. If the
+Tang is powered later or reprogrammed while the RP is running, wait for its
+configuration to finish and issue `GPU_RESET` (or restart the RP).
 Electrical margins, clock rate and physical display operation remain unverified.
 The slow first full redraw is intentional; this version prioritizes bring-up.
 
@@ -78,7 +83,9 @@ python tests/gpu/run_tests.py --gpu <Nano-20K-GPU-checkout> --compiler <matching
 The GPIO host mock compiles the actual board glue and checks that write/read
 timeouts, startup faults and malformed replies leave reset HIGH, strobes
 inactive and data released. It also checks reset pulse polarity and retained
-startup diagnostics. GPIO/time are stubbed; electrical behavior is not tested.
+startup diagnostics. A simulated 800 ms FPGA configuration delay checks that
+host transfers begin after the one-second guard. GPIO/time are stubbed;
+electrical behavior is not tested.
 
 The GPU client test reads every pixel back through packets and checks font upload, full
 redraw, idle behavior, edits across swaps, scrolling, invalid glyphs and latched

@@ -13,6 +13,7 @@ constexpr unsigned kClock = 16, kWrite = 17, kData = 18;
 constexpr unsigned kAbort = 35, kReset = 36, kAddress = 37, kRead = 38;
 constexpr unsigned kReady = 39, kValid = 40;
 constexpr uint32_t kTimeoutUs = 250000;
+constexpr uint32_t kConfigurationWaitMs = 1000;
 constexpr uint32_t kDataMask = 0xffu << kData;
 static_assert(NUM_BANK0_GPIOS > kValid, "Select RP2350B: GPU handshakes require GPIO39/40");
 NanoGpu gpu;
@@ -91,6 +92,10 @@ bool gpu_display_begin() {
   for (unsigned pin = kData; pin < kData + 8; ++pin) gpio_init(pin);
   for (unsigned pin : {kReady, kValid}) { gpio_init(pin); gpio_disable_pulls(pin); }
   release_data(); selected_address = -1;
+  // Flash configuration can take several hundred milliseconds. Keep GPU
+  // logic reset asserted and the bus released before attempting any transfer.
+  // This is a startup allowance, not a configuration-DONE measurement.
+  sleep_ms(kConfigurationWaitMs);
   for (unsigned i = 0; i < 32; ++i) { high(); low(); }
   gpio_put(kReset, true);
   for (unsigned i = 0; i < 64; ++i) { high(); low(); }

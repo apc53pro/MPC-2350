@@ -32,6 +32,7 @@ void reset_fixture(bool ready, bool valid) {
   memset(mock_gpio::status, 0, sizeof(mock_gpio::status));
   mock_gpio::ready = ready; mock_gpio::valid = valid;
   mock_gpio::now = 0; mock_gpio::reset_clock_edges = 0;
+  mock_gpio::first_clock_us = UINT32_MAX; mock_gpio::configuration_ready_us = 0;
   mock_gpio::reset_writes.clear(); Serial.text.clear();
 }
 
@@ -43,6 +44,7 @@ void check_failure_state() {
   for (unsigned pin = 18; pin < 26; ++pin) assert(!mock_gpio::output[pin]);
   assert(!mock_gpio::output[39] && !mock_gpio::output[40]);
   assert(mock_gpio::reset_clock_edges == 32);
+  assert(mock_gpio::first_clock_us >= 1000000);
   assert(mock_gpio::reset_writes.front() == false);
   bool released = false;
   for (bool level : mock_gpio::reset_writes) {
@@ -56,11 +58,12 @@ void check_failure_state() {
 int main() {
   reset_fixture(false, false);
   assert(!gpu_display_begin()); check_failure_state(); // WREADY timeout.
-  assert(mock_gpio::now >= 250000);
+  assert(mock_gpio::now >= 1250000);
   reset_fixture(true, false);
   assert(!gpu_display_begin()); check_failure_state(); // RVALID timeout.
-  assert(mock_gpio::now >= 250000);
+  assert(mock_gpio::now >= 1250000);
   reset_fixture(true, true);
+  mock_gpio::configuration_ready_us = 800000; // FPGA takes 800 ms to configure.
   mock_gpio::status[1] = 9; mock_gpio::status[2] = 1;
   mock_gpio::status[32] = 8; mock_gpio::status[56] = 2;
   assert(!gpu_display_begin()); check_failure_state(); // GPU startup fault.
@@ -70,7 +73,7 @@ int main() {
   mock_gpio::status[1] = 1; mock_gpio::status[2] = 1;
   assert(!gpu_display_begin()); check_failure_state(); // Malformed GET_CAPS reply.
   assert(std::string(gpu.error()) == "invalid reply header");
-  std::cout << "PASS actual GPIO glue: reset polarity/pulse, write/read timeouts, "
+  std::cout << "PASS actual GPIO glue: configuration startup wait, reset polarity/pulse, write/read timeouts, "
                "startup fault and malformed reply leave reset HIGH and data released; "
                "startup fault diagnostics retained.\n";
 }
