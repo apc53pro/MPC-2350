@@ -103,3 +103,4 @@ inline PinStatus digitalRead(unsigned pin) {
 inline void delayMicroseconds(uint32_t us) { mock_gpio::now += us; }
 inline void delay(uint32_t ms) { mock_gpio::now += ms * 1000; }
 inline uint32_t micros() { return mock_gpio::now; }
+inline uint32_t millis() { return mock_gpio::now / 1000; }

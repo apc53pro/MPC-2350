@@ -13,6 +13,14 @@ struct Bus {
   nano_gpu::hw::SystemModel model;
   unsigned writes = 0;
   bool write_timeout = false, read_timeout = false, corrupt_reply = false;
+  // Reply-wait fault injection on status register 1: hide "reply available"
+  // (with a clock that jumps 1 s per call) or report a transport fault.
+  bool hide_reply = false, fake_fault = false;
+  uint32_t skew_ms = 0;
+  uint32_t now_ms() {
+    if (hide_reply) skew_ms += 1000;
+    return (uint32_t)(model.system_statistics().core_cycles / 50000) + skew_ms;
+  }
   void check(uint64_t start) {
     if (model.faulted()) throw std::runtime_error(model.fault_message());
     if (model.system_statistics().core_cycles - start > 50000000)
@@ -46,6 +54,8 @@ struct Bus {
       if (result.read_valid) {
         *byte = result.read_data;
         if (!address && corrupt_reply) { *byte ^= 1; corrupt_reply = false; }
+        if (address == 1 && hide_reply) *byte &= (uint8_t)~0x10u;
+        if (address == 1 && fake_fault) *byte |= 0x80u;
         hold(); return true;
       }
     }
@@ -54,7 +64,8 @@ struct Bus {
     return {this,
       [](void *p, uint8_t b) { return static_cast<Bus *>(p)->write(b); },
       [](void *p, uint8_t *b) { return static_cast<Bus *>(p)->read(0, b); },
-      [](void *p, uint8_t a, uint8_t *b) { return static_cast<Bus *>(p)->read(a, b); }};
+      [](void *p, uint8_t a, uint8_t *b) { return static_cast<Bus *>(p)->read(a, b); },
+      [](void *p) { return static_cast<Bus *>(p)->now_ms(); }};
   }
   void boot() {
     const auto start = model.system_statistics().core_cycles;
@@ -106,6 +117,23 @@ int main() {
     assert(gpu.terminal_present(grid, 0)); verify(bus, gpu, grid, 0);
     grid[0][30] = 'E'; grid[39][59] = 'F'; grid[2][30] = 1;
     assert(gpu.terminal_present(grid, 30)); verify(bus, gpu, grid, 30);
+    // Both buffers are tracked: a cursor-style toggle redraws nothing once the
+    // back buffer already holds the frame before last.
+    grid[5][30] = '_'; assert(gpu.terminal_present(grid, 30)); verify(bus, gpu, grid, 30);
+    grid[5][30] = ' '; assert(gpu.terminal_present(grid, 30)); verify(bus, gpu, grid, 30);
+    auto copies = bus.model.system_statistics().copies_completed;
+    grid[5][30] = '_'; assert(gpu.terminal_present(grid, 30)); verify(bus, gpu, grid, 30);
+    assert(bus.model.system_statistics().copies_completed == copies);
+    grid[5][30] = ' '; assert(gpu.terminal_present(grid, 30)); verify(bus, gpu, grid, 30);
+    assert(bus.model.system_statistics().copies_completed == copies);
+    // Scrolling one line is one shifted buffer copy plus the new bottom line.
+    for (unsigned x = 0; x < 40; ++x) for (unsigned y = 0; y < 60; ++y)
+      grid[x][y] = (char)(33 + (x * 7 + y * 3) % 90);
+    assert(gpu.terminal_present(grid, 20)); verify(bus, gpu, grid, 20);
+    assert(gpu.terminal_present(grid, 21)); verify(bus, gpu, grid, 21);
+    copies = bus.model.system_statistics().copies_completed;
+    assert(gpu.terminal_present(grid, 22)); verify(bus, gpu, grid, 22);
+    assert(bus.model.system_statistics().copies_completed - copies <= 1 + 40);
     uint8_t bytes[2];
     assert(gpu.read_memory((uint32_t)bus.model.front_id() * 0x96000u, 2, bytes));
     assert((bytes[0] | ((unsigned)bytes[1] << 8)) ==
@@ -124,7 +152,21 @@ int main() {
       bad.read_timeout = mode == 0; bad.corrupt_reply = mode == 1;
       assert(!client.begin(bad.transport(), font) && !client.ready());
     }
+    // Replies are awaited through sideband status, bounded by a CPU deadline,
+    // and a fault flag ends the wait at once (the RTL sends no reply after it).
+    assert(gpu.max_reply_wait_ms() >= gpu.last_reply_wait_ms());
+    for (unsigned mode = 0; mode < 2; ++mode) {
+      Bus slow; slow.boot(); NanoGpu client;
+      assert(client.begin(slow.transport(), font));
+      char text[40][60]; memset(text, ' ', sizeof(text)); text[0][0] = 'Q';
+      slow.hide_reply = mode == 0; slow.fake_fault = mode == 1;
+      assert(!client.terminal_present(text, 0) && !client.ready() && client.presents() == 0);
+      assert(!strcmp(client.error(), mode == 0 ? "reply wait timeout" : "GPU fault while awaiting reply"));
+      assert(client.awaited_opcode() == 6); // The frame's fence.
+    }
     std::cout << "PASS firmware GPU client: font upload, full terminal, unchanged frame, "
-                 "edits across swaps, scroll, glyph fallback, packet readback and latched failures.\n";
+                 "edits across swaps, scroll, glyph fallback, packet readback, latched failures, "
+                 "status-polled reply deadline and fault stop, per-buffer glyph tracking "
+                 "(zero-copy cursor toggle) and one-copy line scroll.\n";
   } catch (const std::exception &e) { std::cerr << e.what() << '\n'; return 1; }
 }

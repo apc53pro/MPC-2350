@@ -56,9 +56,9 @@ void check_failure_state() {
   for (unsigned pin : {16u, 17u, 35u, 36u, 37u, 38u}) assert(mock_gpio::drive[pin] == 12);
   assert(mock_gpio::reset_clock_edges == 32);
   assert(mock_gpio::first_clock_us >= 1000000);
-  assert(mock_gpio::min_clock_phase_us >= 50); // HCLK never exceeds 10 kHz.
-  assert(mock_gpio::min_write_setup_us >= 50);
-  assert(mock_gpio::min_read_setup_us >= 50);
+  assert(mock_gpio::min_clock_phase_us >= kClockPhaseUs); // HCLK never exceeds 250 kHz.
+  assert(mock_gpio::min_write_setup_us >= kClockPhaseUs);
+  assert(mock_gpio::min_read_setup_us >= kClockPhaseUs);
   assert(mock_gpio::reset_writes.front() == false);
   bool released = false;
   for (bool level : mock_gpio::reset_writes) {
@@ -85,6 +85,12 @@ int main() {
   assert(Serial.text.find("core_fault=8; link_fault=2") != std::string::npos);
   reset_fixture(true, true);
   mock_gpio::status[1] = 1; mock_gpio::status[2] = 1;
+  // Ready, but no reply ever flagged: the status-polled wait hits its deadline.
+  assert(!gpu_display_begin()); check_failure_state();
+  assert(std::string(gpu.error()) == "reply wait timeout");
+  assert(mock_gpio::now >= 1000000 + NanoGpu::kReplyDeadlineMs * 1000);
+  reset_fixture(true, true);
+  mock_gpio::status[1] = 0x11; mock_gpio::status[2] = 1; // Ready, reply available.
   assert(!gpu_display_begin()); check_failure_state(); // Malformed GET_CAPS reply.
   assert(std::string(gpu.error()) == "invalid reply header");
   reset_fixture(true, true);
@@ -111,9 +117,9 @@ int main() {
     assert(read_at(64, &received));
     assert(received == byte);
   }
-  assert(mock_gpio::min_clock_phase_us >= 50);
-  assert(mock_gpio::min_write_setup_us >= 50 && mock_gpio::min_write_setup_us != UINT32_MAX);
-  assert(mock_gpio::min_read_setup_us >= 50 && mock_gpio::min_read_setup_us != UINT32_MAX);
+  assert(mock_gpio::min_clock_phase_us >= kClockPhaseUs);
+  assert(mock_gpio::min_write_setup_us >= kClockPhaseUs && mock_gpio::min_write_setup_us != UINT32_MAX);
+  assert(mock_gpio::min_read_setup_us >= kClockPhaseUs && mock_gpio::min_read_setup_us != UINT32_MAX);
   const uint8_t previous_packet_byte = mock_gpio::last_data_write;
   mock_gpio::status[65] = 2;
   unsigned edges = mock_gpio::clock_rises;
@@ -261,6 +267,34 @@ int main() {
   Serial.text.clear();
   gpu_display_release();
   assert(Serial.text.find("GPU RELEASE: no hold active.") != std::string::npos);
+  // GPU_REGS: two coherent sideband snapshots, decoded, with no packet sent.
+  memset(mock_gpio::status, 0, 64);
+  mock_gpio::status[1] = 0x13; mock_gpio::status[2] = 1;          // ready busy reply; epoch 1
+  mock_gpio::status[6] = 0x2C; mock_gpio::status[7] = 0x01;       // completed 300
+  mock_gpio::status[10] = 0x2B; mock_gpio::status[11] = 0x01;     // fence 299
+  mock_gpio::status[14] = 1; mock_gpio::status[16] = 0x40; mock_gpio::status[17] = 0x42; mock_gpio::status[18] = 0x0F;
+  mock_gpio::status[36] = 7; mock_gpio::status[56] = 0;
+  const uint8_t packet_before_regs = mock_gpio::last_data_write;
+  Serial.text.clear();
+  gpu_display_regs();
+  assert(Serial.text.find("GPU CLIENT: last_sent=") != std::string::npos);
+  assert(Serial.text.find("GPU REGS t0: flags=0x13 [ready busy reply-available ]; epoch=1; completed=300; "
+                          "fence=299; front=1; cycles=1000000; core_fault=0; present=7; link_fault=0\n")
+         != std::string::npos);
+  assert(Serial.text.find("GPU REGS t+500ms: flags=0x13") != std::string::npos);
+  assert(Serial.text.find("GPU REGS delta: cycles=+0; completed=+0\n") != std::string::npos);
+  assert(mock_gpio::last_data_write == packet_before_regs); // Sideband only.
+  assert(!read_held && mock_gpio::level[38] && !mock_gpio::level[16] && mock_gpio::level[36]);
+  gpu_display_drive(0x10);
+  Serial.text.clear();
+  gpu_display_regs();
+  assert(Serial.text.find("GPU_DRIVE active") != std::string::npos);
+  gpu_display_release();
+  mock_gpio::valid = false;
+  Serial.text.clear();
+  gpu_display_regs();
+  assert(Serial.text.find("GPU REGS: timeout at register 1") != std::string::npos);
+  mock_gpio::valid = true;
   gpu_display_drive(0x7F);
   assert(!gpu_display_begin()); // RESET also ends a drive hold.
   assert(!drive_held && mock_gpio::level[17] && mock_gpio::level[37]);
@@ -268,5 +302,5 @@ int main() {
   std::cout << "PASS Arduino GPIO glue: 256 write/read byte patterns, configuration startup wait, reset pulse, timeouts, "
                "startup fault and malformed reply leave reset HIGH and data released; "
                "startup diagnostics, address echo, capability probe, held reads, idle handshake check, "
-               "release/reset transitions, D5/D6 swap and RVALID edge-count signatures, address-latch tests, edge-free drive holds and 50 us clock/setup minima verified.\n";
+               "release/reset transitions, D5/D6 swap and RVALID edge-count signatures, address-latch tests, edge-free drive holds and clock/setup phase minima verified.\n";
 }

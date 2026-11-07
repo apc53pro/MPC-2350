@@ -1,11 +1,9 @@
 # MPC-2350: Nano GPU terminal bring-up
 
 This first GPU firmware implements a **40x30 monochrome terminal** for the Tang
-Nano 20K. The current fixed bus-test FPGA image runs the GPU core/SDRAM at
-**6.3 MHz** and intentionally outputs an independent **black 640×480/60 HDMI
-raster** at 25.2 MHz pixels / 126 MHz serialization. GPU-rendered pixels are
-disconnected, so this image cannot display or qualify the terminal. Restoring
-visible GPU output requires a later board clock/video change and new validation.
+Nano 20K. The GPU renders it to HDMI at 640×480/60, with the FPGA image's
+50.4 MHz core/SDRAM clock and 25.2 MHz pixel clock. On 2026-11-07 the user
+reported the terminal running on HDMI.
 PS/2 terminal input, command history and scrolling remain.
 NARM program launching is disabled until its GPU API is implemented. PS/2 mouse
 input is retained; the graphical mouse cursor is deferred.
@@ -16,15 +14,37 @@ compositors have been removed. The small terminal character grid is retained;
 the general terminal allocation arena is 64 KiB and contains no graphics partitions.
 
 `gpu_display.cpp` drives the current 16-wire bus with GPIO, using at least
-50 us per clock phase/setup wait (a phase-only ceiling of 10 kHz before API
-overhead). It claims no PIO or DMA resources. `nano_gpu.cpp` checks
+2 us per clock phase/setup wait (a phase-only ceiling of 250 kHz before API
+overhead). The bus was first proven at 50 us phases; 2 us remains far below
+the GPU's 25.2 MHz host-clock constraint while electrical margins are
+unmeasured. It claims no PIO or DMA resources. `nano_gpu.cpp` checks
 the N20K-SYS-0.2 capabilities and replies, uploads the font once as a 64 KiB
 RGB565 heap texture, and uses GPU `COPY_RECT`, `FENCE` and `PRESENT` commands.
 Startup keeps GPU_RESET_N LOW and data released for **1000 ms** before clocking
 the reset/release sequence and reading status, allowing for flash configuration.
-The first frame copies all characters. Later frames copy front to back, update
-changed characters, fence, then wait for the vertical-blank presentation reply.
-An unchanged terminal emits no packets. The CPU never rasterizes a screen buffer.
+The client remembers which characters each of the GPU's two colour buffers
+shows. For a changed frame it picks the cheapest way to bring the back buffer
+up to date. Either it draws only the glyphs that differ from what that buffer
+already holds, or it first copies the front buffer, shifted up by whole text
+rows for a scroll, and then draws the rest. It then fences and waits for the
+vertical-blank presentation reply. A cursor blink needs no glyph copies, and
+a one-line scroll needs one copy plus at most a line of glyphs. An unchanged
+terminal emits no packets. The CPU never rasterizes a screen buffer.
+
+### Stack limit: keep large buffers off the stack
+
+Arduino-Pico gives each RP2350 core a fixed **4 KiB stack** in its own scratch
+bank, not the 512 KiB main RAM. Core 0's stack (SCRATCH_Y, 0x20081000–0x20082000)
+sits directly above Core 1's (SCRATCH_X, 0x20080000–0x20081000), and nothing
+guards the boundary. An earlier version of the frame code kept about 3.6 KiB of
+frame buffers, plus a 1 KiB upload packet, as local arrays. When the GPU client
+ran, Core 0 overflowed into Core 1's stack. Core 1 halted, so the PS/2 keyboard
+stopped after the first frames, and Core 0 sometimes locked up.
+`GPU_Isolation_Test` showed Core 1's loop counter freezing in the client stage.
+The client's work buffers are now `NanoGpu` members, and its largest stack
+frame is 208 bytes. On 2026-11-07 the user reported the keyboard and system
+stable after this change. Do not add large local arrays to code that runs on
+either core.
 
 ## Build settings
 
@@ -56,12 +76,10 @@ Remove any local GPU-reset release jumper before the RP drives GPU_RESET_N.
 The user reports A2 silicon and **one 100 Ω series resistor per signal wire**
 (16 total). The added **4.7 kΩ pull-down from GPIO39/WREADY to common GND and
 4.7 kΩ pull-down from GPIO40/RVALID to common GND** are now confirmed fitted;
-capability reads still return all zero. Other external bias fitment is
-unconfirmed. The user subsequently tested the 6.3 MHz / 50 us build and again
-reported sixteen zero capability bytes with matching address echoes and reset
-HIGH. Slowing the clocks did not change the readback or identify its cause.
-A2 E9 can affect weak or floating inputs; the series parts alone
-do not provide pull-down bias. E9 is not established as the root cause.
+other external bias fitment is unconfirmed. The earlier all-zero capability
+reads were caused by the open-source FPGA build, not by wiring, E9 or this
+firmware; see the result below. A2 E9 can still affect weak or floating inputs,
+and the series parts alone do not provide pull-down bias.
 Arduino `digitalRead()` does not remove the silicon leakage. See the GPU guide
 and [RP2350 E9 notes](https://arduino-pico.readthedocs.io/en/stable/rp2350.html).
 
@@ -77,13 +95,16 @@ readback`; they are not treated as an SDRAM initialization timeout.
 
 1. Install the full-board Nano GPU image and compile/install this RP firmware with
    signal links isolated during programming. Connect only while both boards are off.
-2. Power normally and connect HDMI. With the fixed 6.3 MHz bus-test FPGA image,
-   expect a detected video signal and constant black. The terminal banner is
-   mirrored to USB Serial; no visible GPU terminal is expected for this image.
-   A successful bus/capability read is the first test, not a display result.
+2. Power normally, connect HDMI and press the RP reset once the FPGA has
+   configured. Expect the 40×30 black-on-white terminal on HDMI; the banner is
+   also mirrored to USB Serial.
 3. USB Serial at 115200 mirrors terminal messages and accepts commands. `GPU_STATUS`
-   prints link state, presentation count, physical RESET_N/WREADY/RVALID levels
-   and the last startup fault snapshot; `GPU_RESET` performs a hard GPU reset,
+   prints link state, presentation count, the last and longest reply wait
+   (`reply_wait_ms=last/max`), physical RESET_N/WREADY/RVALID levels
+   and the last startup fault snapshot; `GPU_REGS` reads the live status
+   registers twice, 500 ms apart, and decodes flags, epoch, completed sequence,
+   fence/present tokens, cycle counter and fault codes (sideband reads only; it
+   also runs automatically after a failed terminal frame); `GPU_RESET` performs a hard GPU reset,
    starts a fresh session, reuploads the font and redraws the terminal.
    `GPU_PROBE`, while offline, reads immutable capability registers 64..79
    without submitting packets. Its expected hexadecimal prefix is `0 2 8 20`.
@@ -187,8 +208,14 @@ address, and the unchanged GPU RTL built with Gowin EDA reached `READY` with
 `GPU_LATCHTEST: 2 8 20 2` and correct capability and status reads. This
 firmware, the wiring and the RTL are therefore working. The fault is in the
 open-source FPGA implementation of the full GPU design; the Nano-20K-GPU control
-guide records the evidence. With the Gowin build, the first terminal present
-then failed with `read timeout`; that cause is still open.
+guide records the evidence. With the Gowin build, the first terminal frame
+completed, and the second then failed with `read timeout` while awaiting its
+fence (sequence 1336). `GPU_REGS` showed the core busy on the frame's 640×480
+front-to-back copy with no fault codes, the cycle counter running and
+`completed` at 1332. A later dump showed `completed=1336` and a reply
+available. The GPU was therefore slow, not stuck: at the 6.3 MHz bus-test clock
+that copy takes well over the old 250 ms reply-byte wait. Reply waits now poll
+status instead (below).
 
 The map remains **D5: GPIO23 / Core P3.9 → Tang J5.5 / FPGA pin 42** and
 **D6: GPIO24 / Core P3.12 → Tang J5.6 / FPGA pin 41**. The driver still indexes
@@ -199,7 +226,7 @@ identifies the register. It needs no FPGA reflash, constraint or clock change.
 
 For a stable voltage test while offline, send **`GPU_HOLD`**. It first releases
 the bus with RD_N/WR_N/ALE_N HIGH and data pins as inputs, then samples RVALID
-after 50 us at HCLK LOW and after 50 us at HCLK HIGH. The `GPU IDLE` values
+after one HCLK phase at HCLK LOW and after one phase at HCLK HIGH. The `GPU IDLE` values
 `RVALID_LOWCLK` / `RVALID_HIGHCLK` should both be **0** while RD_N is inactive.
 An incorrect result could indicate a clock-linked RVALID miswire; that cause
 has not been confirmed. The diagnostic continues even if this idle check fails.
@@ -224,12 +251,18 @@ levels, not measured results. Keep the two fitted 4.7 kΩ handshake pull-downs.
 `GPU_SWAPTEST` and `GPU_LATCHTEST` refuse while held. Send **`GPU_RELEASE`** to end the read and
 release the bus, or **`GPU_RESET`**
 to clear the hold and perform normal hard initialization. This diagnostic needs
-no FPGA reflash or clock change; use the existing 6.3 MHz bus-test image.
+no FPGA reflash or clock change.
 The idle WREADY/RVALID values in a normal probe's final log are not its active
 transfer levels: printing all sixteen bytes means software sampled both inputs
 HIGH during those transfers.
 
 A normal initialization, packet or probe byte transfer times out after 250 ms.
+Before reading a reply, the client instead polls sideband register 1 until
+bit 4 (reply available) is set. The deadline is
+**10 s** on the CPU's `millis()`. It stops at once on bit 3 (core fault) or bit 7
+(transport fault), because the RTL emits no reply after a fault. Errors are
+`reply wait timeout` and `GPU fault while awaiting reply`. The reply bytes
+themselves keep the 250 ms byte timeout.
 A failed transfer or invalid reply latches the client offline and releases data,
 with WR_N/RD_N/ALE_N HIGH and
 GPU_RESET_N **HIGH**. Keeping reset released lets video timing continue while

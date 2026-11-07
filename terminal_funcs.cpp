@@ -9,6 +9,52 @@
 #include "audio_runtime.h"
 #include "native_runtime.h"
 #include "usb_storage_mode.h"
+#include "ps2_keyboard_driver.h"
+#include "ps2_pio_transport.h"
+#include "keyboard_runtime.h"
+
+// Read-only PS/2 input snapshot over USB Serial: Core 1 decode progress,
+// received/invalid frames, queue overflows and the keyboard PIO port state.
+static void print_ps2_status()
+{
+  Ps2KeyboardDiagnostics k;
+  ps2_keyboard_get_diagnostics(k);
+  Ps2PioDiagnostics p;
+  ps2_pio_get_diagnostics(p);
+  Serial.print("PS2 KBD: polls="); Serial.print(k.polls);
+  Serial.print(" stage="); Serial.print(k.poll_stage);
+  Serial.print(" received="); Serial.print(k.received_bytes);
+  Serial.print(" parsed="); Serial.print(k.parsed_bytes);
+  Serial.print(" invalid="); Serial.print(k.invalid_frames);
+  Serial.print(" overflows="); Serial.print(k.queue_overflows);
+  Serial.print(" pending="); Serial.print(k.queue_pending);
+  Serial.print(" recoveries="); Serial.print(k.recoveries);
+  Serial.print(" last_edge_us="); Serial.print(k.last_edge_us);
+  Serial.print(" now_us="); Serial.print(micros());
+  Serial.print(" dropped_events="); Serial.println(keyboard_dropped_events());
+  Serial.print("PS2 PIO: ready="); Serial.print(p.ready);
+  Serial.print(" flash_paused="); Serial.print(p.flash_paused);
+  Serial.print(" ctrl=0x"); Serial.print(p.ctrl, HEX);
+  Serial.print(" fdebug=0x"); Serial.print(p.fdebug, HEX);
+  Serial.print(" irq_enable=0x"); Serial.print(p.irq_enable, HEX);
+  Serial.print(" irq_pending=0x"); Serial.println(p.irq_pending, HEX);
+  for (unsigned i = 0; i < 2; ++i) {
+    const Ps2PioPortDiagnostics &d = p.port[i];
+    Serial.print(i == 0 ? "PS2 PORT KBD:" : "PS2 PORT MOUSE:");
+    Serial.print(" sm="); Serial.print(d.sm);
+    Serial.print(" pc="); Serial.print(d.pc);
+    Serial.print(" rx_level="); Serial.print(d.rx_level);
+    Serial.print(" clk_pin="); Serial.print(d.clock_pin);
+    Serial.print(" clk_high="); Serial.print(d.clock_high);
+    Serial.print(" data_high="); Serial.print(d.data_high);
+    Serial.print(" clk_out="); Serial.print(d.clock_output);
+    Serial.print(" data_out="); Serial.print(d.data_output);
+    Serial.print(" clk_fn="); Serial.print(d.clock_function);
+    Serial.print(" data_fn="); Serial.print(d.data_function);
+    Serial.print(" tx="); Serial.print(d.transmitting);
+    Serial.print(" recovering="); Serial.println(d.recovering);
+  }
+}
 
 String line;
 uint32_t errors = 0;
@@ -441,6 +487,12 @@ int8_t terminal_funcs(String code)
   }else if(tokens[0] == "GPU_LATCHTEST" && tokenTreeSize == 1)
   {
     gpu_display_latchtest();
+  }else if(tokens[0] == "PS2_STATUS" && tokenTreeSize == 1)
+  {
+    print_ps2_status();
+  }else if(tokens[0] == "GPU_REGS" && tokenTreeSize == 1)
+  {
+    gpu_display_regs();
   }else if(tokens[0] == "GPU_DRIVE" && tokenTreeSize == 2)
   {
     // One or two hexadecimal digits, without a 0x prefix.

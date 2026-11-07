@@ -10,6 +10,7 @@ struct NanoGpuTransport {
   bool (*write)(void *, uint8_t);
   bool (*read)(void *, uint8_t *);
   bool (*read_register)(void *, uint8_t, uint8_t *);
+  uint32_t (*now_ms)(void *); // Monotonic CPU milliseconds for reply deadlines.
 };
 
 class NanoGpu {
@@ -21,13 +22,40 @@ public:
   const char *error() const { return error_; }
   uint32_t presents() const { return presents_; }
   const uint8_t *boot_status() const { return boot_status_; }
+  // Diagnostics: last packet sequence sent, and the reply most recently awaited.
+  uint32_t last_sequence() const { return sequence_ - 1; }
+  uint16_t awaited_opcode() const { return awaited_opcode_; }
+  uint32_t awaited_sequence() const { return awaited_sequence_; }
+  // Time from the request until the GPU flagged its reply available.
+  uint32_t last_reply_wait_ms() const { return last_wait_ms_; }
+  uint32_t max_reply_wait_ms() const { return max_wait_ms_; }
+  // Bounded wait for one reply. Long commands legitimately delay it: at the
+  // 6.3 MHz bus-test clock a full-screen copy takes well over 250 ms.
+  static constexpr uint32_t kReplyDeadlineMs = 10000;
 
 private:
   NanoGpuTransport bus_{};
   uint32_t sequence_ = 1, epoch_ = 0, front_ = 0, presents_ = 0;
-  bool online_ = false, first_frame_ = true;
+  uint16_t awaited_opcode_ = 0;
+  uint32_t awaited_sequence_ = 0, last_wait_ms_ = 0, max_wait_ms_ = 0;
+  bool await_reply();
+  bool online_ = false;
   const char *error_ = "not initialized";
-  char displayed_[1200]{}; // Character metadata, not pixels.
+  // Characters each colour buffer currently shows (metadata, not pixels).
+  // A buffer is unknown until a frame has been drawn into it this session.
+  char contents_[2][1200]{};
+  bool known_[2]{};
+  // Copy cost in glyph-copy equivalents when choosing how to fill the back.
+  static constexpr unsigned kCopyCost = 16;
+  // Large work buffers live in the object, never on the stack: each RP2350
+  // core has only a 4 KiB stack bank, and Core 0's bank sits directly above
+  // Core 1's, so a Core 0 overflow silently corrupts and halts Core 1.
+  char next_[1200]{};
+  char base_[1200]{};
+  bool base_known_[1200]{};
+  uint8_t packet_[1024]{};
+  uint8_t row_[512]{};
+  uint8_t readback_[520]{};
   uint8_t boot_status_[64]{}; // Last startup snapshot, also retained on failure.
   bool fail(const char *message);
   bool read_bytes(uint8_t *out, uint32_t count);

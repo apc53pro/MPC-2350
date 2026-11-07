@@ -39,9 +39,31 @@ bool NanoGpu::send(uint16_t opcode, const uint8_t *payload,
   return true;
 }
 
+bool NanoGpu::await_reply() {
+  // A reply exists only after every earlier command retires, so its first
+  // byte may lag far behind a 250 ms byte transfer. Poll sideband status:
+  // bit 4 = reply available; bit 3 = core fault, bit 7 = transport fault (the
+  // RTL emits no reply after a fault, so stop instead of waiting it out).
+  const uint32_t start = bus_.now_ms(bus_.user);
+  for (;;) {
+    uint8_t flags;
+    if (!bus_.read_register(bus_.user, 1, &flags)) return fail("status read timeout");
+    const uint32_t waited = bus_.now_ms(bus_.user) - start;
+    if (flags & 0x10) {
+      last_wait_ms_ = waited;
+      if (waited > max_wait_ms_) max_wait_ms_ = waited;
+      return true;
+    }
+    if (flags & 0x88) return fail("GPU fault while awaiting reply");
+    if (waited > kReplyDeadlineMs) return fail("reply wait timeout");
+  }
+}
+
 bool NanoGpu::reply(uint16_t opcode, uint32_t sequence, uint32_t token,
                     uint8_t *extra, uint32_t count) {
   uint8_t header[16], common[12];
+  awaited_opcode_ = opcode; awaited_sequence_ = sequence;
+  if (!await_reply()) return false;
   if (!read_bytes(header, sizeof(header))) return false;
   if (get32(header) != 0x5550474eu || header[4] != 0 || header[5] != 2 ||
       (uint16_t)(header[6] | ((uint16_t)header[7] << 8)) != (opcode | 0x8000u) ||
@@ -59,7 +81,7 @@ bool NanoGpu::upload(uint32_t address, const uint8_t *data, uint32_t count) {
     return fail("heap range");
   while (count) {
     const uint32_t chunk = count > 956 ? 956 : count;
-    uint8_t payload[1024];
+    uint8_t *payload = packet_;
     put32(payload, address); put32(payload + 4, chunk);
     uint32_t source = 0, size = 8;
     while (source < chunk) {
@@ -87,10 +109,10 @@ bool NanoGpu::upload(uint32_t address, const uint8_t *data, uint32_t count) {
 }
 
 bool NanoGpu::begin(NanoGpuTransport transport, const uint16_t font[128][16]) {
-  bus_ = transport; online_ = false; first_frame_ = true;
+  bus_ = transport; online_ = false; known_[0] = known_[1] = false;
   sequence_ = 1; epoch_ = 0; front_ = 0; presents_ = 0;
   error_ = "not ready";
-  if (!bus_.write || !bus_.read || !bus_.read_register || !font)
+  if (!bus_.write || !bus_.read || !bus_.read_register || !bus_.now_ms || !font)
     return fail("missing transport/font");
   memset(boot_status_, 0, sizeof(boot_status_));
   uint8_t *status = boot_status_;
@@ -125,13 +147,13 @@ bool NanoGpu::begin(NanoGpuTransport transport, const uint16_t font[128][16]) {
       return fail("unsupported GPU capabilities");
     // Decode the immutable bitmap font into a 256x128 RGB565 texture. This
     // prepares an asset once; the GPU copies its glyphs into its own buffers.
-    uint8_t row[512];
+    uint8_t *row = row_;
     for (unsigned y = 0; y < 128; ++y) {
       for (unsigned x = 0; x < 256; ++x) {
         const uint16_t bits = font[(y / 16) * 16 + x / 16][y % 16];
         put16(row + 2 * x, (bits & (0x8000u >> (x % 16))) ? 0 : 0xffffu);
       }
-      if (!upload(kHeap + y * 512, row, sizeof(row))) return false;
+      if (!upload(kHeap + y * 512, row, sizeof(row_))) return false;
     }
     if (!fence()) return false;
     online_ = true; error_ = "none"; return true;
@@ -164,33 +186,67 @@ bool NanoGpu::fence() {
 bool NanoGpu::terminal_present(const char grid[40][60], int scroll) {
   if (!online_) return false;
   if (!grid || scroll < 0 || scroll > 30) return fail("terminal scroll range");
-  char next[1200]; bool changed = first_frame_;
+  char *next = next_;
   for (unsigned y = 0; y < 30; ++y) for (unsigned x = 0; x < 40; ++x) {
     uint8_t c = (uint8_t)grid[x][y + scroll];
     if (c < 32 || c > 159) c = (uint8_t)'?';
-    const unsigned i = y * 40 + x;
-    next[i] = (char)c;
-    changed |= next[i] != displayed_[i];
+    next[y * 40 + x] = (char)c;
   }
-  if (!changed) return true;
+  if (known_[front_] && !memcmp(next, contents_[front_], sizeof(next_))) return true;
   const uint32_t back = front_ ^ 1u;
-  // After a swap the other buffer holds an older frame. Preserve the current
-  // front before applying differences, so edits and scrolls cannot resurrect it.
-  if (!first_frame_ && !copy(back, 0, 0, 0, 0, 640, 480, false)) return false;
+  // The back buffer still shows the frame before last. Choose the cheapest
+  // way to make it equal `next`: keep it and draw differing glyphs, or first
+  // copy the front buffer shifted up by `shift` rows (0 = aligned; >0 serves
+  // scrolling), leaving the bottom `shift` rows as the back already had them.
+  // Cells of an unknown buffer always count as different.
+  auto cost_of = [&](int shift) {
+    unsigned cost = shift < 0 ? 0 : kCopyCost;
+    for (unsigned i = 0; i < 1200; ++i) {
+      const unsigned row = i / 40;
+      bool same;
+      if (shift >= 0 && row + (unsigned)shift < 30)
+        same = contents_[front_][i + (unsigned)shift * 40] == next[i];
+      else
+        same = known_[back] && contents_[back][i] == next[i];
+      cost += !same;
+    }
+    return cost;
+  };
+  int plan = -1;
+  unsigned best = cost_of(-1);
+  if (known_[front_])
+    for (int shift = 0; shift < 30; ++shift) {
+      const unsigned cost = cost_of(shift);
+      if (cost < best) { best = cost; plan = shift; }
+    }
+  char *base = base_;
+  bool *base_known = base_known_;
   for (unsigned i = 0; i < 1200; ++i) {
-    if (!first_frame_ && next[i] == displayed_[i]) continue;
+    const unsigned row = i / 40;
+    if (plan >= 0 && row + (unsigned)plan < 30) {
+      base[i] = contents_[front_][i + (unsigned)plan * 40]; base_known[i] = true;
+    } else {
+      base[i] = contents_[back][i]; base_known[i] = known_[back];
+    }
+  }
+  // The back is invalid from here until this frame is fully drawn.
+  known_[back] = false;
+  if (plan >= 0 && !copy(back, 0, (uint32_t)plan * 16, 0, 0, 640, (30u - (uint32_t)plan) * 16, false))
+    return false;
+  for (unsigned i = 0; i < 1200; ++i) {
+    if (base_known[i] && base[i] == next[i]) continue;
     const unsigned glyph = (uint8_t)next[i] - 32u;
     if (!copy(back, (glyph % 16) * 16, (glyph / 16) * 16,
               (i % 40) * 16, (i / 40) * 16, 16, 16, true)) return false;
   }
+  memcpy(contents_[back], next, sizeof(next_)); known_[back] = true;
   if (!fence()) return false;
   uint8_t payload[8]; uint32_t sequence;
   const uint32_t token = sequence_;
   put32(payload, back); put32(payload + 4, token);
   if (!send(7, payload, sizeof(payload), sequence) ||
       !reply(7, sequence, token, nullptr, 0)) return false;
-  front_ = back; ++presents_; first_frame_ = false;
-  memcpy(displayed_, next, sizeof(next));
+  front_ = back; ++presents_;
   return true;
 }
 
@@ -198,7 +254,7 @@ bool NanoGpu::read_memory(uint32_t address, uint32_t length, uint8_t *out) {
   if (!online_) return false;
   if (!out || !length || length > 512 || (uint64_t)address + length > kMemory)
     return false;
-  uint8_t payload[12], bytes[520]; uint32_t sequence;
+  uint8_t payload[12], *bytes = readback_; uint32_t sequence;
   const uint32_t token = sequence_;
   put32(payload, address); put32(payload + 4, length); put32(payload + 8, token);
   if (!send(8, payload, sizeof(payload), sequence) ||

@@ -13,7 +13,10 @@ constexpr unsigned kAbort = 35, kReset = 36, kAddress = 37, kRead = 38;
 constexpr unsigned kReady = 39, kValid = 40;
 constexpr uint32_t kTimeoutUs = 250000;
 constexpr uint32_t kConfigurationWaitMs = 1000;
-constexpr uint32_t kClockPhaseUs = 50; // At most 10 kHz HCLK, before API overhead.
+// At most 250 kHz HCLK before API overhead. The bus was proven at 50 us
+// phases; 2 us stays far below the GPU's 25.2 MHz host-clock constraint
+// while board-level electrical margins remain unmeasured.
+constexpr uint32_t kClockPhaseUs = 2;
 static_assert(__GPIOCNT > kValid, "Select RP2350B: GPU handshakes require GPIO39/40");
 NanoGpu gpu;
 int selected_address = -1;
@@ -127,6 +130,7 @@ void pulse_gpu_reset() {
   for (unsigned i = 0; i < 64; ++i) { high(); low(); }
 }
 bool read_register(void *, uint8_t address, uint8_t *out) { return read_at(address, out); }
+uint32_t now_ms(void *) { return millis(); }
 }
 
 bool gpu_display_begin() {
@@ -148,7 +152,7 @@ bool gpu_display_begin() {
   // This is a startup allowance, not a configuration-DONE measurement.
   delay(kConfigurationWaitMs);
   pulse_gpu_reset();
-  const bool ok = gpu.begin({nullptr, write_byte, read_byte, read_register}, font);
+  const bool ok = gpu.begin({nullptr, write_byte, read_byte, read_register, now_ms}, font);
   if (!ok) release_bus();
   gpu_display_diagnostics();
   if (!ok) gpu_display_probe();
@@ -157,8 +161,58 @@ bool gpu_display_begin() {
 
 void gpu_display_present() {
   if (gpu.ready() && !gpu.terminal_present(gridBuffer_char, char_grid_buffer_V_draw_offset)) {
-    release_bus(); gpu_display_diagnostics();
+    release_bus(); gpu_display_diagnostics(); gpu_display_regs();
   }
+}
+
+namespace {
+uint32_t le32(const uint8_t *p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+// One coherent status snapshot: register 1 requests it, 2..63 read the same copy.
+bool read_status_snapshot(uint8_t status[64]) {
+  status[0] = 0;
+  for (unsigned address = 1; address < 64; ++address)
+    if (!read_at(address, status + address)) {
+      Serial.print("GPU REGS: timeout at register "); Serial.println(address); return false;
+    }
+  return true;
+}
+void print_status_snapshot(const char *label, const uint8_t s[64]) {
+  const uint8_t f = s[1];
+  Serial.print("GPU REGS "); Serial.print(label); Serial.print(": flags=0x"); Serial.print(f, HEX);
+  Serial.print(" [");
+  Serial.print((f & 0x01) ? "ready " : ""); Serial.print((f & 0x02) ? "busy " : "");
+  Serial.print((f & 0x04) ? "sealed " : ""); Serial.print((f & 0x08) ? "core-fault " : "");
+  Serial.print((f & 0x10) ? "reply-available " : ""); Serial.print((f & 0x20) ? "queue-full " : "");
+  Serial.print((f & 0x40) ? "rx-full " : ""); Serial.print((f & 0x80) ? "transport-fault" : "");
+  Serial.print("]; epoch="); Serial.print(le32(s + 2));
+  Serial.print("; completed="); Serial.print(le32(s + 6));
+  Serial.print("; fence="); Serial.print(le32(s + 10));
+  Serial.print("; front="); Serial.print(s[14]);
+  Serial.print("; cycles="); Serial.print(le32(s + 16));
+  Serial.print("; core_fault="); Serial.print(le32(s + 32));
+  Serial.print("; present="); Serial.print(le32(s + 36));
+  Serial.print("; link_fault="); Serial.println(s[56]);
+}
+}
+
+void gpu_display_regs() {
+  if (read_held) { Serial.println("GPU_HOLD active; use GPU_RELEASE or GPU_RESET first."); return; }
+  if (drive_held) { Serial.println("GPU_DRIVE active; use GPU_RELEASE or GPU_RESET first."); return; }
+  // Sideband status reads only: no packet is sent and no reply byte is consumed.
+  Serial.print("GPU CLIENT: last_sent="); Serial.print(gpu.last_sequence());
+  Serial.print("; awaited_opcode="); Serial.print(gpu.awaited_opcode());
+  Serial.print("; awaited_sequence="); Serial.println(gpu.awaited_sequence());
+  uint8_t first[64], second[64];
+  if (!read_status_snapshot(first)) return;
+  print_status_snapshot("t0", first);
+  delay(500); // A second snapshot shows whether the core is still progressing.
+  if (!read_status_snapshot(second)) return;
+  print_status_snapshot("t+500ms", second);
+  Serial.print("GPU REGS delta: cycles=+"); Serial.print(le32(second + 16) - le32(first + 16));
+  Serial.print("; completed=+"); Serial.println(le32(second + 6) - le32(first + 6));
+  release_bus();
 }
 
 void gpu_display_diagnostics() {
@@ -166,6 +220,8 @@ void gpu_display_diagnostics() {
   Serial.print("NANO GPU: "); Serial.print(gpu.ready() ? "READY" : "OFFLINE");
   Serial.print("; "); Serial.print(gpu.error());
   Serial.print("; presents="); Serial.print(gpu.presents());
+  Serial.print("; reply_wait_ms="); Serial.print(gpu.last_reply_wait_ms());
+  Serial.print("/"); Serial.print(gpu.max_reply_wait_ms());
   Serial.print("; RESET_N="); Serial.print(digitalRead(kReset));
   Serial.print("; WREADY="); Serial.print(digitalRead(kReady));
   Serial.print("; RVALID="); Serial.println(digitalRead(kValid));
