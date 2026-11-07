@@ -97,9 +97,11 @@ After a completed sixteen-byte capability sweep, `GPU_PROBE` runs the
 offline-only **`GPU_SWAPTEST`**, also available as a USB command. A timeout
 during the capability sweep skips the automatic test. It refreshes the status snapshot by
 reading register `0x01`, then reads requested addresses **`02`, `21`, `23`** and
-prints `GPU SWAPTEST: <three HEX bytes>; flags=0x<raw flags>`. It does not decode
-or classify the result. After a fresh hard reset with epoch 1 and zero upper
-bytes of the fault code:
+prints
+`GPU SWAPTEST: <three HEX bytes>; flags=0x<raw flags>; edges=<4 decimal>; pre=<4 bits>`.
+It does not decode or classify the result. After a fresh hard reset, epoch is 1;
+status bytes `21` and `23` are the fault code's upper bytes, which the RTL
+always reports as zero:
 
 | Wiring hypothesis | Expected HEX bytes |
 | --- | --- |
@@ -109,11 +111,31 @@ bytes of the fault code:
 For the interchange, `02` is unchanged, `21` reaches capability register `41`
 (`02`), and `23` reaches `43` (`20`), returned with bits 5/6 exchanged as `40`.
 `1 2 40` strongly supports this hypothesis under those assumptions but is not
-a unique fault diagnosis; `1 0 0` does not verify all bus lines. No swap-test
-result has yet been reported. The sixteen zero capability bytes neither rule
-out firmware nor prove this interchange. Startup can accept register 64's
-expected zero; register **65**, expected `02`, is the first prefix mismatch.
-All zeros or timeouts keep the held-read voltage test below relevant.
+a unique fault diagnosis; `1 0 0` does not verify all bus lines. Under an
+interchange the raw flags also arrive with bits 5/6 exchanged.
+
+`edges` lists, for registers `01 02 21 23`, how many HCLK rising edges passed
+after RD_N went LOW before RVALID was sampled HIGH. `pre` is RVALID sampled
+once with RD_N LOW and HCLK LOW, before that first edge. A genuine GPU read
+handshake gives **`edges=4 1 1 1; pre=0 0 0 0`**. A register-`01` read always
+requests a new status snapshot; its acknowledgement crosses the core clock
+domain and returns after the fourth edge in an Icarus simulation of
+`nano_host_link`. Capability reads and later status reads answer on the first
+edge. A register-`01` count of `1` means RVALID did not come from that
+snapshot handshake: for example RVALID following HCLK, or the FPGA latching a
+different address. Any `pre` value of `1` means RVALID was HIGH before any read
+edge. The board drives the data pins under the same condition that drives
+RVALID, so a genuine `4 1 1 1` with zero data points to the data wires or their
+Tang endpoints rather than the handshake.
+
+**Reported 2026-11-06, before edge counting:** `GPU CAPS` printed sixteen zeros
+and `GPU SWAPTEST: 0 0 0; flags=0x0`, with no timeouts. This matches neither
+row above. Register `02` uses neither D5 nor D6, so a pure interchange would
+still return `1`. Every byte the RP read was `00`, including capability bytes
+`02`, `08` and `20`. A D5/D6 interchange alone therefore does not explain the
+fault. Repeat `GPU_SWAPTEST` to obtain the `edges`/`pre` fields, then use the
+held-read voltage test below. Startup can accept register 64's expected zero;
+register **65**, expected `02`, is the first prefix mismatch.
 
 The map remains **D5: GPIO23 / Core P3.9 → Tang J5.5 / FPGA pin 42** and
 **D6: GPIO24 / Core P3.12 → Tang J5.6 / FPGA pin 41**. The driver still indexes

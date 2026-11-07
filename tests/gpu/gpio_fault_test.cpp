@@ -35,7 +35,7 @@ void reset_fixture(bool ready, bool valid) {
   mock_gpio::status[65] = 2; mock_gpio::status[66] = 8; mock_gpio::status[67] = 32;
   mock_gpio::ready = ready; mock_gpio::valid = valid;
   mock_gpio::valid_follows_clock = false; mock_gpio::clock_rises = 0;
-  mock_gpio::swap_d5_d6 = false;
+  mock_gpio::swap_d5_d6 = false; mock_gpio::read_rises = 0;
   mock_gpio::now = 0; mock_gpio::reset_clock_edges = 0;
   mock_gpio::first_clock_us = UINT32_MAX; mock_gpio::configuration_ready_us = 0;
   mock_gpio::last_clock_edge_us = UINT32_MAX; mock_gpio::min_clock_phase_us = UINT32_MAX;
@@ -164,19 +164,29 @@ int main() {
   mock_gpio::status[65] = 2; mock_gpio::status[67] = 0x20;
   Serial.text.clear();
   gpu_display_swaptest();
-  assert(Serial.text.find("GPU SWAPTEST: 1 0 0; flags=0x1") != std::string::npos);
+  assert(Serial.text.find("GPU SWAPTEST: 1 0 0; flags=0x1; edges=4 1 1 1; pre=0 0 0 0\n") != std::string::npos);
   assert(!read_held && mock_gpio::level[38] && !mock_gpio::level[16]);
   mock_gpio::swap_d5_d6 = true;
   Serial.text.clear();
   gpu_display_probe();
   assert(Serial.text.find("GPU CAPS: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0") != std::string::npos);
-  assert(Serial.text.find("GPU SWAPTEST: 1 2 40; flags=0x1") != std::string::npos);
+  assert(Serial.text.find("GPU SWAPTEST: 1 2 40; flags=0x1; edges=4 1 1 1; pre=0 0 0 0\n") != std::string::npos);
   assert(address_sent == 0x23 && address_sensed == 0x23 && mock_gpio::address == 0x43);
   assert(mock_gpio::last_data_write == previous_packet_byte);
   mock_gpio::swap_d5_d6 = false; mock_gpio::status[2] = 0;
   Serial.text.clear();
   gpu_display_swaptest();
   assert(Serial.text.find("GPU SWAPTEST: 0 0 0") != std::string::npos);
+  // The reported all-zero pattern with an RVALID that follows HCLK: every
+  // read, including the register-1 snapshot refresh, "completes" on edge 1.
+  memset(mock_gpio::status, 0, 128);
+  mock_gpio::valid_follows_clock = true;
+  Serial.text.clear();
+  gpu_display_probe();
+  assert(Serial.text.find("GPU CAPS: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0") != std::string::npos);
+  assert(Serial.text.find("GPU SWAPTEST: 0 0 0; flags=0x0; edges=1 1 1 1; pre=0 0 0 0\n") != std::string::npos);
+  mock_gpio::valid_follows_clock = false;
+  mock_gpio::status[65] = 2; mock_gpio::status[66] = 8; mock_gpio::status[67] = 0x20;
   mock_gpio::valid = false;
   gpu_display_swaptest();
   assert(Serial.text.find("GPU SWAPTEST: timeout at register 0x1") != std::string::npos);
@@ -190,5 +200,5 @@ int main() {
   std::cout << "PASS Arduino GPIO glue: 256 write/read byte patterns, configuration startup wait, reset pulse, timeouts, "
                "startup fault and malformed reply leave reset HIGH and data released; "
                "startup diagnostics, address echo, capability probe, held reads, idle handshake check, "
-               "release/reset transitions, D5/D6 swap signatures and 50 us clock/setup minima verified.\n";
+               "release/reset transitions, D5/D6 swap and RVALID edge-count signatures and 50 us clock/setup minima verified.\n";
 }

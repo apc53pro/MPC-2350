@@ -21,6 +21,10 @@ unsigned service_counter = 0;
 uint8_t address_sent = 0, address_sensed = 0;
 uint8_t data_pins = 0;
 bool read_held = false;
+// Last read handshake: RVALID before the first read edge, and the number of
+// HCLK rising edges until RVALID was sampled HIGH (1 = the first edge).
+bool read_pre_valid = false;
+unsigned read_edges = 0;
 
 uint8_t read_data_pins() {
   uint8_t byte = 0;
@@ -85,9 +89,11 @@ bool read_at(unsigned address, uint8_t *out) {
   if (!select(address)) return false;
   digitalWrite(kWrite, HIGH); digitalWrite(kRead, HIGH); release_data(); low();
   digitalWrite(kAddress, HIGH); digitalWrite(kRead, LOW); delayMicroseconds(kClockPhaseUs);
+  read_pre_valid = digitalRead(kValid) == HIGH; // No edge has requested this read yet.
+  read_edges = 0;
   const uint32_t start = micros();
   do {
-    high();
+    high(); ++read_edges;
     const bool valid = digitalRead(kValid) == HIGH;
     if (valid) {
       // Keep RD_N asserted and HCLK HIGH throughout both observations.
@@ -189,20 +195,30 @@ void gpu_display_swaptest() {
   release_bus();
   // Refresh the status snapshot, then compare status and capability aliases.
   // These are sideband register reads, never command packets or a remap.
+  // Edge counts tell a real FPGA handshake from a clock-linked RVALID: only
+  // register 0x01 waits for a core-clock snapshot (several HCLK edges).
   const uint8_t addresses[] = {1, 2, 0x21, 0x23};
   uint8_t values[4];
+  unsigned edges[4];
+  bool pre[4];
   for (unsigned i = 0; i < 4; ++i) {
     if (!read_at(addresses[i], values + i)) {
       Serial.print("GPU SWAPTEST: timeout at register 0x");
       Serial.println(addresses[i], HEX);
       return; // read_at already released the bus on timeout.
     }
+    edges[i] = read_edges; pre[i] = read_pre_valid;
   }
   Serial.print("GPU SWAPTEST:");
   for (unsigned i = 1; i < 4; ++i) {
     Serial.print(" "); Serial.print(values[i], HEX);
   }
-  Serial.print("; flags=0x"); Serial.println(values[0], HEX);
+  Serial.print("; flags=0x"); Serial.print(values[0], HEX);
+  Serial.print("; edges=");
+  for (unsigned i = 0; i < 4; ++i) { if (i) Serial.print(" "); Serial.print(edges[i]); }
+  Serial.print("; pre=");
+  for (unsigned i = 0; i < 4; ++i) { if (i) Serial.print(" "); Serial.print(pre[i] ? 1 : 0); }
+  Serial.println("");
   release_bus();
 }
 

@@ -16,6 +16,9 @@ inline bool swap_d5_d6 = false;
 inline uint8_t status[128]{};
 inline unsigned address = 0, reset_clock_edges = 0;
 inline unsigned clock_rises = 0;
+// Like nano_host_link: RVALID needs a read edge; register 1 waits for a
+// core-clock snapshot handshake (4 HCLK rising edges in RTL simulation).
+inline unsigned read_rises = 0, status_refresh_rises = 4;
 inline uint8_t last_data_write = 0;
 inline uint32_t now = 0;
 inline uint32_t first_clock_us = UINT32_MAX, configuration_ready_us = 0;
@@ -32,7 +35,7 @@ inline uint8_t wire_byte(uint8_t value) {
 inline void set_level(unsigned pin, bool value) {
   if (pin == 36) reset_writes.push_back(value);
   if (pin == 17 && !value && level[17]) write_assert_us = now;
-  if (pin == 38 && !value && level[38]) read_assert_us = now;
+  if (pin == 38 && !value && level[38]) { read_assert_us = now; read_rises = 0; }
   if (pin == 16 && value != level[16]) {
     if (last_clock_edge_us != UINT32_MAX && now - last_clock_edge_us < min_clock_phase_us)
       min_clock_phase_us = now - last_clock_edge_us;
@@ -44,6 +47,7 @@ inline void set_level(unsigned pin, bool value) {
     if (!level[36]) ++reset_clock_edges;
     if (!level[17] && now - write_assert_us < min_write_setup_us)
       min_write_setup_us = now - write_assert_us;
+    if (!level[38]) ++read_rises;
     if (!level[38] && now - read_assert_us < min_read_setup_us)
       min_read_setup_us = now - read_assert_us;
     if (level[36] && ready && now >= configuration_ready_us && !level[17] && level[38]) {
@@ -82,7 +86,8 @@ inline PinStatus digitalRead(unsigned pin) {
   else if (pin == 39) value = configured && mock_gpio::ready && mock_gpio::level[38];
   else if (pin == 40) value = mock_gpio::valid_follows_clock ? mock_gpio::level[16] :
       configured && mock_gpio::valid && !mock_gpio::level[38] &&
-      mock_gpio::level[17] && mock_gpio::level[37];
+      mock_gpio::level[17] && mock_gpio::level[37] &&
+      mock_gpio::read_rises >= (mock_gpio::address == 1 ? mock_gpio::status_refresh_rises : 1u);
   else value = mock_gpio::level[pin];
   return value ? HIGH : LOW;
 }
