@@ -438,6 +438,20 @@ int8_t terminal_funcs(String code)
   }else if(tokens[0] == "GPU_SWAPTEST" && tokenTreeSize == 1)
   {
     gpu_display_swaptest();
+  }else if(tokens[0] == "GPU_LATCHTEST" && tokenTreeSize == 1)
+  {
+    gpu_display_latchtest();
+  }else if(tokens[0] == "GPU_DRIVE" && tokenTreeSize == 2)
+  {
+    // One or two hexadecimal digits, without a 0x prefix.
+    char *end = nullptr;
+    const unsigned long value = strtoul(tokens[1].c_str(), &end, 16);
+    const bool digits = tokens[1].length() >= 1 && tokens[1].length() <= 2 &&
+        isxdigit((unsigned char)tokens[1][0]);
+    if(!digits || end == nullptr || *end != '\0' || value > 0xFF)
+      echo_message("=>USAGE: GPU_DRIVE <HEX BYTE 00..FF>");
+    else
+      gpu_display_drive((uint8_t)value);
   }else if(tokens[0] == "GPU_HOLD" && tokenTreeSize == 1)
   {
     gpu_display_hold();

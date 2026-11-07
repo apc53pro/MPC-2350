@@ -19,6 +19,10 @@ inline unsigned clock_rises = 0;
 // Like nano_host_link: RVALID needs a read edge; register 1 waits for a
 // core-clock snapshot handshake (4 HCLK rising edges in RTL simulation).
 inline unsigned read_rises = 0, status_refresh_rises = 4;
+// Address-latch fault models: latch only the first address after a reset,
+// or force bits seen by the FPGA as (byte & latch_and) | latch_or.
+inline bool latch_first_only = false, latched_since_reset = false;
+inline uint8_t latch_and = 0xff, latch_or = 0;
 inline uint8_t last_data_write = 0;
 inline uint32_t now = 0;
 inline uint32_t first_clock_us = UINT32_MAX, configuration_ready_us = 0;
@@ -34,6 +38,7 @@ inline uint8_t wire_byte(uint8_t value) {
 
 inline void set_level(unsigned pin, bool value) {
   if (pin == 36) reset_writes.push_back(value);
+  if (pin == 36 && !value) latched_since_reset = false;
   if (pin == 17 && !value && level[17]) write_assert_us = now;
   if (pin == 38 && !value && level[38]) { read_assert_us = now; read_rises = 0; }
   if (pin == 16 && value != level[16]) {
@@ -56,7 +61,11 @@ inline void set_level(unsigned pin, bool value) {
         assert(output[18 + i]);
         byte |= (uint8_t)(level[18 + i] << i);
       }
-      if (!level[37]) address = wire_byte(byte);
+      if (!level[37]) {
+        if (!latch_first_only || !latched_since_reset)
+          address = (uint8_t)((wire_byte(byte) & latch_and) | latch_or);
+        latched_since_reset = true;
+      }
       else last_data_write = wire_byte(byte);
     }
   }

@@ -91,7 +91,8 @@ readback`; they are not treated as an SDRAM initialization timeout.
    pads; mismatches identify a local data-drive problem. Matching echoes do not
    prove continuity across the inter-board wires.
    The same probe runs automatically once after a failed startup, including
-   when the serial command loop is disabled locally.
+   when the serial command loop is disabled locally. The offline address-path
+   diagnostics `GPU_LATCHTEST` and `GPU_DRIVE <hex>` are described below.
 
 After a completed sixteen-byte capability sweep, `GPU_PROBE` runs the
 offline-only **`GPU_SWAPTEST`**, also available as a USB command. A timeout
@@ -133,9 +134,51 @@ and `GPU SWAPTEST: 0 0 0; flags=0x0`, with no timeouts. This matches neither
 row above. Register `02` uses neither D5 nor D6, so a pure interchange would
 still return `1`. Every byte the RP read was `00`, including capability bytes
 `02`, `08` and `20`. A D5/D6 interchange alone therefore does not explain the
-fault. Repeat `GPU_SWAPTEST` to obtain the `edges`/`pre` fields, then use the
-held-read voltage test below. Startup can accept register 64's expected zero;
-register **65**, expected `02`, is the first prefix mismatch.
+fault. Startup can accept register 64's expected zero; register **65**,
+expected `02`, is the first prefix mismatch.
+
+**Reported 2026-11-06, with edge counting, after an RP reset (FPGA already
+configured):** `GPU SWAPTEST: 0 0 0; flags=0x0; edges=1 1 1 1; pre=0 0 0 0`.
+The `GPU_HOLD` idle check gave `0/0`. During a confirmed hold (`held=1`,
+RVALID=1, WREADY=0 at the RP), measurements at the Tang pins were: 3V3 3.3 V,
+pin 74 (RVALID) 3.3 V, pin 73 (WREADY) 0 V, pin 16 (RD_N) 0.23 V, and all eight
+data pins 27, 28, 29, 30, 31, 42, 41, 48 at 0 V; RP GPIO19 was 0.05 V. So the
+GPU answered the read and drove `00` where register `0x41` holds `02`. With
+the one-edge register-`01` answer, this indicates that the FPGA latched a
+different address, in the immediately answered capability range, from the one
+the RP sent. That cause is inferred, not yet isolated. After a cold power-up the
+first startup instead printed all `FF`, idle WREADY/RVALID HIGH and
+`pre=1 1 1 1`: the FPGA had not finished configuration within the 1000 ms wait.
+
+Address-write acceptance cannot reveal a missed latch: during an address write
+the GPU's WREADY depends only on D7. Two offline diagnostics isolate the
+address path without an FPGA change:
+
+- **`GPU_LATCHTEST`** issues the same reset pulse as startup (32 HCLK edges with
+  GPU_RESET_N LOW, release, 64 idle edges) without the 1000 ms configuration
+  wait or client startup. It then reads capability registers **`41 42 43 41`**,
+  never `40` first, and prints
+  `GPU LATCHTEST: <4 HEX bytes>; edges=<4 decimal>; expected=2 8 20 2`.
+  `2 8 20 2` means these address writes reached the GPU. `2 2 2 2` means only
+  the first address after reset was latched. `0 0 0 0` means the FPGA saw
+  addresses other than those sent. These are host-model signatures, not unique
+  diagnoses. A timeout names the register and releases the bus.
+- **`GPU_DRIVE <hex>`** (one or two hexadecimal digits, no `0x`) releases the
+  bus, drives the byte on GPIO18..25, then holds an **address phase without
+  its clock edge**: ALE_N and WR_N LOW, RD_N HIGH, HCLK LOW, reset HIGH. With no
+  rising edge the GPU latches nothing, and with RD_N HIGH it does not drive the
+  data pins. Measure the Tang data pins (D0..D7 = 27, 28, 29, 30, 31, 42, 41,
+  48), WR_N pin 15 and ALE_N pin 17 (both LOW), RD_N pin 16 (HIGH), HCLK pin 77
+  (LOW) and WREADY pin 73, which the GPU drives as the inverse of the D7 level
+  it sees. Use `55` and then `2A` to place every address bit HIGH and LOW.
+  `GPU BUS` reports `drive=1` and `GPU DATA` the RP pad readback.
+  `GPU_RELEASE` raises WR_N/ALE_N/RD_N before releasing data, still without a
+  rising edge; `GPU_RESET` also ends the hold. These are expected levels, not
+  measured results.
+
+Both diagnostics submit no packet and refuse while the client is online;
+`GPU_PROBE`, `GPU_SWAPTEST` and `GPU_LATCHTEST` refuse while a `GPU_HOLD` or
+`GPU_DRIVE` hold is active.
 
 The map remains **D5: GPIO23 / Core P3.9 → Tang J5.5 / FPGA pin 42** and
 **D6: GPIO24 / Core P3.12 → Tang J5.6 / FPGA pin 41**. The driver still indexes
@@ -167,8 +210,8 @@ RESET_N pin71, HCLK pin77, WR_N pin15 and ALE_N pin17 should be HIGH; RD_N pin16
 and ABORT pin72 LOW; RVALID pin74 HIGH and WREADY pin73 LOW. These are expected
 levels, not measured results. Keep the two fitted 4.7 kΩ handshake pull-downs.
 
-`GPU_STATUS` rereads held data without clock edges. `GPU_PROBE` and
-`GPU_SWAPTEST` refuse while held. Send **`GPU_RELEASE`** to end the read and
+`GPU_STATUS` rereads held data without clock edges. `GPU_PROBE`,
+`GPU_SWAPTEST` and `GPU_LATCHTEST` refuse while held. Send **`GPU_RELEASE`** to end the read and
 release the bus, or **`GPU_RESET`**
 to clear the hold and perform normal hard initialization. This diagnostic needs
 no FPGA reflash or clock change; use the existing 6.3 MHz bus-test image.

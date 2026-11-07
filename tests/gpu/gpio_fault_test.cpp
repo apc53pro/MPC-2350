@@ -36,6 +36,8 @@ void reset_fixture(bool ready, bool valid) {
   mock_gpio::ready = ready; mock_gpio::valid = valid;
   mock_gpio::valid_follows_clock = false; mock_gpio::clock_rises = 0;
   mock_gpio::swap_d5_d6 = false; mock_gpio::read_rises = 0;
+  mock_gpio::latch_first_only = false; mock_gpio::latched_since_reset = false;
+  mock_gpio::latch_and = 0xff; mock_gpio::latch_or = 0;
   mock_gpio::now = 0; mock_gpio::reset_clock_edges = 0;
   mock_gpio::first_clock_us = UINT32_MAX; mock_gpio::configuration_ready_us = 0;
   mock_gpio::last_clock_edge_us = UINT32_MAX; mock_gpio::min_clock_phase_us = UINT32_MAX;
@@ -196,9 +198,75 @@ int main() {
   edges = mock_gpio::clock_rises;
   gpu_display_swaptest();
   assert(read_held && mock_gpio::clock_rises == edges);
+  gpu_display_latchtest(); // Refused while a read is held: no reset, no edge.
+  assert(read_held && mock_gpio::clock_rises == edges && mock_gpio::level[36]);
   gpu_display_release();
+
+  // GPU_LATCHTEST: a fresh reset, then 41 42 43 41 without reading 40 first.
+  const unsigned latch_reset_edges = mock_gpio::reset_clock_edges;
+  Serial.text.clear();
+  gpu_display_latchtest();
+  assert(Serial.text.find("GPU LATCHTEST: 2 8 20 2; edges=1 1 1 1; expected=2 8 20 2\n") != std::string::npos);
+  assert(mock_gpio::reset_clock_edges == latch_reset_edges + 32);
+  assert(!mock_gpio::reset_writes.empty() && mock_gpio::reset_writes.back());
+  assert(mock_gpio::level[38] && !mock_gpio::level[16] && mock_gpio::level[36]);
+  for (unsigned pin = 18; pin < 26; ++pin) assert(!mock_gpio::output[pin]);
+  assert(mock_gpio::last_data_write == previous_packet_byte); // No packet byte.
+  mock_gpio::latch_first_only = true; // Only the first latch after reset lands.
+  Serial.text.clear();
+  gpu_display_latchtest();
+  assert(Serial.text.find("GPU LATCHTEST: 2 2 2 2;") != std::string::npos);
+  mock_gpio::latch_first_only = false;
+  mock_gpio::latch_and = 0x80; mock_gpio::latch_or = 0x40; // FPGA always sees 0x40.
+  Serial.text.clear();
+  gpu_display_latchtest();
+  assert(Serial.text.find("GPU LATCHTEST: 0 0 0 0;") != std::string::npos);
+  mock_gpio::latch_and = 0xff; mock_gpio::latch_or = 0;
+  mock_gpio::valid = false;
+  Serial.text.clear();
+  gpu_display_latchtest();
+  assert(Serial.text.find("GPU LATCHTEST: timeout at register 0x41") != std::string::npos);
+  assert(mock_gpio::level[38] && !mock_gpio::level[16] && mock_gpio::level[36]);
+  mock_gpio::valid = true;
+
+  // GPU_DRIVE: hold an address phase with no rising edge; nothing is latched.
+  mock_gpio::address = 0x11;
+  edges = mock_gpio::clock_rises;
+  Serial.text.clear();
+  gpu_display_drive(0x55);
+  assert(drive_held && !read_held && mock_gpio::clock_rises == edges && mock_gpio::address == 0x11);
+  assert(!mock_gpio::level[16] && !mock_gpio::level[37] && !mock_gpio::level[17] && mock_gpio::level[38]);
+  assert(mock_gpio::level[36]);
+  for (unsigned bit = 0; bit < 8; ++bit) {
+    assert(mock_gpio::output[18 + bit]);
+    assert(mock_gpio::level[18 + bit] == (((0x55u >> bit) & 1u) != 0));
+  }
+  assert(Serial.text.find("GPU DRIVE: address phase held with 0x55; HCLK LOW, no clock edge") != std::string::npos);
+  assert(Serial.text.find("GPU DATA: pins=0x55") != std::string::npos);
+  assert(Serial.text.find("GPU BUS: held=0; drive=1; HCLK=0; WR_N=0; RD_N=1; ALE_N=0") != std::string::npos);
+  Serial.text.clear();
+  gpu_display_probe(); gpu_display_swaptest(); gpu_display_latchtest();
+  assert(Serial.text.find("GPU_DRIVE active") != std::string::npos);
+  assert(drive_held && mock_gpio::clock_rises == edges && mock_gpio::level[36]);
+  gpu_display_drive(0x2A); // Re-driving releases and re-holds without an edge.
+  assert(drive_held && mock_gpio::clock_rises == edges && mock_gpio::address == 0x11);
+  for (unsigned bit = 0; bit < 8; ++bit)
+    assert(mock_gpio::level[18 + bit] == (((0x2Au >> bit) & 1u) != 0));
+  Serial.text.clear();
+  gpu_display_release();
+  assert(Serial.text.find("GPU RELEASE: bus released") != std::string::npos);
+  assert(!drive_held && mock_gpio::clock_rises == edges && mock_gpio::address == 0x11);
+  assert(mock_gpio::level[17] && mock_gpio::level[37] && mock_gpio::level[38] && !mock_gpio::level[16]);
+  for (unsigned pin = 18; pin < 26; ++pin) assert(!mock_gpio::output[pin]);
+  Serial.text.clear();
+  gpu_display_release();
+  assert(Serial.text.find("GPU RELEASE: no hold active.") != std::string::npos);
+  gpu_display_drive(0x7F);
+  assert(!gpu_display_begin()); // RESET also ends a drive hold.
+  assert(!drive_held && mock_gpio::level[17] && mock_gpio::level[37]);
+  for (unsigned pin = 18; pin < 26; ++pin) assert(!mock_gpio::output[pin]);
   std::cout << "PASS Arduino GPIO glue: 256 write/read byte patterns, configuration startup wait, reset pulse, timeouts, "
                "startup fault and malformed reply leave reset HIGH and data released; "
                "startup diagnostics, address echo, capability probe, held reads, idle handshake check, "
-               "release/reset transitions, D5/D6 swap and RVALID edge-count signatures and 50 us clock/setup minima verified.\n";
+               "release/reset transitions, D5/D6 swap and RVALID edge-count signatures, address-latch tests, edge-free drive holds and 50 us clock/setup minima verified.\n";
 }

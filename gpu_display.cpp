@@ -21,6 +21,8 @@ unsigned service_counter = 0;
 uint8_t address_sent = 0, address_sensed = 0;
 uint8_t data_pins = 0;
 bool read_held = false;
+// GPU_DRIVE holds an address phase (ALE_N/WR_N LOW, HCLK LOW) without an edge.
+bool drive_held = false;
 // Last read handshake: RVALID before the first read edge, and the number of
 // HCLK rising edges until RVALID was sampled HIGH (1 = the first edge).
 bool read_pre_valid = false;
@@ -52,11 +54,12 @@ void write_data(uint8_t byte) {
 void release_bus() {
   digitalWrite(kWrite, HIGH); digitalWrite(kRead, HIGH); digitalWrite(kAddress, HIGH);
   release_data(); digitalWrite(kClock, LOW);
-  // Keep scanout alive for diagnosis. Only explicit initialization asserts
-  // GPU_RESET_N; a failed/partial packet is never retried in this session.
+  // Keep scanout alive for diagnosis. Only explicit initialization and the
+  // GPU_LATCHTEST command assert GPU_RESET_N; a failed/partial packet is never
+  // retried in this session.
   digitalWrite(kReset, HIGH);
   selected_address = -1;
-  read_held = false;
+  read_held = false; drive_held = false;
 }
 bool write_cycle(uint8_t byte, bool address) {
   digitalWrite(kRead, HIGH); digitalWrite(kWrite, HIGH); low();
@@ -107,13 +110,29 @@ bool read_at(unsigned address, uint8_t *out) {
   release_bus(); return false;
 }
 bool read_byte(void *, uint8_t *out) { return read_at(0, out); }
+// Offline diagnostics never run while the client is online or a hold is active.
+bool refuse_diagnostic(const char *name) {
+  if (gpu.ready()) {
+    Serial.print(name); Serial.println(" is for an offline link; use GPU_STATUS."); return true;
+  }
+  if (read_held) { Serial.println("GPU_HOLD active; use GPU_RELEASE or GPU_RESET first."); return true; }
+  if (drive_held) { Serial.println("GPU_DRIVE active; use GPU_RELEASE or GPU_RESET first."); return true; }
+  return false;
+}
+// Hard-reset GPU logic exactly as startup does, after its configuration wait.
+void pulse_gpu_reset() {
+  digitalWrite(kReset, LOW);
+  for (unsigned i = 0; i < 32; ++i) { high(); low(); }
+  digitalWrite(kReset, HIGH);
+  for (unsigned i = 0; i < 64; ++i) { high(); low(); }
+}
 bool read_register(void *, uint8_t address, uint8_t *out) { return read_at(address, out); }
 }
 
 bool gpu_display_begin() {
   // Assert reset first: pinMode(OUTPUT_12MA) initially drives LOW. Keep GPU
   // logic reset while the other control outputs are configured.
-  read_held = false;
+  read_held = false; drive_held = false;
   pinMode(kReset, OUTPUT_12MA); digitalWrite(kReset, LOW);
   delayMicroseconds(1);
   for (unsigned pin : {kClock, kWrite, kAbort, kAddress, kRead}) {
@@ -128,9 +147,7 @@ bool gpu_display_begin() {
   // logic reset asserted and the bus released before attempting any transfer.
   // This is a startup allowance, not a configuration-DONE measurement.
   delay(kConfigurationWaitMs);
-  for (unsigned i = 0; i < 32; ++i) { high(); low(); }
-  digitalWrite(kReset, HIGH);
-  for (unsigned i = 0; i < 64; ++i) { high(); low(); }
+  pulse_gpu_reset();
   const bool ok = gpu.begin({nullptr, write_byte, read_byte, read_register}, font);
   if (!ok) release_bus();
   gpu_display_diagnostics();
@@ -145,7 +162,7 @@ void gpu_display_present() {
 }
 
 void gpu_display_diagnostics() {
-  if (read_held) data_pins = read_data_pins();
+  if (read_held || drive_held) data_pins = read_data_pins();
   Serial.print("NANO GPU: "); Serial.print(gpu.ready() ? "READY" : "OFFLINE");
   Serial.print("; "); Serial.print(gpu.error());
   Serial.print("; presents="); Serial.print(gpu.presents());
@@ -163,6 +180,7 @@ void gpu_display_diagnostics() {
   Serial.print("GPU DATA: pins=0x"); Serial.print(data_pins, HEX);
   Serial.println("");
   Serial.print("GPU BUS: held="); Serial.print(read_held ? 1 : 0);
+  Serial.print("; drive="); Serial.print(drive_held ? 1 : 0);
   Serial.print("; HCLK="); Serial.print(digitalRead(kClock));
   Serial.print("; WR_N="); Serial.print(digitalRead(kWrite));
   Serial.print("; RD_N="); Serial.print(digitalRead(kRead));
@@ -171,8 +189,7 @@ void gpu_display_diagnostics() {
 }
 
 void gpu_display_probe() {
-  if (gpu.ready()) { Serial.println("GPU_PROBE is for an offline link; use GPU_STATUS."); return; }
-  if (read_held) { Serial.println("GPU_HOLD active; use GPU_RELEASE or GPU_RESET first."); return; }
+  if (refuse_diagnostic("GPU_PROBE")) return;
   // Read immutable sideband capabilities without submitting or retrying a
   // packet. Even a core fault must leave these registers accessible.
   Serial.print("GPU CAPS:");
@@ -190,8 +207,7 @@ void gpu_display_probe() {
 }
 
 void gpu_display_swaptest() {
-  if (gpu.ready()) { Serial.println("GPU_SWAPTEST is for an offline link; use GPU_STATUS."); return; }
-  if (read_held) { Serial.println("GPU_HOLD active; use GPU_RELEASE or GPU_RESET first."); return; }
+  if (refuse_diagnostic("GPU_SWAPTEST")) return;
   release_bus();
   // Refresh the status snapshot, then compare status and capability aliases.
   // These are sideband register reads, never command packets or a remap.
@@ -220,6 +236,46 @@ void gpu_display_swaptest() {
   for (unsigned i = 0; i < 4; ++i) { if (i) Serial.print(" "); Serial.print(pre[i] ? 1 : 0); }
   Serial.println("");
   release_bus();
+}
+
+void gpu_display_latchtest() {
+  if (refuse_diagnostic("GPU_LATCHTEST")) return;
+  release_bus();
+  // Fresh GPU reset, then capability reads that never start at 0x40. Each
+  // address differs from the previous one, so every read writes a new latch.
+  pulse_gpu_reset();
+  const uint8_t addresses[] = {0x41, 0x42, 0x43, 0x41};
+  uint8_t values[4];
+  unsigned edges[4];
+  for (unsigned i = 0; i < 4; ++i) {
+    if (!read_at(addresses[i], values + i)) {
+      Serial.print("GPU LATCHTEST: timeout at register 0x");
+      Serial.println(addresses[i], HEX);
+      return; // read_at already released the bus on timeout.
+    }
+    edges[i] = read_edges;
+  }
+  Serial.print("GPU LATCHTEST:");
+  for (unsigned i = 0; i < 4; ++i) { Serial.print(" "); Serial.print(values[i], HEX); }
+  Serial.print("; edges=");
+  for (unsigned i = 0; i < 4; ++i) { if (i) Serial.print(" "); Serial.print(edges[i]); }
+  Serial.println("; expected=2 8 20 2");
+  release_bus();
+}
+
+void gpu_display_drive(uint8_t byte) {
+  if (gpu.ready()) { Serial.println("GPU_DRIVE is for an offline link; use GPU_STATUS."); return; }
+  // Start from released strobes with HCLK LOW, then stop an address write
+  // before its rising edge. No edge occurs, so the GPU latches nothing; RD_N
+  // stays HIGH, so the GPU does not drive the data pins.
+  release_bus();
+  write_data(byte);
+  digitalWrite(kAddress, LOW); digitalWrite(kWrite, LOW);
+  delayMicroseconds(kClockPhaseUs);
+  drive_held = true;
+  Serial.print("GPU DRIVE: address phase held with 0x"); Serial.print(byte, HEX);
+  Serial.println("; HCLK LOW, no clock edge; use GPU_RELEASE to end.");
+  gpu_display_diagnostics();
 }
 
 void gpu_display_hold() {
@@ -257,7 +313,9 @@ void gpu_display_hold() {
 }
 
 void gpu_display_release() {
-  if (!read_held) { Serial.println("GPU RELEASE: no read held."); return; }
+  if (!read_held && !drive_held) { Serial.println("GPU RELEASE: no hold active."); return; }
+  // release_bus raises WR_N/ALE_N/RD_N before releasing data; HCLK is already
+  // LOW for a drive hold, so ending it adds no rising edge.
   release_bus();
   Serial.println("GPU RELEASE: bus released; client remains offline.");
 }
