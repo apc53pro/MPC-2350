@@ -8,7 +8,7 @@
 static const uint16_t NARM_ABI_MAJOR = 1;
 static const uint16_t NARM_ABI_MINOR = 0;
 static const uint16_t NARM_API_MAJOR = 1;
-static const uint16_t NARM_API_MINOR = 17;
+static const uint16_t NARM_API_MINOR = 18;
 static const uint16_t NARM_AUDIO_ALLOCATION_API_MINOR = 15;
 
 enum NativeControlFlag : uint32_t
@@ -42,12 +42,13 @@ enum NativeSystemEvent : uint32_t
 enum NativeCapability : uint64_t
 {
   NARM_CAP_NONE = 0,
-  NARM_CAP_FRAMEBUFFER_2D = 1ull << 0,
+  // Bit 0 is reserved for the retired VGA ABI.
   NARM_CAP_KEYBOARD = 1ull << 1,
   NARM_CAP_AUDIO = 1ull << 2,
   NARM_CAP_FILE_IO = 1ull << 3,
   NARM_CAP_USB_STORAGE = 1ull << 4,
-  NARM_CAP_MOUSE = 1ull << 5
+  NARM_CAP_MOUSE = 1ull << 5,
+  NARM_CAP_GPU = 1ull << 6
 };
 
 enum NativeServiceId : uint32_t
@@ -90,7 +91,7 @@ enum NativeInterfaceId : uint32_t
   NARM_INTERFACE_MOUSE = 0x0101,
   NARM_INTERFACE_FILE_IO = 0x0300,
   NARM_INTERFACE_AUDIO = 0x0700,
-  NARM_INTERFACE_VIDEO_2D = 0x0400
+  NARM_INTERFACE_GPU = 0x0500
 };
 
 enum NativeAudioStatusV1 : uint32_t
@@ -144,54 +145,23 @@ enum NativeServiceResult : int32_t
   NARM_SERVICE_ERR_UNKNOWN = -1,
   NARM_SERVICE_ERR_ARGUMENTS = -2,
   NARM_SERVICE_ERR_CAPABILITY = -3,
-  NARM_SERVICE_ERR_BUSY = -4
+  NARM_SERVICE_ERR_BUSY = -4,
+  NARM_SERVICE_ERR_DEVICE = -5
 };
 
-// Historical native-video command IDs retained as ABI metadata for tooling.
-// This GPU-terminal build exposes no native video interface or graphics
-// capability and allocates none of the former frame/depth/stamp buffers.
-// GPU-facing NARM support will be defined in a later change.
-enum NativeGraphicsCommandV1 : uint32_t
+// Commands 1 through 8 follow N20K-SYS-0.2. Arguments use native words;
+// the driver builds wire packets and owns sequence numbers and replies.
+enum NativeGpuCommandV1 : uint32_t
 {
-  NARM_GRAPHICS_HALF_PRESENT = 0x0000,
-  NARM_GRAPHICS_HALF_CLEAR = 0x0001,
-  NARM_GRAPHICS_HALF_PIXEL = 0x0002,
-  NARM_GRAPHICS_HALF_FILL_RECT = 0x0003,
-  NARM_GRAPHICS_HALF_LINE = 0x0004,
-  NARM_GRAPHICS_HALF_FILL_TRIANGLE = 0x0005,
-  NARM_GRAPHICS_HALF_BLIT = 0x0006,
-  NARM_GRAPHICS_HALF_BLIT_MASKED = 0x0007,
-  NARM_GRAPHICS_HALF_GLYPH = 0x0008,
-  // Optional depth-only pass boundary. No arguments; preserves color, render
-  // flags and counters. Flushes prior draws and invalidates depth/HiZ exactly
-  // like a frame clear. Probe STATS_READ(76)==0x44430001 before calling.
-  NARM_GRAPHICS_HALF_CLEAR_DEPTH = 0x0009,
-
-  NARM_GRAPHICS_SCREEN_GOURAUD_TRIANGLE = 0x0200,
-  NARM_GRAPHICS_TRI3D_FLAT = 0x0201,
-  NARM_GRAPHICS_QUAD3D_FLAT = 0x0202,
-  NARM_GRAPHICS_TRI3D_GOURAUD = 0x0203,
-  NARM_GRAPHICS_QUAD3D_GOURAUD = 0x0204,
-  NARM_GRAPHICS_TRI3D_TEXTURED = 0x0205,
-  NARM_GRAPHICS_QUAD3D_TEXTURED = 0x0206,
-  NARM_GRAPHICS_QUAD3D_TEXTURED_TILED = 0x0207,
-  NARM_GRAPHICS_TRI3D_TEXTURED_MASKED = 0x0208,
-  NARM_GRAPHICS_QUAD3D_TEXTURED_MASKED = 0x0209,
-  NARM_GRAPHICS_PACKED_TERRAIN_MESH_LIST = 0x020a,
-  // Synchronous general-purpose textured list: args are descriptor pointer,
-  // count (0..256), transform pointer, mode (0 immediate, 1/2 tiled workers).
-  // Optional mode bit0x100 enables conservative whole-triangle occlusion with
-  // workers1/2 only; 257/258 are valid, 256 is not. renderStat70=0x43550001 is
-  // the optional capability guard. Order, cutout masking and depth ties stay
-  // unchanged; summaries derive solely from fully covered actual depth cells.
-  // Each descriptor is seven uint32 words: packed float xyzuv vertex pointer,
-  // RGB332 texture pointer, optional mask pointer, width, height, flags,
-  // vertex count (3 or 4). Sources remain owned by the caller and are consumed
-  // completely before submit returns; no pointer is retained across calls.
-  NARM_GRAPHICS_TEXTURED_LIST = 0x020b,
-
-  NARM_GRAPHICS_STATS_ENABLE = 0x0300,
-  NARM_GRAPHICS_STATS_READ = 0x0301
+  NARM_GPU_GET_CAPS = 0x0001,
+  NARM_GPU_GET_STATUS = 0x0002,
+  NARM_GPU_WRITE_HEAP = 0x0003,
+  NARM_GPU_SUBMIT_PASS = 0x0004,
+  NARM_GPU_COPY_RECT = 0x0005,
+  NARM_GPU_FENCE = 0x0006,
+  NARM_GPU_PRESENT = 0x0007,
+  NARM_GPU_READ_MEMORY = 0x0008,
+  NARM_GPU_BACK_TARGET = 0x0100
 };
 
 struct NativeContextV1;
@@ -199,7 +169,7 @@ struct NativeKeyboardApiV1;
 struct NativeMouseApiV1;
 struct NativeAudioApiV1;
 struct NativeFileApiV1;
-struct NativeVideoApiV1;
+struct NativeGpuApiV1;
 
 typedef int32_t (*NativeInvokeFn)(NativeContextV1 *ctx,
                                   uint32_t service_id,
@@ -370,62 +340,17 @@ struct NativeFileApiV1
   NativeFileSubmitFn submit;
 };
 
-struct NativeVideoClearV1
-{
-  uint32_t color_index;
-};
+typedef int32_t (*NativeGpuSubmitFn)(NativeContextV1 *ctx,
+                                    uint32_t command,
+                                    const uint32_t *args,
+                                    uint32_t arg_words);
 
-struct NativeVideoPixelV1
-{
-  int32_t x;
-  int32_t y;
-  uint32_t color_index;
-};
-
-struct NativeVideoRectV1
-{
-  int32_t x0;
-  int32_t y0;
-  int32_t x1;
-  int32_t y1;
-  uint32_t color_index;
-};
-
-struct NativeVideoLineV1
-{
-  int32_t x0;
-  int32_t y0;
-  int32_t x1;
-  int32_t y1;
-  uint32_t color_index;
-};
-
-typedef int32_t (*NativeVideoClearFn)(NativeContextV1 *ctx,
-                                      const NativeVideoClearV1 *command);
-typedef int32_t (*NativeVideoPixelFn)(NativeContextV1 *ctx,
-                                      const NativeVideoPixelV1 *command);
-typedef int32_t (*NativeVideoRectFn)(NativeContextV1 *ctx,
-                                     const NativeVideoRectV1 *command);
-typedef int32_t (*NativeVideoLineFn)(NativeContextV1 *ctx,
-                                     const NativeVideoLineV1 *command);
-typedef int32_t (*NativeVideoPresentFn)(NativeContextV1 *ctx);
-typedef int32_t (*NativeVideoSubmitFn)(NativeContextV1 *ctx,
-                                       uint32_t command,
-                                       const uint32_t *args,
-                                       uint32_t arg_words);
-
-struct NativeVideoApiV1
+struct NativeGpuApiV1
 {
   uint32_t struct_bytes;
   uint16_t interface_major;
   uint16_t interface_minor;
-  NativeVideoClearFn clear;
-  NativeVideoPixelFn pixel;
-  NativeVideoRectFn fill_rect;
-  NativeVideoLineFn line;
-  NativeVideoPresentFn present;
-  // Added in video interface 1.1. Older 1.0 programs see the unchanged prefix.
-  NativeVideoSubmitFn submit;
+  NativeGpuSubmitFn submit;
 };
 
 struct NativeContextV1
@@ -444,10 +369,9 @@ struct NativeContextV1
   volatile uint32_t *yield_requested;
   uint32_t granted_capabilities_low;
   uint32_t granted_capabilities_high;
-  // Added in API 1.5. These validated interface pointers avoid performing an
-  // indirect get_interface call for every draw and keyboard state query.
+  // Cached interface pointers for keyboard and GPU calls.
   const NativeKeyboardApiV1 *keyboard_api;
-  const NativeVideoApiV1 *video_api;
+  const NativeGpuApiV1 *gpu_api; // API 1.18, capability bit 6.
   // Added in API 1.6.
   const NativeAudioApiV1 *audio_api;
   // Added in API 1.7.
@@ -494,12 +418,8 @@ static_assert(offsetof(NativeFileApiV1, submit) == 8,
 static_assert(sizeof(NativeFileApiV1) == 12,
               "NativeFileApiV1 size drift");
 
-static_assert(offsetof(NativeVideoApiV1, clear) == 8, "NativeVideoApiV1 ABI drift");
-static_assert(offsetof(NativeVideoApiV1, present) == 24, "NativeVideoApiV1 ABI drift");
-static_assert(offsetof(NativeVideoApiV1, submit) == 28, "NativeVideoApiV1 ABI drift");
-static_assert(sizeof(NativeVideoApiV1) == 32, "NativeVideoApiV1 size drift");
-static_assert(sizeof(NativeVideoRectV1) == 20, "NativeVideoRectV1 ABI drift");
-static_assert(sizeof(NativeVideoLineV1) == 20, "NativeVideoLineV1 ABI drift");
+static_assert(offsetof(NativeGpuApiV1, submit) == 8, "NativeGpuApiV1 ABI drift");
+static_assert(sizeof(NativeGpuApiV1) == 12, "NativeGpuApiV1 size drift");
 
 static_assert(offsetof(NativeContextV1, api) == 8, "NativeContextV1 ABI drift");
 static_assert(offsetof(NativeContextV1, process_handle) == 12, "NativeContextV1 ABI drift");
@@ -508,7 +428,7 @@ static_assert(offsetof(NativeContextV1, data_base) == 24, "NativeContextV1 ABI d
 static_assert(offsetof(NativeContextV1, heap_base) == 32, "NativeContextV1 ABI drift");
 static_assert(offsetof(NativeContextV1, yield_requested) == 40, "NativeContextV1 ABI drift");
 static_assert(offsetof(NativeContextV1, keyboard_api) == 52, "NativeContextV1 ABI drift");
-static_assert(offsetof(NativeContextV1, video_api) == 56, "NativeContextV1 ABI drift");
+static_assert(offsetof(NativeContextV1, gpu_api) == 56, "NativeContextV1 ABI drift");
 static_assert(offsetof(NativeContextV1, audio_api) == 60, "NativeContextV1 ABI drift");
 static_assert(offsetof(NativeContextV1, file_api) == 64, "NativeContextV1 ABI drift");
 static_assert(sizeof(NativeContextV1) == 68, "NativeContextV1 size drift");

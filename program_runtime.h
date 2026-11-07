@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include <stdint.h>
 
-// Reports that NARM launching is deferred in this GPU-terminal milestone.
+// Launches a validated NARM image and reports its result to the terminal.
 int8_t launch_program_sd(const String &program_path);
 int8_t launch_program_fs(const String &program_path);
 

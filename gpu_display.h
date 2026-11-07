@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 
+class NanoGpu;
+// The initialized board client is owned by Core 0.
+NanoGpu &gpu_display_client();
 bool gpu_display_begin();
 void gpu_display_present();
 void gpu_display_diagnostics();

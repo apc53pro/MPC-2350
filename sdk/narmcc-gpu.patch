@@ -1,0 +1,598 @@
+--- a/narmcc.cpp
++++ b/narmcc.cpp
+@@ -2508,7 +2508,7 @@
+     }
+ 
+ private:
+-    static constexpr uint32_t kVideoCapability = 1u;
++    static constexpr uint32_t kGpuCapability = 64u;
+     static constexpr uint32_t kKeyboardCapability = 2u;
+     static constexpr uint32_t kMouseCapability = 32u;
+     static constexpr uint32_t kAudioCapability = 4u;
+@@ -2518,10 +2518,9 @@
+     static constexpr uint32_t kMouseInterface = 0x0101u;
+     static constexpr uint32_t kAudioInterface = 0x0700u;
+     static constexpr uint32_t kFileInterface = 0x0300u;
+-    static constexpr uint32_t kVideoInterface = 0x0400u;
+-    static constexpr uint16_t kExtendedGraphicsMinor = 1u;
+-
+-    enum class GraphicsArgKind { I32, U32, F32, Pointer, UnsignedPointer, FloatPointer };
++    static constexpr uint32_t kGpuInterface = 0x0500u;
++
++    enum class BuiltinArgKind { U32, Pointer };
+ 
+     Program& program_;
+     unsigned optimizationLevel_ = 0;
+@@ -4312,19 +4311,7 @@
+             "narm_file_delete", "narm_file_rename", "narm_file_size",
+             "narm_file_read", "narm_file_write", "narm_dir_make",
+             "narm_dir_delete", "narm_dir_entry",
+-            "narm_clear", "narm_pixel", "narm_fill_rect", "narm_line", "narm_present",
+-            "narm_half_present", "narm_half_clear", "narm_half_clear_depth", "narm_half_pixel", "narm_half_fill_rect",
+-            "narm_half_line", "narm_half_fill_triangle", "narm_half_blit",
+-            "narm_half_blit_masked", "narm_half_glyph", "narm_vga4_glyph",
+-            "drawBuffer", "present", "clearBuffer", "clear", "putPixel", "fillRect2D",
+-            "fillRect2DTex", "fillRect2DTexMasking", "putFont", "putGlyph", "drawLine", "fillTri",
+-            "presentVga4", "clearVga4", "putPixelVga4", "fillRectVga4", "drawLineVga4",
+-            "putFontVga4", "putGlyphVga4", "fillTriGouraud",
+-            "fillTri3DZ", "fillQuad3DZ", "fillTri3DGouraudZ", "fillTri3DShadedZ",
+-            "fillQuad3DGouraudZ", "fillQuad3DShadedZ", "fillTri3DTexZ",
+-            "fillQuad3DTexZ", "fillQuad3DTexZTiled", "fillTri3DTexZMask",
+-            "fillTri3DTexZMasked", "fillQuad3DTexZMask", "fillQuad3DTexZMasked",
+-            "fillPackedTerrainMeshList", "drawTexturedList", "drawTexturedMesh", "renderStats", "renderStat",
++            "narm_gpu_submit",
+             "narm_key_down", "narm_ps2_key_down", "narm_next_key_event", "vmByteAddress",
+             "narm_mouse_get_state", "narm_mouse_poll_event", "narm_mouse_read_motion",
+             "narm_mouse_set_cursor_visible", "narm_mouse_set_relative_mode", "narm_mouse_dropped_events"
+@@ -4627,35 +4614,35 @@
+             return emitAudioSubmit(expression, depth, 0x0008u, {}, 15);
+         if (name == "narm_audio_deallocate_voice")
+             return emitAudioSubmit(expression, depth, 0x0009u,
+-                                   {GraphicsArgKind::U32}, 15);
++                                   {BuiltinArgKind::U32}, 15);
+         if (name == "narm_audio_play_wav")
+             return emitAudioSubmit(expression, depth, 0x000au,
+-                                   {GraphicsArgKind::Pointer}, 16);
++                                   {BuiltinArgKind::Pointer}, 16);
+         if (name == "narm_audio_play_pcm")
+             return emitAudioSubmit(expression, depth, 0x000bu,
+-                                   {GraphicsArgKind::Pointer, GraphicsArgKind::U32,
+-                                    GraphicsArgKind::U32, GraphicsArgKind::U32}, 16);
++                                   {BuiltinArgKind::Pointer, BuiltinArgKind::U32,
++                                    BuiltinArgKind::U32, BuiltinArgKind::U32}, 16);
+         if (name == "narm_audio_play_wav_from")
+             return emitAudioSubmit(expression, depth, 0x000cu,
+-                                   {GraphicsArgKind::Pointer, GraphicsArgKind::U32}, 16);
++                                   {BuiltinArgKind::Pointer, BuiltinArgKind::U32}, 16);
+         if (name == "narm_audio_play_pcm_from")
+             return emitAudioSubmit(expression, depth, 0x000du,
+-                                   {GraphicsArgKind::Pointer, GraphicsArgKind::U32,
+-                                    GraphicsArgKind::U32, GraphicsArgKind::U32,
+-                                    GraphicsArgKind::U32}, 16);
++                                   {BuiltinArgKind::Pointer, BuiltinArgKind::U32,
++                                    BuiltinArgKind::U32, BuiltinArgKind::U32,
++                                    BuiltinArgKind::U32}, 16);
+         if (name == "narm_audio_stop")
+             return emitAudioSubmit(expression, depth, 0x0002u,
+-                                   {GraphicsArgKind::U32});
++                                   {BuiltinArgKind::U32});
+         if (name == "narm_audio_stop_all")
+             return emitAudioSubmit(expression, depth, 0x0003u, {});
+         if (name == "narm_audio_position")
+             return emitAudioSubmit(expression, depth, 0x0006u,
+-                                   {GraphicsArgKind::U32, GraphicsArgKind::Pointer,
+-                                    GraphicsArgKind::Pointer, GraphicsArgKind::Pointer,
+-                                    GraphicsArgKind::Pointer}, 11);
++                                   {BuiltinArgKind::U32, BuiltinArgKind::Pointer,
++                                    BuiltinArgKind::Pointer, BuiltinArgKind::Pointer,
++                                    BuiltinArgKind::Pointer}, 11);
+         if (name == "narm_audio_pause")
+             return emitAudioSubmit(expression, depth, 0x0007u,
+-                                   {GraphicsArgKind::U32, GraphicsArgKind::U32}, 11);
++                                   {BuiltinArgKind::U32, BuiltinArgKind::U32}, 11);
+         if (name == "narm_audio_active") {
+             requireArity(expression, 1);
+             return emitAudioDirect(expression, depth, 16, BaseType::I32);
+@@ -4669,139 +4656,47 @@
+             return emitAudioDirect(expression, depth, 24, BaseType::U32);
+         }
+         if (name == "narm_storage_mount")
+-            return emitFileSubmit(expression, depth, 0x0000u, {GraphicsArgKind::U32});
++            return emitFileSubmit(expression, depth, 0x0000u, {BuiltinArgKind::U32});
+         if (name == "narm_file_exists")
+             return emitFileSubmit(expression, depth, 0x0001u,
+-                                  {GraphicsArgKind::Pointer, GraphicsArgKind::U32});
++                                  {BuiltinArgKind::Pointer, BuiltinArgKind::U32});
+         if (name == "narm_file_create")
+             return emitFileSubmit(expression, depth, 0x0002u,
+-                                  {GraphicsArgKind::Pointer, GraphicsArgKind::U32});
++                                  {BuiltinArgKind::Pointer, BuiltinArgKind::U32});
+         if (name == "narm_file_delete")
+             return emitFileSubmit(expression, depth, 0x0003u,
+-                                  {GraphicsArgKind::Pointer, GraphicsArgKind::U32});
++                                  {BuiltinArgKind::Pointer, BuiltinArgKind::U32});
+         if (name == "narm_file_rename")
+             return emitFileSubmit(expression, depth, 0x0004u,
+-                                  {GraphicsArgKind::Pointer, GraphicsArgKind::Pointer,
+-                                   GraphicsArgKind::U32});
++                                  {BuiltinArgKind::Pointer, BuiltinArgKind::Pointer,
++                                   BuiltinArgKind::U32});
+         if (name == "narm_file_size")
+             return emitFileSubmit(expression, depth, 0x0005u,
+-                                  {GraphicsArgKind::Pointer, GraphicsArgKind::U32,
+-                                   GraphicsArgKind::Pointer});
++                                  {BuiltinArgKind::Pointer, BuiltinArgKind::U32,
++                                   BuiltinArgKind::Pointer});
+         if (name == "narm_file_read")
+             return emitFileSubmit(expression, depth, 0x0006u,
+-                                  {GraphicsArgKind::Pointer, GraphicsArgKind::Pointer,
+-                                   GraphicsArgKind::U32, GraphicsArgKind::U32,
+-                                   GraphicsArgKind::U32});
++                                  {BuiltinArgKind::Pointer, BuiltinArgKind::Pointer,
++                                   BuiltinArgKind::U32, BuiltinArgKind::U32,
++                                   BuiltinArgKind::U32});
+         if (name == "narm_file_write")
+             return emitFileSubmit(expression, depth, 0x0007u,
+-                                  {GraphicsArgKind::Pointer, GraphicsArgKind::Pointer,
+-                                   GraphicsArgKind::U32, GraphicsArgKind::U32,
+-                                   GraphicsArgKind::U32});
++                                  {BuiltinArgKind::Pointer, BuiltinArgKind::Pointer,
++                                   BuiltinArgKind::U32, BuiltinArgKind::U32,
++                                   BuiltinArgKind::U32});
+         if (name == "narm_dir_make")
+             return emitFileSubmit(expression, depth, 0x0008u,
+-                                  {GraphicsArgKind::Pointer, GraphicsArgKind::U32});
++                                  {BuiltinArgKind::Pointer, BuiltinArgKind::U32});
+         if (name == "narm_dir_delete")
+             return emitFileSubmit(expression, depth, 0x0009u,
+-                                  {GraphicsArgKind::Pointer, GraphicsArgKind::U32});
++                                  {BuiltinArgKind::Pointer, BuiltinArgKind::U32});
+         if (name == "narm_dir_entry")
+             return emitFileSubmit(expression, depth, 0x000au,
+-                                  {GraphicsArgKind::Pointer, GraphicsArgKind::U32,
+-                                   GraphicsArgKind::Pointer, GraphicsArgKind::U32,
+-                                   GraphicsArgKind::Pointer, GraphicsArgKind::Pointer,
+-                                   GraphicsArgKind::U32});
+-        if (name == "narm_present") { requireArity(expression, 0); return emitVideo(expression, depth, 24); }
+-        if (name == "narm_clear") { requireArity(expression, 1); return emitVideo(expression, depth, 8); }
+-        if (name == "narm_pixel") { requireArity(expression, 3); return emitVideo(expression, depth, 12); }
+-        if (name == "narm_fill_rect") { requireArity(expression, 5); return emitVideo(expression, depth, 16); }
+-        if (name == "narm_line") { requireArity(expression, 5); return emitVideo(expression, depth, 20); }
+-        if (name == "presentVga4") { requireArity(expression, 0); return emitVideo(expression, depth, 24); }
+-        if (name == "clearVga4") { requireArity(expression, 1); return emitVideo(expression, depth, 8); }
+-        if (name == "putPixelVga4") { requireArity(expression, 3); return emitVideo(expression, depth, 12); }
+-        if (name == "fillRectVga4") { requireArity(expression, 5); return emitVideo(expression, depth, 16); }
+-        if (name == "drawLineVga4") { requireArity(expression, 5); return emitVideo(expression, depth, 20); }
+-
+-        if (name == "drawBuffer" || name == "present" || name == "narm_half_present")
+-            return emitGraphics(expression, depth, 0x0000u, {});
+-        if (name == "clearBuffer" || name == "clear" || name == "narm_half_clear")
+-            return emitGraphics(expression, depth, 0x0001u, {GraphicsArgKind::U32});
+-        if (name == "narm_half_clear_depth")
+-            return emitGraphics(expression, depth, 0x0009u, {});
+-        if (name == "putPixel" || name == "narm_half_pixel")
+-            return emitGraphics(expression, depth, 0x0002u, {GraphicsArgKind::U32, GraphicsArgKind::U32});
+-        if (name == "fillRect2D" || name == "narm_half_fill_rect")
+-            return emitGraphics(expression, depth, 0x0003u, {GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::U32});
+-        if (name == "drawLine" || name == "narm_half_line")
+-            return emitGraphics(expression, depth, 0x0004u, {GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::U32});
+-        if (name == "fillTri" || name == "narm_half_fill_triangle")
+-            return emitGraphics(expression, depth, 0x0005u, {GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::U32});
+-        if (name == "fillRect2DTex" || name == "narm_half_blit")
+-            return emitGraphics(expression, depth, 0x0006u, {GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::Pointer});
+-        if (name == "fillRect2DTexMasking" || name == "narm_half_blit_masked")
+-            return emitGraphics(expression, depth, 0x0007u, {GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::Pointer, GraphicsArgKind::Pointer});
+-        if (name == "putFont" || name == "putGlyph" || name == "narm_half_glyph")
+-            return emitGraphics(expression, depth, 0x0008u, {GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::Pointer, GraphicsArgKind::U32});
+-        if (name == "putFontVga4" || name == "putGlyphVga4" || name == "narm_vga4_glyph")
+-            return emitGraphics(expression, depth, 0x0100u, {GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::Pointer, GraphicsArgKind::U32});
+-        if (name == "fillTriGouraud")
+-            return emitGraphics(expression, depth, 0x0200u, {
+-                GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::U32, GraphicsArgKind::U32,
+-                GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::U32, GraphicsArgKind::U32,
+-                GraphicsArgKind::I32, GraphicsArgKind::I32, GraphicsArgKind::U32, GraphicsArgKind::U32});
+-        if (name == "fillTri3DZ")
+-            return emitGraphics(expression, depth, 0x0201u, {
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32,
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32,
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32,
+-                GraphicsArgKind::U32, GraphicsArgKind::Pointer});
+-        if (name == "fillQuad3DZ")
+-            return emitGraphics(expression, depth, 0x0202u, {
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32,
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32,
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32,
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32,
+-                GraphicsArgKind::U32, GraphicsArgKind::Pointer});
+-        if (name == "fillTri3DGouraudZ" || name == "fillTri3DShadedZ")
+-            return emitGraphics(expression, depth, 0x0203u, {
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::U32,
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::U32,
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::U32,
+-                GraphicsArgKind::Pointer});
+-        if (name == "fillQuad3DGouraudZ" || name == "fillQuad3DShadedZ")
+-            return emitGraphics(expression, depth, 0x0204u, {
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::U32,
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::U32,
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::U32,
+-                GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::F32, GraphicsArgKind::U32,
+-                GraphicsArgKind::Pointer});
+-        if (name == "fillTri3DTexZ")
+-            return emitGraphics(expression, depth, 0x0205u, texturedGraphicsKinds(3u, false));
+-        if (name == "fillQuad3DTexZ")
+-            return emitGraphics(expression, depth, 0x0206u, texturedGraphicsKinds(4u, false));
+-        if (name == "fillQuad3DTexZTiled")
+-            return emitGraphics(expression, depth, 0x0207u, texturedGraphicsKinds(4u, false));
+-        if (name == "fillTri3DTexZMask" || name == "fillTri3DTexZMasked")
+-            return emitGraphics(expression, depth, 0x0208u, texturedGraphicsKinds(3u, true));
+-        if (name == "fillQuad3DTexZMask" || name == "fillQuad3DTexZMasked")
+-            return emitGraphics(expression, depth, 0x0209u, texturedGraphicsKinds(4u, true));
+-        if (name == "fillPackedTerrainMeshList")
+-            return emitGraphics(expression, depth, 0x020au, {
+-                GraphicsArgKind::I32, GraphicsArgKind::Pointer, GraphicsArgKind::Pointer,
+-                GraphicsArgKind::Pointer, GraphicsArgKind::U32, GraphicsArgKind::Pointer,
+-                GraphicsArgKind::Pointer, GraphicsArgKind::Pointer, GraphicsArgKind::Pointer,
+-                GraphicsArgKind::Pointer});
+-        if (name == "renderStats")
+-            return emitGraphics(expression, depth, 0x0300u, {GraphicsArgKind::U32});
+-        if (name == "drawTexturedList")
+-            return emitGraphics(expression, depth, 0x020bu, {
+-                GraphicsArgKind::UnsignedPointer, GraphicsArgKind::U32,
+-                GraphicsArgKind::FloatPointer, GraphicsArgKind::U32});
+-        if (name == "drawTexturedMesh")
+-            return emitGraphics(expression, depth, 0x020cu, {
+-                GraphicsArgKind::UnsignedPointer, GraphicsArgKind::UnsignedPointer,
+-                GraphicsArgKind::U32, GraphicsArgKind::FloatPointer,
+-                GraphicsArgKind::U32});
+-        if (name == "renderStat")
+-            return emitGraphics(expression, depth, 0x0301u, {GraphicsArgKind::U32}, BaseType::U32);
++                                  {BuiltinArgKind::Pointer, BuiltinArgKind::U32,
++                                   BuiltinArgKind::Pointer, BuiltinArgKind::U32,
++                                   BuiltinArgKind::Pointer, BuiltinArgKind::Pointer,
++                                   BuiltinArgKind::U32});
++        if (name == "narm_gpu_submit") return emitGpuSubmit(expression, depth);
+         if (name == "narm_key_down") { requireArity(expression, 1); return emitKeyboardKeyDown(expression, depth); }
+         if (name == "narm_ps2_key_down") { requireArity(expression, 2); return emitKeyboardPs2KeyDown(expression, depth); }
+         if (name == "narm_next_key_event") { requireArity(expression, 4); return emitKeyboardNextEvent(expression, depth); }
+@@ -4893,29 +4788,33 @@
+         return {BaseType::F32, 0};
+     }
+ 
+-    NType emitVideo(Expr* expression, unsigned depth, uint32_t functionOffset) {
+-        capabilitiesLow_ |= kVideoCapability;
+-        apiMinor_ = std::max<uint16_t>(apiMinor_, 5);
+-        imports_.insert({kVideoInterface, 1});
+-        uint32_t base = spillOffset(depth);
++    NType emitGpuSubmit(Expr* expression, unsigned depth) {
++        requireArity(expression, 3);
++        capabilitiesLow_ |= kGpuCapability;
++        apiMinor_ = std::max<uint16_t>(apiMinor_, 18);
++        imports_.insert({kGpuInterface, 1});
++        const uint32_t base = spillOffset(depth);
+         for (size_t i = 0; i < expression->args.size(); ++i) {
+-            emitDeclaredBuiltinArgument(expression,i,depth+8u+static_cast<unsigned>(i));
++            const NType expected = {BaseType::U32, static_cast<uint8_t>(i == 1u)};
++            emitConvertedExpression(expression->args[i].get(), expected,
++                                    depth + 8u + static_cast<unsigned>(i));
+             storeFrame(0, base + static_cast<uint32_t>(i) * 4u);
+         }
+-
+-        std::string failed = newLabel("video_missing");
+-        std::string done = newLabel("video_done");
++        const std::string failed = newLabel("gpu_missing");
++        const std::string done = newLabel("gpu_done");
+         out_.movReg(0, 10);
+-        out_.load(0, 0, 56);
++        out_.load(0, 0, 56); // NativeContextV1::gpu_api
+         out_.cmpImm(0, 0);
+         out_.branchIf(0, failed);
+-        out_.load(4, 0, functionOffset);
++        out_.load(4, 0, 8); // NativeGpuApiV1::submit
+         out_.movReg(0, 10);
+-        if (!expression->args.empty()) addressFrame(1, base);
++        loadFrame(1, base);
++        loadFrame(2, base + 4u);
++        loadFrame(3, base + 8u);
+         out_.blx(4);
+         out_.branch(done);
+         out_.label(failed);
+-        out_.movImm(0, 0xFFFFFFFFu);
++        out_.movImm(0, 0xfffffffdu); // NARM_SERVICE_ERR_CAPABILITY
+         out_.label(done);
+         return {BaseType::I32, 0};
+     }
+@@ -4951,7 +4850,7 @@
+ 
+     NType emitAudioSubmit(Expr* expression, unsigned depth,
+                           uint32_t command,
+-                          const std::vector<GraphicsArgKind>& kinds,
++                          const std::vector<BuiltinArgKind>& kinds,
+                           uint16_t requiredMinor = 6) {
+         requireArity(expression, kinds.size());
+         capabilitiesLow_ |= kAudioCapability;
+@@ -4961,7 +4860,7 @@
+         for (size_t i = 0; i < expression->args.size(); ++i) {
+             NType actual = emitExpression(expression->args[i].get(),
+                                           depth + 8u + static_cast<unsigned>(i));
+-            convertValue(actual, graphicsArgumentType(kinds[i]), expression->args[i]->where);
++            convertValue(actual, builtinArgumentType(kinds[i]), expression->args[i]->where);
+             storeFrame(0, base + static_cast<uint32_t>(i) * 4u);
+         }
+         const std::string failed = newLabel("audio_missing");
+@@ -4986,7 +4885,7 @@
+ 
+     NType emitFileSubmit(Expr* expression, unsigned depth,
+                          uint32_t command,
+-                         const std::vector<GraphicsArgKind>& kinds) {
++                         const std::vector<BuiltinArgKind>& kinds) {
+         requireArity(expression, kinds.size());
+         capabilitiesLow_ |= kFileCapability;
+         apiMinor_ = std::max<uint16_t>(apiMinor_, 7);
+@@ -4995,7 +4894,7 @@
+         for (size_t i = 0; i < expression->args.size(); ++i) {
+             NType actual = emitExpression(expression->args[i].get(),
+                                           depth + 8u + static_cast<unsigned>(i));
+-            convertValue(actual, graphicsArgumentType(kinds[i]), expression->args[i]->where);
++            convertValue(actual, builtinArgumentType(kinds[i]), expression->args[i]->where);
+             storeFrame(0, base + static_cast<uint32_t>(i) * 4u);
+         }
+         const std::string failed = newLabel("file_missing");
+@@ -5018,86 +4917,12 @@
+         return {BaseType::I32, 0};
+     }
+ 
+-    static std::vector<GraphicsArgKind> texturedGraphicsKinds(uint32_t vertexCount,
+-                                                               bool masked) {
+-        std::vector<GraphicsArgKind> kinds;
+-        for (uint32_t vertex = 0; vertex < vertexCount; ++vertex) {
+-            kinds.push_back(GraphicsArgKind::F32);
+-            kinds.push_back(GraphicsArgKind::F32);
+-            kinds.push_back(GraphicsArgKind::F32);
+-            kinds.push_back(GraphicsArgKind::F32);
+-            kinds.push_back(GraphicsArgKind::F32);
+-        }
+-        kinds.push_back(GraphicsArgKind::Pointer);
+-        kinds.push_back(GraphicsArgKind::U32);
+-        kinds.push_back(GraphicsArgKind::U32);
+-        kinds.push_back(GraphicsArgKind::U32);
+-        kinds.push_back(GraphicsArgKind::Pointer);
+-        if (masked) kinds.push_back(GraphicsArgKind::Pointer);
+-        return kinds;
+-    }
+-
+-    static NType graphicsArgumentType(GraphicsArgKind kind) {
++    static NType builtinArgumentType(BuiltinArgKind kind) {
+         switch (kind) {
+-            case GraphicsArgKind::I32: return {BaseType::I32, 0};
+-            case GraphicsArgKind::U32: return {BaseType::U32, 0};
+-            case GraphicsArgKind::F32: return {BaseType::F32, 0};
+-            case GraphicsArgKind::Pointer: return {BaseType::U32, 1};
+-            case GraphicsArgKind::UnsignedPointer: return {BaseType::U32, 1};
+-            case GraphicsArgKind::FloatPointer: return {BaseType::F32, 1};
++            case BuiltinArgKind::U32: return {BaseType::U32, 0};
++            case BuiltinArgKind::Pointer: return {BaseType::U32, 1};
+         }
+         return {BaseType::U32, 0};
+-    }
+-
+-    NType emitGraphics(Expr* expression,
+-                       unsigned depth,
+-                       uint32_t command,
+-                       const std::vector<GraphicsArgKind>& kinds,
+-                       BaseType returnType = BaseType::I32) {
+-        requireArity(expression, kinds.size());
+-        capabilitiesLow_ |= kVideoCapability;
+-        apiMinor_ = std::max<uint16_t>(apiMinor_, 5);
+-        imports_.insert({kVideoInterface, 1});
+-        const uint32_t base = spillOffset(depth);
+-        for (size_t i = 0; i < expression->args.size(); ++i) {
+-            NType expected=graphicsArgumentType(kinds[i]);
+-            NType actual=expected.isPointer()?emitExpression(expression->args[i].get(),depth+8u+static_cast<unsigned>(i)):
+-                emitConvertedExpression(expression->args[i].get(),expected,depth+8u+static_cast<unsigned>(i));
+-            if (kinds[i] == GraphicsArgKind::UnsignedPointer ||
+-                kinds[i] == GraphicsArgKind::FloatPointer) {
+-                const BaseType expected = kinds[i] == GraphicsArgKind::UnsignedPointer
+-                                            ? BaseType::U32 : BaseType::F32;
+-                if (actual.pointers != 1u || actual.base != expected ||
+-                    !actual.arrays.empty() || actual.function)
+-                    failAt(expression->args[i]->where,
+-                        kinds[i] == GraphicsArgKind::UnsignedPointer
+-                          ? (expression->text == "drawTexturedMesh"
+-                               ? "drawTexturedMesh expects unsigned* mesh/range descriptors"
+-                               : "drawTexturedList expects an unsigned* command list")
+-                          : expression->text + " expects a float* transform");
+-            }
+-            convertValue(actual, graphicsArgumentType(kinds[i]), expression->args[i]->where);
+-            storeFrame(0, base + static_cast<uint32_t>(i) * 4u);
+-        }
+-
+-        const std::string failed = newLabel("graphics_missing");
+-        const std::string done = newLabel("graphics_done");
+-        out_.movReg(0, 10);
+-        out_.load(0, 0, 56);
+-        out_.cmpImm(0, 0);
+-        out_.branchIf(0, failed);
+-        out_.load(4, 0, 28);
+-        out_.movReg(0, 10);
+-        out_.movImm(1, command);
+-        if (expression->args.empty()) out_.movImm(2, 0);
+-        else addressFrame(2, base);
+-        out_.movImm(3, static_cast<uint32_t>(expression->args.size()));
+-        out_.blx(4);
+-        out_.branch(done);
+-        out_.label(failed);
+-        out_.movImm(0, 0xFFFFFFFFu);
+-        out_.label(done);
+-        return {returnType, 0};
+     }
+ 
+     NType emitKeyboardKeyDown(Expr* expression, unsigned depth) {
+@@ -5448,7 +5273,7 @@
+         if (options.name.empty()) options.name = baseNameNoExt(input);
+         defines["__NARM__"] = "1";
+         defines["__NARM_API_MAJOR__"] = "1";
+-        defines["__NARM_API_MINOR__"] = "17";
++        defines["__NARM_API_MINOR__"] = "18";
+ 
+         std::string source = preprocessSourceFile(input, defines, includePaths);
+         Lexer lexer(source, input);
+--- a/narm.tch
++++ b/narm.tch
+@@ -276,156 +276,6 @@
+ // cancel gestures and reconcile event.buttons. Counter resets on focus change.
+ unsigned narm_mouse_dropped_events(void);
+ 
+-int narm_clear(unsigned color_index);
+-int narm_pixel(int x, int y, unsigned color_index);
+-int narm_fill_rect(int x0, int y0, int x1, int y1, unsigned color_index);
+-int narm_line(int x0, int y0, int x1, int y1, unsigned color_index);
+-int narm_present(void);
+-
+-// Shared 320x240 RGB332 framebuffer. These calls never allocate framebuffer
+-// memory in the process; every foreground NARM program uses the firmware's
+-// existing color, depth, and depth-stamp buffers.
+-int narm_half_present(void);
+-int narm_half_clear(unsigned color);
+-// Optional generic depth-only clear. Preserves color and diagnostic flags /
+-// counters; following 3D draws use a new depth pass. Requires foreground video
+-// ownership and FRAMEBUFFER_2D. Probe renderStat(76)==0x44430001 first.
+-int narm_half_clear_depth(void);
+-int narm_half_pixel(unsigned pixel_index, unsigned color);
+-int narm_half_fill_rect(int x0, int y0, int x1, int y1, unsigned color);
+-int narm_half_line(int x0, int y0, int x1, int y1, unsigned color);
+-int narm_half_fill_triangle(int x0, int y0, int x1, int y1,
+-                            int x2, int y2, unsigned color);
+-int narm_half_blit(int x, int y, int width, int height,
+-                   const unsigned *texture);
+-int narm_half_blit_masked(int x, int y, int width, int height,
+-                          const unsigned *texture, const unsigned *mask);
+-int narm_half_glyph(int x, int y, int width, int height,
+-                    const unsigned *glyph, unsigned color);
+-int narm_vga4_glyph(int x, int y, int width, int height,
+-                    const unsigned *glyph, unsigned palette_index);
+-
+-// VMCC-compatible graphics spellings. Existing Tiny-C rendering code can be
+-// compiled by NARMCC without acquiring private buffers or firmware addresses.
+-void drawBuffer(void);
+-void present(void);
+-void clearBuffer(unsigned color);
+-void clear(unsigned color);
+-void putPixel(unsigned pixel_index, unsigned color);
+-void fillRect2D(int x0, int y0, int x1, int y1, unsigned color);
+-void fillRect2DTex(int x, int y, int width, int height,
+-                   const unsigned *texture);
+-void fillRect2DTexMasking(int x, int y, int width, int height,
+-                          const unsigned *texture, const unsigned *mask);
+-void putFont(int x, int y, int width, int height,
+-             const unsigned *glyph, unsigned color);
+-void putGlyph(int x, int y, int width, int height,
+-              const unsigned *glyph, unsigned color);
+-void drawLine(int x0, int y0, int x1, int y1, unsigned color);
+-void fillTri(int x0, int y0, int x1, int y1,
+-             int x2, int y2, unsigned color);
+-
+-void presentVga4(void);
+-void clearVga4(unsigned palette_index);
+-void putPixelVga4(int x, int y, unsigned palette_index);
+-void fillRectVga4(int x0, int y0, int x1, int y1, unsigned palette_index);
+-void drawLineVga4(int x0, int y0, int x1, int y1, unsigned palette_index);
+-void putFontVga4(int x, int y, int width, int height,
+-                 const unsigned *glyph, unsigned palette_index);
+-void putGlyphVga4(int x, int y, int width, int height,
+-                  const unsigned *glyph, unsigned palette_index);
+-
+-void fillTriGouraud(int x0, int y0, unsigned z0, unsigned color0,
+-                    int x1, int y1, unsigned z1, unsigned color1,
+-                    int x2, int y2, unsigned z2, unsigned color2);
+-void fillTri3DZ(float x0, float y0, float z0,
+-                 float x1, float y1, float z1,
+-                 float x2, float y2, float z2,
+-                 unsigned color, const float *transform);
+-void fillQuad3DZ(float x0, float y0, float z0,
+-                  float x1, float y1, float z1,
+-                  float x2, float y2, float z2,
+-                  float x3, float y3, float z3,
+-                  unsigned color, const float *transform);
+-void fillTri3DGouraudZ(float x0, float y0, float z0, unsigned color0,
+-                        float x1, float y1, float z1, unsigned color1,
+-                        float x2, float y2, float z2, unsigned color2,
+-                        const float *transform);
+-void fillTri3DShadedZ(float x0, float y0, float z0, unsigned color0,
+-                       float x1, float y1, float z1, unsigned color1,
+-                       float x2, float y2, float z2, unsigned color2,
+-                       const float *transform);
+-void fillQuad3DGouraudZ(float x0, float y0, float z0, unsigned color0,
+-                         float x1, float y1, float z1, unsigned color1,
+-                         float x2, float y2, float z2, unsigned color2,
+-                         float x3, float y3, float z3, unsigned color3,
+-                         const float *transform);
+-void fillQuad3DShadedZ(float x0, float y0, float z0, unsigned color0,
+-                        float x1, float y1, float z1, unsigned color1,
+-                        float x2, float y2, float z2, unsigned color2,
+-                        float x3, float y3, float z3, unsigned color3,
+-                        const float *transform);
+-void fillTri3DTexZ(float x0, float y0, float z0, float u0, float v0,
+-                    float x1, float y1, float z1, float u1, float v1,
+-                    float x2, float y2, float z2, float u2, float v2,
+-                    const unsigned *texture, unsigned width, unsigned height,
+-                    unsigned flags, const float *transform);
+-void fillQuad3DTexZ(float x0, float y0, float z0, float u0, float v0,
+-                     float x1, float y1, float z1, float u1, float v1,
+-                     float x2, float y2, float z2, float u2, float v2,
+-                     float x3, float y3, float z3, float u3, float v3,
+-                     const unsigned *texture, unsigned width, unsigned height,
+-                     unsigned flags, const float *transform);
+-void fillQuad3DTexZTiled(float x0, float y0, float z0, float u0, float v0,
+-                          float x1, float y1, float z1, float u1, float v1,
+-                          float x2, float y2, float z2, float u2, float v2,
+-                          float x3, float y3, float z3, float u3, float v3,
+-                          const unsigned *texture, unsigned width, unsigned height,
+-                          unsigned flags, const float *transform);
+-void fillTri3DTexZMask(float x0, float y0, float z0, float u0, float v0,
+-                        float x1, float y1, float z1, float u1, float v1,
+-                        float x2, float y2, float z2, float u2, float v2,
+-                        const unsigned *texture, unsigned width, unsigned height,
+-                        unsigned flags, const float *transform,
+-                        const unsigned *mask);
+-void fillTri3DTexZMasked(float x0, float y0, float z0, float u0, float v0,
+-                          float x1, float y1, float z1, float u1, float v1,
+-                          float x2, float y2, float z2, float u2, float v2,
+-                          const unsigned *texture, unsigned width, unsigned height,
+-                          unsigned flags, const float *transform,
+-                          const unsigned *mask);
+-void fillQuad3DTexZMask(float x0, float y0, float z0, float u0, float v0,
+-                         float x1, float y1, float z1, float u1, float v1,
+-                         float x2, float y2, float z2, float u2, float v2,
+-                         float x3, float y3, float z3, float u3, float v3,
+-                         const unsigned *texture, unsigned width, unsigned height,
+-                         unsigned flags, const float *transform,
+-                         const unsigned *mask);
+-void fillQuad3DTexZMasked(float x0, float y0, float z0, float u0, float v0,
+-                           float x1, float y1, float z1, float u1, float v1,
+-                           float x2, float y2, float z2, float u2, float v2,
+-                           float x3, float y3, float z3, float u3, float v3,
+-                           const unsigned *texture, unsigned width, unsigned height,
+-                           unsigned flags, const float *transform,
+-                           const unsigned *mask);
+-void fillPackedTerrainMeshList(int head,
+-                               const unsigned *p0, const unsigned *p1,
+-                               const int *next, unsigned mesh_limit,
+-                               const float *config,
+-                               const unsigned **top_textures,
+-                               const unsigned **bottom_textures,
+-                               const unsigned **side_textures,
+-                               const float *transform);
+-// Synchronous general-purpose commands; no source pointer survives return.
+-// Modes 257/258 add conservative occlusion to tiled workers 1/2;
+-// require renderStat(70)==0x43550001. Inputs remain synchronous.
+-int drawTexturedList(const unsigned *commands, unsigned count,
+-                     const float *transform, unsigned mode);
+-// Mesh is eight words, materials six words, ranges first/count. Returns
+-// enabled faces submitted (0..256), or a negative service error.
+-int drawTexturedMesh(const unsigned *mesh, const unsigned *ranges,
+-                     unsigned range_count, const float *transform, unsigned mode);
+-void renderStats(unsigned enabled);
+-unsigned renderStat(unsigned index);
++#include "narm_gpu.tch"
+ 
+ #endif

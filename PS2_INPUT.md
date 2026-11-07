@@ -62,8 +62,8 @@ Input goes only to the focused process. Focus loss/exit restores cursor policy
 and clears old input; buttons held during a focus change are suppressed until
 released. Raw motion is captured before screen clipping, independently of the
 event queue. Relative mode freezes desktop coordinates and hides the requested
-cursor. NARM launching and graphical cursor rendering are disabled in this
-GPU-terminal milestone; the input infrastructure is retained for later work.
+cursor. NARM launching uses the GPU firmware and input services remain
+available to the focused process.
 
 Command transmission uses bounded host-to-device transactions with interrupts
 enabled. An absent mouse gets three initialization attempts, then becomes
@@ -96,6 +96,6 @@ There is no video DMA or cursor hardware alarm. The GPU owns its scanout.
 Run `python tests/ps2/run_tests.py` for the nine retained host checks: PIO RX,
 transport mock, flash handshakes, mouse decode/runtime, input policy, native
 mouse boundary metadata, keyboard queue/parser, and concurrent mouse trace.
-Physical PS/2 electrical timing still needs board verification. The application
-examples retained under programs/ require the later NARM/GPU integration.
+Physical PS/2 electrical timing still needs board verification. Applications
+that used the earlier framebuffer API need to migrate to [NARM GPU services](NARM_GPU.md).
 See README.md for the GPU terminal build settings and hardware test procedure.

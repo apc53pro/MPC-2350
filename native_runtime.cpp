@@ -10,6 +10,8 @@
 #include "mouse_runtime.h"
 #include "audio_runtime.h"
 #include "file_io_runtime.h"
+#include "gpu_display.h"
+#include "nano_gpu.h"
 #include "system_overlay.h"
 #include "terminal.h"
 #include "ps2_keyboard_driver.h"
@@ -514,6 +516,7 @@ bool service_supported(void *, uint32_t service_id, uint16_t minimum_version)
     case NARM_INTERFACE_MOUSE:
     case NARM_INTERFACE_FILE_IO:
     case NARM_INTERFACE_AUDIO:
+    case NARM_INTERFACE_GPU:
       return true;
     default:
       return false;
@@ -665,6 +668,20 @@ bool native_owns_audio(NativeContextV1 *context)
   return process->state == NATIVE_PROCESS_RUNNING &&
          __atomic_load_n(&active_process, __ATOMIC_ACQUIRE) == process;
 }
+
+bool native_owns_gpu(NativeContextV1 *context)
+{
+  NativeProcess *process = (NativeProcess *)context->process_handle;
+  return get_core_num() == 0u && process->state == NATIVE_PROCESS_RUNNING &&
+         __atomic_load_n(&active_process, __ATOMIC_ACQUIRE) == process &&
+         __atomic_load_n(&focused_process, __ATOMIC_ACQUIRE) == process;
+}
+
+#include "native_gpu_api_impl.h"
+
+const NativeGpuApiV1 native_gpu_api = {
+  sizeof(NativeGpuApiV1), 1u, 0u, native_gpu_submit
+};
 
 int32_t api_invoke(NativeContextV1 *context,
                    uint32_t service_id,
@@ -1337,6 +1354,14 @@ const void *api_get_interface(NativeContextV1 *context,
       return nullptr;
     return &native_file_api;
   }
+  if (interface_id == NARM_INTERFACE_GPU)
+  {
+    if (interface_major != native_gpu_api.interface_major ||
+        minimum_minor > native_gpu_api.interface_minor ||
+        !has_capability(context, NARM_CAP_GPU))
+      return nullptr;
+    return &native_gpu_api;
+  }
   return nullptr;
 }
 
@@ -1367,7 +1392,7 @@ const NativeApiV1 native_api = {
   NARM_API_MAJOR,
   NARM_API_MINOR,
   (uint32_t)(NARM_CAP_KEYBOARD | NARM_CAP_AUDIO |
-             NARM_CAP_FILE_IO | NARM_CAP_USB_STORAGE | NARM_CAP_MOUSE),
+             NARM_CAP_FILE_IO | NARM_CAP_USB_STORAGE | NARM_CAP_MOUSE | NARM_CAP_GPU),
   0,
   api_invoke,
   api_yield,
@@ -1525,7 +1550,7 @@ NarmStatus load_process(const NarmReader &reader,
   policy.service_supported = service_supported;
   policy.capabilities_low = (uint32_t)(NARM_CAP_KEYBOARD |
                                        NARM_CAP_AUDIO | NARM_CAP_FILE_IO |
-                                       NARM_CAP_USB_STORAGE | NARM_CAP_MOUSE);
+                                       NARM_CAP_USB_STORAGE | NARM_CAP_MOUSE | NARM_CAP_GPU);
   NarmStatus status = narm_validate_image(reader,
                                           policy,
                                           process->image,
@@ -1648,7 +1673,9 @@ NarmStatus load_process(const NarmReader &reader,
   process->context.keyboard_api =
       (process->image.capabilities_low & (uint32_t)NARM_CAP_KEYBOARD)
         ? &native_keyboard_api : nullptr;
-  process->context.video_api = nullptr; // GPU NARM interface is a later step.
+  process->context.gpu_api =
+      (process->image.capabilities_low & (uint32_t)NARM_CAP_GPU)
+        ? &native_gpu_api : nullptr;
   process->context.audio_api =
       (process->image.capabilities_low & (uint32_t)NARM_CAP_AUDIO)
         ? &native_audio_api : nullptr;
@@ -2104,24 +2131,23 @@ void print_native_memory_diagnostics(bool to_terminal)
   }
 }
 
-void poll_native_serial_diagnostics()
-{
-  static NativeSerialCommandParser parser;
-  // Bound input work so a serial sender cannot starve the native scheduler.
-  for (uint32_t count = 0u; count < 64u && Serial.available() > 0; ++count)
-  {
-    const NativeSerialCommand command = parser.feed((uint8_t)Serial.read());
-    if (command == NARM_SERIAL_DIAG) print_native_memory_diagnostics(false);
-    else if (command == NARM_SERIAL_CAPTURE_TEST) native_fault_selftest();
-    else if (command == NARM_SERIAL_FOCUS)
-      Serial.println(native_request_focus_next() ? "NARM-SERIAL FOCUS queued" : "NARM-SERIAL FOCUS unavailable");
-    else if (command == NARM_SERIAL_CLOSE)
-      Serial.println(native_request_stop() ? "NARM-SERIAL CLOSE queued" : "NARM-SERIAL no focused task");
-    else if (command == NARM_SERIAL_HELP || command == NARM_SERIAL_INVALID)
-      Serial.println("NARM-SERIAL commands: NARM DIAG | NARM FOCUS | NARM CLOSE | NARM HELP | NARM CAPTURE TEST (reboots; send newline)");
-  }
-}
 } // namespace
+
+bool native_serial_dispatch(const char *line)
+{
+  const NativeSerialCommand command = narm_serial_command(line);
+  if (command == NARM_SERIAL_NONE) return false;
+  native_fault_checkpoint(NARM_PHASE_SERIAL);
+  if (command == NARM_SERIAL_DIAG) print_native_memory_diagnostics(false);
+  else if (command == NARM_SERIAL_CAPTURE_TEST) native_fault_selftest();
+  else if (command == NARM_SERIAL_FOCUS)
+    Serial.println(native_request_focus_next() ? "NARM-SERIAL FOCUS queued" : "NARM-SERIAL FOCUS unavailable");
+  else if (command == NARM_SERIAL_CLOSE)
+    Serial.println(native_request_stop() ? "NARM-SERIAL CLOSE queued" : "NARM-SERIAL no focused task");
+  else
+    Serial.println("NARM-SERIAL commands: NARM DIAG | NARM FOCUS | NARM CLOSE | NARM HELP | NARM CAPTURE TEST (reboots; send newline)");
+  return true;
+}
 
 bool native_audio_voice_reserved(uint8_t voice)
 {
@@ -2334,8 +2360,6 @@ void native_scheduler_poll()
   }
 
   native_fault_heartbeat();
-  native_fault_checkpoint(NARM_PHASE_SERIAL);
-  poll_native_serial_diagnostics();
   if (memory_trace_enabled && Serial &&
       (int32_t)(millis() - memory_trace_deadline_ms) >= 0)
   {

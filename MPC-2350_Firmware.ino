@@ -260,7 +260,7 @@ void setup()
   // Startup terminal message.
   echo_message("====== MPC-2350 / NANO-20K-GPU");
   echo_message("====== SYSTEM MEMORY: " + String((float)(memory_size*4)/(float)1000) + "KB");
-  echo_message("====== GPU TERMINAL TEST; NARM LATER");
+  echo_message("====== NARM GPU RUNTIME");
   echo_message("");
 
   // Release Core 1 to initialize I2S only after Core 0 has finished all
@@ -291,13 +291,19 @@ void loop()
   usb_storage_poll();
   audio_core0_poll();
   static String serial_line;
+  unsigned serial_budget = 64;
   while (Serial.available()) {
     const char c = (char)Serial.read();
     if (c == '\n' || c == '\r') {
-      if (serial_line.length()) { terminal_funcs(serial_line); serial_line = ""; }
+      if (serial_line.length()) {
+        if (!native_serial_dispatch(serial_line.c_str())) terminal_funcs(serial_line);
+        serial_line = "";
+      }
     } else if (serial_line.length() < 256) serial_line += c;
+    if (--serial_budget == 0) break;
   }
-  terminal(true, true, true);
+  native_scheduler_poll();
+  if (native_terminal_has_focus()) terminal(true, true, true);
   audio_core0_poll();
 }
 

@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstring>
 #include <iostream>
+#include <initializer_list>
 #include <stdexcept>
 #include <vector>
 
@@ -73,7 +74,8 @@ struct Bus {
   }
 };
 
-void verify(Bus &bus, NanoGpu &gpu, const char grid[40][60], int scroll) {
+void verify(Bus &bus, NanoGpu &gpu, const char grid[40][60], int scroll,
+            int pointer_x = -1, int pointer_y = -1) {
   // SystemModel's color() is a cached diagnostic view updated only by its own
   // convenience driver. Read actual SDRAM through the firmware packet client.
   std::vector<uint16_t> pixels(640 * 480);
@@ -88,7 +90,11 @@ void verify(Bus &bus, NanoGpu &gpu, const char grid[40][60], int scroll) {
     uint8_t c = (uint8_t)grid[x / 16][y / 16 + scroll];
     if (c < 32 || c > 159) c = '?';
     const auto bits = font[c - 32][y % 16];
-    const uint16_t expected = (bits & (0x8000u >> (x % 16))) ? 0 : 0xffffu;
+    uint16_t expected = (bits & (0x8000u >> (x % 16))) ? 0 : 0xffffu;
+    const int dx = (int)x - pointer_x, dy = (int)y - pointer_y;
+    constexpr const char *arrow[] = {"#", "##", "#+#", "#++#", "#+++#", "#++++#", "#++###", "#####", "##"};
+    if (pointer_x >= 0 && dx >= 0 && dy >= 0 && dy < 9 && (size_t)dx < strlen(arrow[dy]))
+      expected = arrow[dy][dx] == '+' ? 0xffffu : 0;
     if (pixels[y * 640 + x] != expected) {
       std::cerr << "Pixel mismatch at " << x << ',' << y << ", front=" << bus.model.front_id()
                 << ", actual=" << pixels[y * 640 + x] << ", expected=" << expected
@@ -96,6 +102,13 @@ void verify(Bus &bus, NanoGpu &gpu, const char grid[40][60], int scroll) {
       throw std::runtime_error("terminal pixel mismatch");
     }
   }
+}
+
+void write_words(NanoGpu &gpu, uint32_t address, std::initializer_list<uint32_t> words) {
+  std::vector<uint8_t> bytes;
+  for (uint32_t word : words)
+    for (unsigned b = 0; b < 4; ++b) bytes.push_back((uint8_t)(word >> (8 * b)));
+  assert(gpu.write_heap(address, bytes.data(), (uint32_t)bytes.size()));
 }
 
 int main() {
@@ -138,6 +151,39 @@ int main() {
     assert(gpu.read_memory((uint32_t)bus.model.front_id() * 0x96000u, 2, bytes));
     assert((bytes[0] | ((unsigned)bytes[1] << 8)) ==
            ((font['E' - 32][0] & 0x8000u) ? 0u : 0xffffu));
+    // Move across glyph boundaries, scroll with the old pointer in the
+    // front buffer, then clip at the screen edge and hide it.
+    gpu.terminal_pointer(13, 30, true);
+    assert(gpu.terminal_present(grid, 22)); verify(bus, gpu, grid, 22, 13, 30);
+    gpu.terminal_pointer(33, 50, true);
+    assert(gpu.terminal_present(grid, 23)); verify(bus, gpu, grid, 23, 33, 50);
+    gpu.terminal_pointer(639, 479, true);
+    assert(gpu.terminal_present(grid, 23)); verify(bus, gpu, grid, 23, 639, 479);
+    gpu.terminal_pointer(0, 0, false);
+    assert(gpu.terminal_present(grid, 23)); verify(bus, gpu, grid, 23);
+
+    // Exercise the same session a focused application uses. Present its
+    // cleared back buffer, then let the terminal take the display again.
+    uint8_t bank[64];
+    assert(gpu.get_caps(bank) && bank[1] == 2);
+    assert(gpu.get_status(bank) && bank[14] == bus.model.front_id());
+    const uint32_t heap = NanoGpu::kUserHeap, table = heap + 32;
+    const uint32_t target = gpu.back_target();
+    const uint8_t empty_tiles[2400] = {};
+    assert(!gpu.write_heap(heap - 4, empty_tiles, 4) && gpu.ready());
+    assert(!gpu.present(target ^ 1u, 100) && gpu.ready());
+    assert(gpu.write_heap(table, empty_tiles, sizeof(empty_tiles)));
+    write_words(gpu, heap, {0x3153504eu, target, 3, 0x1234, 0xffffff, table, 300, 0});
+    assert(gpu.submit_pass(heap) && gpu.fence(100) && gpu.present(target, 101));
+    assert(gpu.read_memory(target * 0x96000u, 2, bytes) && bytes[0] == 0x34 && bytes[1] == 0x12);
+    assert(gpu.terminal_present(grid, 23)); verify(bus, gpu, grid, 23);
+    // A copy into the next back buffer must invalidate the terminal cache.
+    const uint32_t sample = table + sizeof(empty_tiles);
+    write_words(gpu, sample, {0x12341234u});
+    const uint32_t copy[14] = {1, 0, gpu.back_target(), 0, 0, 0, 0, 1, 1, sample, 2, 1, 4, 0};
+    assert(gpu.copy_rect(copy));
+    grid[0][23] = 'Y';
+    assert(gpu.terminal_present(grid, 23)); verify(bus, gpu, grid, 23);
     const auto &host = bus.model.host_statistics();
     assert(!host.setup_violations && !host.hold_violations &&
            !host.unstable_writes && !host.protocol_faults);
@@ -167,6 +213,7 @@ int main() {
     std::cout << "PASS firmware GPU client: font upload, full terminal, unchanged frame, "
                  "edits across swaps, scroll, glyph fallback, packet readback, latched failures, "
                  "status-polled reply deadline and fault stop, per-buffer glyph tracking "
-                 "(zero-copy cursor toggle) and one-copy line scroll.\n";
+                 "(zero-copy text cursor toggle), one-copy line scroll, mouse pointer, "
+                 "GPU commands, and terminal restore.\n";
   } catch (const std::exception &e) { std::cerr << e.what() << '\n'; return 1; }
 }

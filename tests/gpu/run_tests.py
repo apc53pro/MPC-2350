@@ -18,6 +18,11 @@ build = firmware / "build/gpu-client-tests"
 build.mkdir(parents=True, exist_ok=True)
 exe = build / ("gpu-client-tests.exe" if os.name == "nt" else "gpu-client-tests")
 gpio_exe = build / ("gpio-fault-tests.exe" if os.name == "nt" else "gpio-fault-tests")
+native_exe = build / ("native-gpu-api-tests.exe" if os.name == "nt" else "native-gpu-api-tests")
+subprocess.run([args.compiler, "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+                "-I", str(firmware), str(firmware / "tests/gpu/native_gpu_api_test.cpp"),
+                "-o", str(native_exe)], check=True)
+subprocess.run([str(native_exe)], check=True)
 subprocess.run([args.compiler, "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
                 "-I", str(firmware / "tests/gpu/mock"), "-I", str(firmware),
                 str(firmware / "tests/gpu/gpio_fault_test.cpp"),

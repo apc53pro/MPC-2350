@@ -1,23 +1,26 @@
-# MPC-2350: Nano GPU terminal bring-up
+# MPC-2350 with the Nano GPU
 
-This first GPU firmware implements a **40x30 monochrome terminal** for the Tang
-Nano 20K. The GPU renders it to HDMI at 640×480/60, with the FPGA image's
+The Tang Nano 20K GPU renders the **40×30 monochrome terminal** and runs
+graphics commands from focused NARM applications. It outputs HDMI at
+640×480/60, with the FPGA image's
 50.4 MHz core/SDRAM clock and 25.2 MHz pixel clock. On 2026-11-07 the user
 reported the terminal running on HDMI.
-PS/2 terminal input, command history and scrolling remain.
-NARM program launching is disabled until its GPU API is implemented. PS/2 mouse
-input is retained; the graphical mouse cursor is deferred.
+PS/2 terminal input, command history and scrolling remain. The terminal mouse
+pointer uses GPU copies of opaque spans from a small RGB565 arrow asset.
+Moving or hiding it redraws the glyphs under its old footprint.
 
 VGA scanout, its three PIO programs and DMA channels, both RP pixel buffers,
 half-resolution/depth/stamp buffers, CPU 2D/3D rasterizers and pixel cursor/overlay
 compositors have been removed. The small terminal character grid is retained;
 the general terminal allocation arena is 64 KiB and contains no graphics partitions.
 
-`gpu_display.cpp` drives the current 16-wire bus with GPIO, using at least
-2 us per clock phase/setup wait (a phase-only ceiling of 250 kHz before API
-overhead). The bus was first proven at 50 us phases; 2 us remains far below
-the GPU's 25.2 MHz host-clock constraint while electrical margins are
-unmeasured. It claims no PIO or DMA resources. `nano_gpu.cpp` checks
+`gpu_display.cpp` uses one PIO2 state machine with GPIO base 16 for byte
+transfers in both directions. PIO clocks HCLK, drives the bus strobes and
+data direction, and samples WREADY before a write edge and RVALID with the
+read byte. The state machine runs at up to 2 MHz, with four cycles per
+minimum phase. Core 0 encodes packets and exchanges commands and completion
+words through the PIO FIFOs with a 250 ms byte deadline. PS/2 remains on PIO1.
+`nano_gpu.cpp` checks
 the N20K-SYS-0.2 capabilities and replies, uploads the font once as a 64 KiB
 RGB565 heap texture, and uses GPU `COPY_RECT`, `FENCE` and `PRESENT` commands.
 Startup keeps GPU_RESET_N LOW and data released for **1000 ms** before clocking
@@ -27,9 +30,25 @@ shows. For a changed frame it picks the cheapest way to bring the back buffer
 up to date. Either it draws only the glyphs that differ from what that buffer
 already holds, or it first copies the front buffer, shifted up by whole text
 rows for a scroll, and then draws the rest. It then fences and waits for the
-vertical-blank presentation reply. A cursor blink needs no glyph copies, and
-a one-line scroll needs one copy plus at most a line of glyphs. An unchanged
-terminal emits no packets. The CPU never rasterizes a screen buffer.
+vertical-blank presentation reply. With the pointer hidden, a one-line
+scroll typically needs one copy plus the new line of glyphs. An unchanged
+terminal emits no packets.
+
+## NARM graphics
+
+The existing SD and flash NARM launch paths run again. The focused application
+can submit GPU commands while the terminal retains its text grid. Alt+F2
+cycles focus. When the terminal regains focus it restores its frame using
+the same GPU session and the current writable back buffer. Focus and mode
+notifications appear as terminal messages. NARM apps control their own
+graphics and can draw a pointer using PS/2 mouse input.
+
+[NARM GPU interface 1.0](NARM_GPU.md) exposes capability and status queries, heap uploads,
+render passes, rectangle copies, fences, presentation and memory readback.
+Use the new interface when building applications that previously used VGA.
+Application allocations start at `0x280000`. The firmware reserves the
+lower heap area for terminal assets. Programs share the application heap
+and must manage allocation and content across focus changes.
 
 ### Stack limit: keep large buffers off the stack
 
@@ -51,9 +70,12 @@ either core.
 Use Arduino-Pico 5.6.1, **Generic RP2350 / RP2350B**, **16 MB flash (4 MB sketch,
 12 MB filesystem)**, **8 MB PSRAM**, **PSRAM CS GPIO47**, PSRAM maximum 104 MHz,
 CPU menu 300 MHz, and Optimize3. The sketch retains its existing startup clock
-override (`RP2350_TEST_CPU_MHZ`, currently 375); GPIO bus waits are in microseconds.
+override (`RP2350_TEST_CPU_MHZ`, currently 375). The PIO divider is derived
+from the applied system clock.
 The existing project-specific FatFS/FatFSUSB libraries are still required.
 Firmware compilation and flashing are left to the user for this milestone.
+If you edit the PIO program, regenerate the checked-in Arduino header with
+`pioasm -o c-sdk gpu_bus.pio gpu_bus.pio.h`.
 
 ## Wiring and first test
 
@@ -83,12 +105,10 @@ and the series parts alone do not provide pull-down bias.
 Arduino `digitalRead()` does not remove the silicon leakage. See the GPU guide
 and [RP2350 E9 notes](https://arduino-pico.readthedocs.io/en/stable/rp2350.html).
 
-The transport uses Arduino `digitalRead()`, `digitalWrite()`, `pinMode()`,
-`delayMicroseconds()`, `delay()` and `micros()`. Controls use Arduino-Pico's
-`OUTPUT_12MA`; data uses `OUTPUT` for writes and `INPUT` for reads/release.
-GP39/40 stay `INPUT`. Read bytes are assembled from eight `digitalRead()` calls
-with RD_N LOW and HCLK HIGH throughout. `GPU DATA` shows the last received byte.
-The address echo also uses `digitalRead()`.
+Reset, held-read and edge-free drive diagnostics use SIO. The driver restores
+the bus to inactive strobes and releases the data pins on timeout.
+`GPU DATA` shows the last received byte. The address echo is the PIO sample
+of the data pads before the latch edge.
 The driver checks the fixed sideband capability prefix before polling ready
 status. Zero or otherwise incorrect capability bytes report `invalid capability
 readback`; they are not treated as an SDRAM initialization timeout.
@@ -279,8 +299,8 @@ configuration to finish and issue `GPU_RESET` (or restart the RP).
 An entirely `FF` startup snapshot is reported as `all-ones startup readback`,
 not a decoded GPU fault. Use `GPU_PROBE` and check the data wiring before
 interpreting fault fields from that invalid snapshot.
-Electrical margins, clock rate and physical display operation remain unverified.
-The slow first full redraw is intentional; this version prioritizes bring-up.
+The earlier GPIO firmware was confirmed on hardware. The PIO path and NARM
+GPU API require an on-board run with this firmware.
 
 ## Host checks
 
@@ -292,18 +312,8 @@ packet/terminal client, first build the Nano GPU oracle objects with its
 python tests/gpu/run_tests.py --gpu <Nano-20K-GPU-checkout> --compiler <matching-g++>
 ```
 
-The Arduino API host mock compiles the actual board glue and checks all 256
-write/read byte patterns, data direction changes, and that write/read
-timeouts, startup faults and malformed replies leave reset HIGH, strobes
-inactive and data released. It also checks reset pulse polarity and retained
-startup diagnostics. A simulated 800 ms FPGA configuration delay checks that
-host transfers begin after the one-second guard. GPIO/time are stubbed;
-electrical behavior is not tested. The mock models Arduino-Pico clearing the
-output latch in `pinMode(OUTPUT)`, so each data bit is written after setting
-its output mode while the bus strobes are inactive.
-
-The GPU client test reads every pixel back through packets and checks font upload, full
-redraw, idle behavior, edits across swaps, scrolling, invalid glyphs and latched
-transport/reply failures. It uses the clocked C++ GPU software oracle, not FPGA
-RTL or physical hardware. The portable driver and font compile as strict C++17
-with warnings treated as errors in that check.
+The transport mock checks firmware FIFO and GPIO behavior. The GPU client
+test uses the clocked C++ GPU software oracle. It reads each pixel back
+through packets and checks full redraws, scrolling, pointer movement,
+application commands, terminal restore and latched failures. The driver
+and font compile as strict C++17 with warnings treated as errors in that check.

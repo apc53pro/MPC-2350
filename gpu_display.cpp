@@ -1,10 +1,14 @@
 #include "gpu_display.h"
+#include "gpu_bus.pio.h"
+#include "gpu_ui.h"
 #include "nano_gpu.h"
 #include "globals.h"
 #include "font.h"
 #include "audio_runtime.h"
 #include "usb_storage_mode.h"
 #include <Arduino.h>
+#include <hardware/clocks.h>
+#include <hardware/gpio.h>
 #include <initializer_list>
 
 namespace {
@@ -13,12 +17,21 @@ constexpr unsigned kAbort = 35, kReset = 36, kAddress = 37, kRead = 38;
 constexpr unsigned kReady = 39, kValid = 40;
 constexpr uint32_t kTimeoutUs = 250000;
 constexpr uint32_t kConfigurationWaitMs = 1000;
-// At most 250 kHz HCLK before API overhead. The bus was proven at 50 us
-// phases; 2 us stays far below the GPU's 25.2 MHz host-clock constraint
-// while board-level electrical margins remain unmeasured.
+// Four PIO cycles per minimum phase. The same delay is used for manual
+// reset and the offline electrical diagnostics.
 constexpr uint32_t kClockPhaseUs = 2;
+constexpr uint32_t kPioClockHz = 4000000 / kClockPhaseUs;
+constexpr uint64_t kIdlePins = (1ull << kWrite) | (1ull << kAddress) | (1ull << kRead);
+constexpr uint64_t kControlPins = kIdlePins | (1ull << kClock);
+constexpr uint64_t kBusPins = kControlPins | (0xffull << kData);
+PIO const kPio = pio2;
 static_assert(__GPIOCNT > kValid, "Select RP2350B: GPU handshakes require GPIO39/40");
+static_assert(PICO_PIO_USE_GPIO_BASE, "GPU PIO requires the RP2350B GPIO base support");
+static_assert(kValid - kData == gpu_bus_valid_bit, "GPU PIO data/valid pin layout changed");
 NanoGpu gpu;
+int pio_sm = -1;
+uint pio_offset = 0;
+bool pio_active = false;
 int selected_address = -1;
 unsigned service_counter = 0;
 uint8_t address_sent = 0, address_sensed = 0;
@@ -55,8 +68,18 @@ void write_data(uint8_t byte) {
   }
 }
 void release_bus() {
-  digitalWrite(kWrite, HIGH); digitalWrite(kRead, HIGH); digitalWrite(kAddress, HIGH);
-  release_data(); digitalWrite(kClock, LOW);
+  if (pio_active) {
+    pio_sm_set_enabled(kPio, (uint)pio_sm, false);
+    pio_active = false;
+    // A timeout can interrupt a high phase. Finish its minimum width.
+    if (digitalRead(kClock) == HIGH) delayMicroseconds(kClockPhaseUs);
+  }
+  // Preload the SIO latches before switching away from PIO. Raise the
+  // strobes first so an interrupted transfer cannot cause contention.
+  gpio_put_masked64(kControlPins, kIdlePins);
+  gpio_set_dir_masked64(kBusPins, kControlPins);
+  for (unsigned pin : {kWrite, kRead, kAddress, kClock}) gpio_set_function(pin, GPIO_FUNC_SIO);
+  for (unsigned bit = 0; bit < 8; ++bit) gpio_set_function(kData + bit, GPIO_FUNC_SIO);
   // Keep scanout alive for diagnosis. Only explicit initialization and the
   // GPU_LATCHTEST command assert GPU_RESET_N; a failed/partial packet is never
   // retried in this session.
@@ -64,25 +87,91 @@ void release_bus() {
   selected_address = -1;
   read_held = false; drive_held = false;
 }
-bool write_cycle(uint8_t byte, bool address) {
-  digitalWrite(kRead, HIGH); digitalWrite(kWrite, HIGH); low();
-  write_data(byte);
-  digitalWrite(kAddress, address ? LOW : HIGH); digitalWrite(kWrite, LOW);
-  delayMicroseconds(kClockPhaseUs);
-  if (address) {
-    address_sent = byte; address_sensed = read_data_pins();
+
+bool claim_pio() {
+  // PIO1 belongs to PS/2. Reserve PIO2's GPIO base before audio starts.
+  for (uint sm = 0; sm < NUM_PIO_STATE_MACHINES; ++sm) {
+    if (pio_sm_is_claimed(kPio, sm)) return false;
   }
-  const uint32_t start = micros();
-  do {
-    const bool accepted = digitalRead(kReady) == HIGH; // Before the rising edge.
-    high(); low();
-    if (accepted) {
-      digitalWrite(kWrite, HIGH); digitalWrite(kAddress, HIGH); release_data();
-      service(); return true;
-    }
-  } while ((uint32_t)(micros() - start) < kTimeoutUs);
-  release_bus(); return false;
+  const uint old_base = pio_get_gpio_base(kPio);
+  const int sm = pio_claim_unused_sm(kPio, false);
+  if (sm < 0) return false;
+  if (pio_set_gpio_base(kPio, 16) != 0) {
+    pio_sm_unclaim(kPio, (uint)sm);
+    return false;
+  }
+  const int offset = pio_add_program(kPio, &gpu_bus_program);
+  if (offset < 0) {
+    pio_set_gpio_base(kPio, old_base);
+    pio_sm_unclaim(kPio, (uint)sm);
+    return false;
+  }
+  pio_sm = sm;
+  pio_offset = (uint)offset;
+  return true;
 }
+
+bool enable_pio() {
+  if (pio_active) return true;
+  if (pio_sm < 0 && !claim_pio()) {
+    Serial.println("GPU PIO: PIO2 unavailable.");
+    return false;
+  }
+  pio_sm_config config = gpu_bus_program_get_default_config(pio_offset);
+  sm_config_set_sideset_pins(&config, kClock);
+  sm_config_set_set_pins(&config, kAddress, 2);
+  sm_config_set_out_pins(&config, kData, 8);
+  sm_config_set_out_shift(&config, true, false, 32);
+  sm_config_set_in_pins(&config, kData);
+  sm_config_set_in_pin_count(&config, kValid - kData + 1);
+  sm_config_set_in_shift(&config, false, false, 32);
+  sm_config_set_jmp_pin(&config, kReady);
+  const uint32_t divider = (uint32_t)(((uint64_t)clock_get_hz(clk_sys) * 256 + kPioClockHz - 1) / kPioClockHz);
+  sm_config_set_clkdiv_int_frac8(&config, divider >> 8, (uint8_t)divider);
+  const uint sm = (uint)pio_sm;
+  if (pio_sm_init(kPio, sm, pio_offset, &config) != 0) {
+    Serial.println("GPU PIO: state machine configuration failed.");
+    return false;
+  }
+  // Set idle levels before giving PIO control of the pads. WREADY and
+  // RVALID remain SIO inputs; PIO samples them without changing the mux.
+  pio_sm_set_pins_with_mask64(kPio, sm, kIdlePins, kBusPins);
+  pio_sm_set_pindirs_with_mask64(kPio, sm, kControlPins, kBusPins);
+  for (unsigned pin : {kWrite, kRead, kAddress, kClock}) pio_gpio_init(kPio, pin);
+  for (unsigned bit = 0; bit < 8; ++bit) pio_gpio_init(kPio, kData + bit);
+  pio_sm_set_enabled(kPio, sm, true);
+  pio_active = true;
+  return true;
+}
+
+bool receive_word(uint32_t &word, uint32_t start) {
+  while (pio_sm_is_rx_fifo_empty(kPio, (uint)pio_sm)) {
+    if ((uint32_t)(micros() - start) >= kTimeoutUs) return false;
+  }
+  word = pio_sm_get(kPio, (uint)pio_sm);
+  return true;
+}
+
+bool write_cycle(uint8_t byte, bool address) {
+  if (!enable_pio()) return false;
+  if (address) address_sent = byte;
+  const uint32_t command = ((uint32_t)byte << gpu_bus_write_data_shift) |
+                           (0xffu << gpu_bus_write_dirs_shift) |
+                           ((uint32_t)address << gpu_bus_write_address_shift);
+  // Each transfer waits for its completion, so the TX FIFO has room.
+  const uint32_t start = micros();
+  pio_sm_put(kPio, (uint)pio_sm, command);
+  uint32_t pads;
+  if (!receive_word(pads, start)) {
+    if (address) address_sensed = read_data_pins();
+    release_bus();
+    return false;
+  }
+  if (address) address_sensed = (uint8_t)pads;
+  service();
+  return true;
+}
+
 bool select(unsigned address) {
   if ((int)address == selected_address) return true;
   if (!write_cycle((uint8_t)address, true)) return false;
@@ -93,24 +182,19 @@ bool write_byte(void *, uint8_t byte) {
 }
 bool read_at(unsigned address, uint8_t *out) {
   if (!select(address)) return false;
-  digitalWrite(kWrite, HIGH); digitalWrite(kRead, HIGH); release_data(); low();
-  digitalWrite(kAddress, HIGH); digitalWrite(kRead, LOW); delayMicroseconds(kClockPhaseUs);
-  read_pre_valid = digitalRead(kValid) == HIGH; // No edge has requested this read yet.
-  read_edges = 0;
   const uint32_t start = micros();
-  do {
-    high(); ++read_edges;
-    const bool valid = digitalRead(kValid) == HIGH;
-    if (valid) {
-      // Keep RD_N asserted and HCLK HIGH throughout both observations.
-      data_pins = read_data_pins();
-      *out = data_pins;
-      digitalWrite(kRead, HIGH); // End this read before another rising edge.
-    }
-    low();
-    if (valid) { service(); return true; }
-  } while ((uint32_t)(micros() - start) < kTimeoutUs);
-  release_bus(); return false;
+  pio_sm_put(kPio, (uint)pio_sm, 1u);
+  uint32_t pre, result;
+  if (!receive_word(pre, start) || !receive_word(result, start)) {
+    release_bus();
+    return false;
+  }
+  read_pre_valid = (pre & (1u << gpu_bus_valid_bit)) != 0;
+  read_edges = (0u - result) & ((1u << gpu_bus_edge_bits) - 1u);
+  data_pins = (uint8_t)(result >> gpu_bus_edge_bits);
+  *out = data_pins;
+  service();
+  return true;
 }
 bool read_byte(void *, uint8_t *out) { return read_at(0, out); }
 // Offline diagnostics never run while the client is online or a hold is active.
@@ -136,7 +220,7 @@ uint32_t now_ms(void *) { return millis(); }
 bool gpu_display_begin() {
   // Assert reset first: pinMode(OUTPUT_12MA) initially drives LOW. Keep GPU
   // logic reset while the other control outputs are configured.
-  read_held = false; drive_held = false;
+  if (pio_active || read_held || drive_held) release_bus();
   pinMode(kReset, OUTPUT_12MA); digitalWrite(kReset, LOW);
   delayMicroseconds(1);
   for (unsigned pin : {kClock, kWrite, kAbort, kAddress, kRead}) {
@@ -160,10 +244,14 @@ bool gpu_display_begin() {
 }
 
 void gpu_display_present() {
-  if (gpu.ready() && !gpu.terminal_present(gridBuffer_char, char_grid_buffer_V_draw_offset)) {
+  if (!gpu.ready()) return;
+  gpu_ui_prepare_terminal(gpu);
+  if (!gpu.terminal_present(gridBuffer_char, char_grid_buffer_V_draw_offset)) {
     release_bus(); gpu_display_diagnostics(); gpu_display_regs();
   }
 }
+
+NanoGpu &gpu_display_client() { return gpu; }
 
 namespace {
 uint32_t le32(const uint8_t *p) {
@@ -349,6 +437,9 @@ void gpu_display_hold() {
   Serial.println("; expected=0/0");
   // Force a fresh address latch. This is a sideband read, never a packet.
   if (!select(65)) { Serial.println("GPU HOLD: address timeout; bus released."); return; }
+  // PIO completed the address latch. Keep that FPGA address while returning
+  // the pads to SIO for the manual read hold.
+  release_bus();
   digitalWrite(kWrite, HIGH); digitalWrite(kRead, HIGH); release_data(); low();
   digitalWrite(kAddress, HIGH); digitalWrite(kRead, LOW); delayMicroseconds(kClockPhaseUs);
   const uint32_t start = micros();

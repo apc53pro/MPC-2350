@@ -9,6 +9,8 @@ enum PinMode { INPUT, OUTPUT, OUTPUT_12MA };
 
 namespace mock_gpio {
 inline bool level[48]{}, output[48]{};
+inline bool sio_level[48]{}, sio_output[48]{};
+inline bool pio_level[48]{}, pio_output[48]{}, pio_mux[48]{};
 inline unsigned drive[48]{};
 inline bool ready = false, valid = false;
 inline bool valid_follows_clock = false;
@@ -16,6 +18,7 @@ inline bool swap_d5_d6 = false;
 inline uint8_t status[128]{};
 inline unsigned address = 0, reset_clock_edges = 0;
 inline unsigned clock_rises = 0;
+inline unsigned write_wait_edges = 0, packet_writes = 0;
 // Like nano_host_link: RVALID needs a read edge; register 1 waits for a
 // core-clock snapshot handshake (4 HCLK rising edges in RTL simulation).
 inline unsigned read_rises = 0, status_refresh_rises = 4;
@@ -52,7 +55,11 @@ inline void set_level(unsigned pin, bool value) {
     if (!level[36]) ++reset_clock_edges;
     if (!level[17] && now - write_assert_us < min_write_setup_us)
       min_write_setup_us = now - write_assert_us;
-    if (!level[38]) ++read_rises;
+    if (!level[38]) {
+      assert(level[17] && level[37]);
+      for (unsigned bit = 0; bit < 8; ++bit) assert(!output[18 + bit]);
+      ++read_rises;
+    }
     if (!level[38] && now - read_assert_us < min_read_setup_us)
       min_read_setup_us = now - read_assert_us;
     if (level[36] && ready && now >= configuration_ready_us && !level[17] && level[38]) {
@@ -61,15 +68,21 @@ inline void set_level(unsigned pin, bool value) {
         assert(output[18 + i]);
         byte |= (uint8_t)(level[18 + i] << i);
       }
-      if (!level[37]) {
+      if (write_wait_edges) --write_wait_edges;
+      else if (!level[37]) {
         if (!latch_first_only || !latched_since_reset)
           address = (uint8_t)((wire_byte(byte) & latch_and) | latch_or);
         latched_since_reset = true;
       }
-      else last_data_write = wire_byte(byte);
+      else { last_data_write = wire_byte(byte); ++packet_writes; }
     }
   }
   level[pin] = value;
+}
+
+inline void update_pin(unsigned pin) {
+  output[pin] = pio_mux[pin] ? pio_output[pin] : sio_output[pin];
+  set_level(pin, pio_mux[pin] ? pio_level[pin] : sio_level[pin]);
 }
 }
 
@@ -77,13 +90,16 @@ inline void pinMode(unsigned pin, PinMode mode) {
   assert(pin < __GPIOCNT);
   // Match installed Arduino-Pico: gpio_init clears the output latch, so
   // pinMode(OUTPUT) after digitalWrite(HIGH) would lose the HIGH value.
-  mock_gpio::output[pin] = mode != INPUT;
+  mock_gpio::pio_mux[pin] = false;
+  mock_gpio::sio_output[pin] = mode != INPUT;
   if (mode != INPUT) mock_gpio::drive[pin] = mode == OUTPUT_12MA ? 12 : 4;
-  mock_gpio::set_level(pin, false);
+  mock_gpio::sio_level[pin] = false;
+  mock_gpio::update_pin(pin);
 }
 inline void digitalWrite(unsigned pin, PinStatus value) {
   assert(pin < __GPIOCNT);
-  mock_gpio::set_level(pin, value == HIGH);
+  mock_gpio::sio_level[pin] = value == HIGH;
+  if (!mock_gpio::pio_mux[pin]) mock_gpio::update_pin(pin);
 }
 inline PinStatus digitalRead(unsigned pin) {
   assert(pin < __GPIOCNT);
@@ -92,7 +108,7 @@ inline PinStatus digitalRead(unsigned pin) {
   if (pin >= 18 && pin < 26 && !mock_gpio::output[pin] &&
       !mock_gpio::level[38] && mock_gpio::level[17] && mock_gpio::level[37])
     value = ((mock_gpio::wire_byte(mock_gpio::status[mock_gpio::address]) >> (pin - 18)) & 1u) != 0;
-  else if (pin == 39) value = configured && mock_gpio::ready && mock_gpio::level[38];
+  else if (pin == 39) value = configured && mock_gpio::ready && mock_gpio::level[38] && !mock_gpio::write_wait_edges;
   else if (pin == 40) value = mock_gpio::valid_follows_clock ? mock_gpio::level[16] :
       configured && mock_gpio::valid && !mock_gpio::level[38] &&
       mock_gpio::level[17] && mock_gpio::level[37] &&

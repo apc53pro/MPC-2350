@@ -17,7 +17,17 @@ class NanoGpu {
 public:
   bool begin(NanoGpuTransport transport, const uint16_t font[128][16]);
   bool terminal_present(const char grid[40][60], int scroll);
+  void terminal_pointer(int32_t x, int32_t y, bool visible);
+  bool get_caps(uint8_t *out);
+  bool get_status(uint8_t *out);
+  bool write_heap(uint32_t address, const uint8_t *data, uint32_t count);
+  bool submit_pass(uint32_t address);
+  bool copy_rect(const uint32_t words[14]);
+  bool fence(uint32_t token);
+  bool present(uint32_t target, uint32_t token);
   bool read_memory(uint32_t address, uint32_t length, uint8_t *out);
+  uint32_t back_target() const { return front_ ^ 1u; }
+  static constexpr uint32_t kUserHeap = 0x280000u;
   bool ready() const { return online_; }
   const char *error() const { return error_; }
   uint32_t presents() const { return presents_; }
@@ -45,14 +55,20 @@ private:
   // A buffer is unknown until a frame has been drawn into it this session.
   char contents_[2][1200]{};
   bool known_[2]{};
+  struct Pointer {
+    int16_t x = -1, y = -1;
+    bool visible() const { return x >= 0; }
+    bool covers(unsigned cell) const;
+    bool operator==(const Pointer &other) const { return x == other.x && y == other.y; }
+  };
+  Pointer pointer_, drawn_pointer_[2];
+  bool pointer_uploaded_ = false;
   // Copy cost in glyph-copy equivalents when choosing how to fill the back.
   static constexpr unsigned kCopyCost = 16;
   // Large work buffers live in the object, never on the stack: each RP2350
   // core has only a 4 KiB stack bank, and Core 0's bank sits directly above
   // Core 1's, so a Core 0 overflow silently corrupts and halts Core 1.
   char next_[1200]{};
-  char base_[1200]{};
-  bool base_known_[1200]{};
   uint8_t packet_[1024]{};
   uint8_t row_[512]{};
   uint8_t readback_[520]{};
@@ -63,9 +79,12 @@ private:
   bool reply(uint16_t opcode, uint32_t sequence, uint32_t token,
              uint8_t *extra, uint32_t count);
   bool upload(uint32_t address, const uint8_t *data, uint32_t count);
+  bool draw_pointer(uint32_t target);
+  bool query(uint16_t opcode, uint8_t *out);
+  bool send_copy(const uint32_t words[14]);
   bool copy(uint32_t target, uint32_t source_x, uint32_t source_y,
             uint32_t x, uint32_t y, uint32_t width, uint32_t height, bool font);
-  bool fence();
+  bool wait_fence(uint32_t token);
 };
 
 #endif

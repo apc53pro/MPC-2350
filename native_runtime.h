@@ -51,6 +51,7 @@ bool native_request_focus_next();
 bool native_request_toggle_mode();
 void native_scheduler_begin();
 void native_scheduler_poll();
+bool native_serial_dispatch(const char *line);
 void native_scheduler_print_diagnostics();
 void native_memory_trace_enable(bool enabled);
 enum NativeCore1Stage : uint32_t

@@ -1,0 +1,26 @@
+#ifndef NARM_GPU_TCH
+#define NARM_GPU_TCH
+
+// Native GPU interface 1.0, firmware API 1.18.
+#define NARM_GPU_GET_CAPS 0x0001
+#define NARM_GPU_GET_STATUS 0x0002
+#define NARM_GPU_WRITE_HEAP 0x0003
+#define NARM_GPU_SUBMIT_PASS 0x0004
+#define NARM_GPU_COPY_RECT 0x0005
+#define NARM_GPU_FENCE 0x0006
+#define NARM_GPU_PRESENT 0x0007
+#define NARM_GPU_READ_MEMORY 0x0008
+#define NARM_GPU_BACK_TARGET 0x0100
+
+#define NARM_GPU_USER_HEAP 0x280000
+#define NARM_GPU_SDRAM_BYTES 0x800000
+#define NARM_GPU_QUERY_BYTES 64
+#define NARM_GPU_COPY_WORDS 14
+#define NARM_GPU_MAX_UPLOAD_BYTES 956
+#define NARM_GPU_MAX_READ_BYTES 512
+
+// Arguments are native 32-bit words. GPU records in uploaded byte arrays
+// use the little-endian layouts from the Nano GPU control guide.
+int narm_gpu_submit(unsigned command, const unsigned *args, unsigned arg_words);
+
+#endif

@@ -1,4 +1,4 @@
-// Compile the actual board glue against Arduino GPIO/time stubs; no board build.
+// Compile the actual board glue against GPIO/PIO/time stubs; no board build.
 #define GLOBALS_H
 #define AUDIO_RUNTIME_H
 #define USB_STORAGE_MODE_H
@@ -26,15 +26,24 @@ void usb_storage_poll() {}
 void audio_core0_poll() {}
 
 #include "../../gpu_display.cpp"
+void gpu_ui_prepare_terminal(NanoGpu &) {}
 
 void reset_fixture(bool ready, bool valid) {
+  mock_pio2 = {};
+  pio_sm = -1; pio_active = false; selected_address = -1;
   memset(mock_gpio::level, 0, sizeof(mock_gpio::level));
   memset(mock_gpio::output, 0, sizeof(mock_gpio::output));
+  memset(mock_gpio::sio_level, 0, sizeof(mock_gpio::sio_level));
+  memset(mock_gpio::sio_output, 0, sizeof(mock_gpio::sio_output));
+  memset(mock_gpio::pio_level, 0, sizeof(mock_gpio::pio_level));
+  memset(mock_gpio::pio_output, 0, sizeof(mock_gpio::pio_output));
+  memset(mock_gpio::pio_mux, 0, sizeof(mock_gpio::pio_mux));
   memset(mock_gpio::drive, 0, sizeof(mock_gpio::drive));
   memset(mock_gpio::status, 0, sizeof(mock_gpio::status));
   mock_gpio::status[65] = 2; mock_gpio::status[66] = 8; mock_gpio::status[67] = 32;
   mock_gpio::ready = ready; mock_gpio::valid = valid;
   mock_gpio::valid_follows_clock = false; mock_gpio::clock_rises = 0;
+  mock_gpio::write_wait_edges = 0; mock_gpio::packet_writes = 0;
   mock_gpio::swap_d5_d6 = false; mock_gpio::read_rises = 0;
   mock_gpio::latch_first_only = false; mock_gpio::latched_since_reset = false;
   mock_gpio::latch_and = 0xff; mock_gpio::latch_or = 0;
@@ -48,10 +57,13 @@ void reset_fixture(bool ready, bool valid) {
 
 void check_failure_state() {
   assert(!gpu.ready());
+  assert(!pio_active && !mock_pio2.enabled);
   assert(mock_gpio::output[36] && mock_gpio::level[36]);
   assert(mock_gpio::level[17] && mock_gpio::level[37] && mock_gpio::level[38]);
   assert(!mock_gpio::level[16]);
   for (unsigned pin = 18; pin < 26; ++pin) assert(!mock_gpio::output[pin]);
+  for (unsigned pin = 16; pin < 26; ++pin) assert(!mock_gpio::pio_mux[pin]);
+  assert(!mock_gpio::pio_mux[37] && !mock_gpio::pio_mux[38]);
   assert(!mock_gpio::output[39] && !mock_gpio::output[40]);
   for (unsigned pin : {16u, 17u, 35u, 36u, 37u, 38u}) assert(mock_gpio::drive[pin] == 12);
   assert(mock_gpio::reset_clock_edges == 32);
@@ -70,6 +82,12 @@ void check_failure_state() {
 }
 
 int main() {
+  reset_fixture(true, true);
+  mock_pio2.claimed[1] = true;
+  assert(!gpu_display_begin()); check_failure_state();
+  assert(mock_pio2.claimed[1] && mock_pio2.base == 0 && mock_pio2.length == 0);
+  assert(mock_gpio::clock_rises == 96); // Reset/idle clocks only. No GPIO transfer fallback.
+  assert(Serial.text.find("GPU PIO: PIO2 unavailable.") != std::string::npos);
   reset_fixture(false, false);
   assert(!gpu_display_begin()); check_failure_state(); // WREADY timeout.
   assert(mock_gpio::now >= 1250000);
@@ -106,10 +124,17 @@ int main() {
   memset(mock_gpio::status + 64, 0, 16);
   assert(!gpu_display_begin()); check_failure_state();
   assert(std::string(gpu.error()) == "invalid capability readback");
+  assert(select(0));
+  const unsigned rises_before_retry = mock_gpio::clock_rises;
+  const unsigned writes_before_retry = mock_gpio::packet_writes;
+  mock_gpio::write_wait_edges = 3;
+  assert(write_byte(nullptr, 0xa5));
+  assert(mock_gpio::clock_rises == rises_before_retry + 4);
+  assert(mock_gpio::packet_writes == writes_before_retry + 1 && mock_gpio::last_data_write == 0xa5);
   // All byte patterns verify bit order and data-direction changes. The
-  // Arduino pinMode output-latch clearing is deliberately modeled above.
+  // mock executes the assembled PIO instruction words for each byte.
   for (unsigned byte = 0; byte < 256; ++byte) {
-    assert(write_cycle((uint8_t)byte, false));
+    assert(write_byte(nullptr, (uint8_t)byte));
     assert(mock_gpio::last_data_write == byte);
     for (unsigned pin = 18; pin < 26; ++pin) assert(!mock_gpio::output[pin]);
     mock_gpio::status[64] = (uint8_t)byte;
@@ -125,6 +150,7 @@ int main() {
   unsigned edges = mock_gpio::clock_rises;
   gpu_display_hold();
   assert(read_held && !gpu.ready() && mock_gpio::address == 65 && data_pins == 2);
+  assert(!pio_active && !mock_pio2.enabled);
   assert(mock_gpio::clock_rises == edges + 3); // Idle check, address, read.
   assert(mock_gpio::level[16] && !mock_gpio::level[38]);
   assert(mock_gpio::level[17] && mock_gpio::level[37] && mock_gpio::level[36]);
@@ -299,7 +325,7 @@ int main() {
   assert(!gpu_display_begin()); // RESET also ends a drive hold.
   assert(!drive_held && mock_gpio::level[17] && mock_gpio::level[37]);
   for (unsigned pin = 18; pin < 26; ++pin) assert(!mock_gpio::output[pin]);
-  std::cout << "PASS Arduino GPIO glue: 256 write/read byte patterns, configuration startup wait, reset pulse, timeouts, "
+  std::cout << "PASS PIO transport and GPIO diagnostics: 256 write/read byte patterns, WREADY retry, PIO allocation failure, configuration startup wait, reset pulse, timeouts, "
                "startup fault and malformed reply leave reset HIGH and data released; "
                "startup diagnostics, address echo, capability probe, held reads, idle handshake check, "
                "release/reset transitions, D5/D6 swap and RVALID edge-count signatures, address-latch tests, edge-free drive holds and clock/setup phase minima verified.\n";

@@ -1,0 +1,59 @@
+; Nano GPU host byte transport. PIO2 GPIO base is 16.
+; Side-set bits 0/1 are HCLK/WR_N. SET bits 0/1 are ALE_N/RD_N.
+; OUT and IN start at D0. JMP PIN samples WREADY.
+;
+; TX word bit 0 selects read (1) or write (0). A write supplies the byte in
+; bits 1..8, data directions in bits 9..16, and address-select in bit 17.
+; A write returns the driven pad sample. A read returns the pre-edge pad
+; sample, then the data byte in bits 24..31 and negated edge count below it.
+; The SM runs at at most 2 MHz. Four cycles give each phase at least 2 us.
+.program gpu_bus
+.pio_version 1
+.side_set 2
+.define public valid_bit 22
+.define public edge_bits 24
+.define public write_data_shift 1
+.define public write_dirs_shift 9
+.define public write_address_shift 17
+
+.wrap_target
+    pull block          side 2
+    out x, 1            side 2
+    jmp !x write        side 2
+
+    set pins, 1         side 2 [3]  ; Read asserted with the data bus released.
+    mov isr, pins       side 2
+    push block          side 2      ; RVALID before the first rising edge.
+    mov y, ~null        side 2      ; Negative edge count, starting at -1.
+read_edge:
+    nop                 side 3 [3]
+    mov isr, pins       side 3      ; Sample data and RVALID together.
+    mov osr, isr        side 3
+    out null, valid_bit side 3
+    out x, 1            side 3
+    jmp !x read_retry   side 3
+    in y, edge_bits     side 3
+    jmp release        side 3
+read_retry:
+    jmp y-- read_edge   side 2 [3]
+    jmp read_edge       side 2      ; A counter wrap cannot fall into write.
+
+write:
+    out pins, 8         side 2      ; Load the data latch before enabling outputs.
+    out pindirs, 8      side 2
+    out x, 1            side 2
+    jmp !x write_wait   side 2
+    set pins, 2         side 2      ; Address cycle keeps RD_N inactive.
+write_wait:
+    nop                 side 0 [3]
+    jmp pin accepted    side 0      ; Sample WREADY before the rising edge.
+    jmp write_wait      side 1 [3]  ; Advance host-domain FIFO synchronizers.
+accepted:
+    mov isr, pins       side 0      ; Address-pad echo before the latch edge.
+    nop                 side 1 [3]
+release:
+    set pins, 3         side 2 [3]  ; Deassert all strobes before releasing data.
+    mov osr, null       side 2
+    out pindirs, 8      side 2
+    push block          side 2      ; Completion always leaves the bus idle.
+.wrap

@@ -4,6 +4,11 @@
 namespace {
 constexpr uint32_t kHeap = 0x258000u;
 constexpr uint32_t kMemory = 0x800000u;
+constexpr uint32_t kPointer = kHeap + 65536u;
+constexpr unsigned kPointerWidth = 6, kPointerHeight = 9;
+constexpr char kArrow[kPointerHeight][kPointerWidth + 1] = {
+  "#", "##", "#+#", "#++#", "#+++#", "#++++#", "#++###", "#####", "##",
+};
 void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 void put32(uint8_t *p, uint32_t v) {
   for (unsigned i = 0; i < 4; ++i) p[i] = (uint8_t)(v >> (i * 8));
@@ -110,6 +115,7 @@ bool NanoGpu::upload(uint32_t address, const uint8_t *data, uint32_t count) {
 
 bool NanoGpu::begin(NanoGpuTransport transport, const uint16_t font[128][16]) {
   bus_ = transport; online_ = false; known_[0] = known_[1] = false;
+  pointer_uploaded_ = false;
   sequence_ = 1; epoch_ = 0; front_ = 0; presents_ = 0;
   error_ = "not ready";
   if (!bus_.write || !bus_.read || !bus_.read_register || !bus_.now_ms || !font)
@@ -155,7 +161,7 @@ bool NanoGpu::begin(NanoGpuTransport transport, const uint16_t font[128][16]) {
       }
       if (!upload(kHeap + y * 512, row, sizeof(row_))) return false;
     }
-    if (!fence()) return false;
+    if (!wait_fence(sequence_)) return false;
     online_ = true; error_ = "none"; return true;
   }
   return fail("GPU initialization timeout");
@@ -163,24 +169,114 @@ bool NanoGpu::begin(NanoGpuTransport transport, const uint16_t font[128][16]) {
 
 bool NanoGpu::copy(uint32_t target, uint32_t source_x, uint32_t source_y,
                    uint32_t x, uint32_t y, uint32_t width, uint32_t height, bool font) {
-  uint8_t payload[56] = {};
-  put32(payload, font ? 1 : 0); put32(payload + 4, font ? 0 : front_);
-  put32(payload + 8, target); put32(payload + 12, source_x);
-  put32(payload + 16, source_y); put32(payload + 20, x); put32(payload + 24, y);
-  put32(payload + 28, width); put32(payload + 32, height);
-  if (font) {
-    put32(payload + 36, kHeap); put32(payload + 40, 256);
-    put32(payload + 44, 128); put32(payload + 48, 512);
-  }
+  const uint32_t words[14] = {
+    font ? 1u : 0u, font ? 0u : front_, target, source_x, source_y, x, y, width, height,
+    font ? kHeap : 0u, font ? 256u : 0u, font ? 128u : 0u, font ? 512u : 0u, 0u,
+  };
+  return send_copy(words);
+}
+
+bool NanoGpu::send_copy(const uint32_t words[14]) {
+  uint8_t payload[56];
+  for (unsigned i = 0; i < 14; ++i) put32(payload + i * 4, words[i]);
   uint32_t sequence;
   return send(5, payload, sizeof(payload), sequence);
 }
 
-bool NanoGpu::fence() {
+bool NanoGpu::wait_fence(uint32_t token) {
   uint8_t payload[4]; uint32_t sequence;
-  const uint32_t token = sequence_;
   put32(payload, token);
   return send(6, payload, sizeof(payload), sequence) && reply(6, sequence, token, nullptr, 0);
+}
+
+bool NanoGpu::query(uint16_t opcode, uint8_t *out) {
+  if (!online_ || !out) return false;
+  uint32_t sequence;
+  return send(opcode, nullptr, 0, sequence) && reply(opcode, sequence, 0, out, 64);
+}
+
+bool NanoGpu::get_caps(uint8_t *out) { return query(1, out); }
+bool NanoGpu::get_status(uint8_t *out) { return query(2, out); }
+
+bool NanoGpu::write_heap(uint32_t address, const uint8_t *data, uint32_t count) {
+  if (!online_ || !data || !count || address < kUserHeap ||
+      (uint64_t)address + count > kMemory) return false;
+  return upload(address, data, count);
+}
+
+bool NanoGpu::submit_pass(uint32_t address) {
+  if (!online_ || (address & 3u) || address < kUserHeap || address > kMemory - 32u)
+    return false;
+  known_[back_target()] = false;
+  uint8_t payload[4];
+  uint32_t sequence;
+  put32(payload, address);
+  return send(4, payload, sizeof(payload), sequence);
+}
+
+bool NanoGpu::copy_rect(const uint32_t words[14]) {
+  if (!online_ || !words || words[2] != back_target() || words[7] > INT32_MAX ||
+      words[8] > INT32_MAX || words[13] != 0) return false;
+  if (words[0] == 0) {
+    if (words[1] > 1 || words[9] || words[10] || words[11] || words[12]) return false;
+  } else if (words[0] == 1) {
+    const uint32_t base = words[9], width = words[10], height = words[11], pitch = words[12];
+    if (words[1] || base < kUserHeap || (base & 3u) || !width || width > 1024 ||
+        !height || height > 1024 || (pitch & 3u) || pitch < 2 * width ||
+        (uint64_t)base + (uint64_t)pitch * height > kMemory) return false;
+  } else {
+    return false;
+  }
+  known_[back_target()] = false;
+  return send_copy(words);
+}
+
+bool NanoGpu::fence(uint32_t token) { return online_ && wait_fence(token); }
+
+bool NanoGpu::present(uint32_t target, uint32_t token) {
+  if (!online_ || target != back_target()) return false;
+  uint8_t payload[8];
+  uint32_t sequence;
+  put32(payload, target); put32(payload + 4, token);
+  if (!send(7, payload, sizeof(payload), sequence) ||
+      !reply(7, sequence, token, nullptr, 0)) return false;
+  front_ = target;
+  ++presents_;
+  return true;
+}
+
+bool NanoGpu::Pointer::covers(unsigned cell) const {
+  const int left = (int)(cell % 40) * 16, top = (int)(cell / 40) * 16;
+  return visible() && x < left + 16 && x + (int)kPointerWidth > left &&
+         y < top + 16 && y + (int)kPointerHeight > top;
+}
+
+void NanoGpu::terminal_pointer(int32_t x, int32_t y, bool visible) {
+  pointer_ = {};
+  if (visible && x >= 0 && x < 640 && y >= 0 && y < 480)
+    pointer_ = {(int16_t)x, (int16_t)y};
+}
+
+bool NanoGpu::draw_pointer(uint32_t target) {
+  if (!pointer_.visible()) return true;
+  if (!pointer_uploaded_) {
+    for (unsigned y = 0; y < kPointerHeight; ++y)
+      for (unsigned x = 0; x < kPointerWidth; ++x)
+        put16(row_ + 2 * (y * kPointerWidth + x), kArrow[y][x] == '+' ? 0xffffu : 0u);
+    if (!upload(kPointer, row_, 2 * kPointerWidth * kPointerHeight)) return false;
+    pointer_uploaded_ = true;
+  }
+  // The opaque pixels in each row form one contiguous span. Copying the
+  // spans leaves the underlying glyphs visible outside the silhouette.
+  for (unsigned y = 0; y < kPointerHeight; ++y) {
+    const uint32_t words[14] = {
+      1, 0, target, 0, y, (uint32_t)pointer_.x, (uint32_t)pointer_.y + y,
+      (uint32_t)strlen(kArrow[y]), 1, kPointer, kPointerWidth, kPointerHeight,
+      2 * kPointerWidth, 0,
+    };
+    if (!send_copy(words)) return false;
+  }
+  return true;
 }
 
 bool NanoGpu::terminal_present(const char grid[40][60], int scroll) {
@@ -192,24 +288,26 @@ bool NanoGpu::terminal_present(const char grid[40][60], int scroll) {
     if (c < 32 || c > 159) c = (uint8_t)'?';
     next[y * 40 + x] = (char)c;
   }
-  if (known_[front_] && !memcmp(next, contents_[front_], sizeof(next_))) return true;
+  if (known_[front_] && pointer_ == drawn_pointer_[front_] &&
+      !memcmp(next, contents_[front_], sizeof(next_))) return true;
   const uint32_t back = front_ ^ 1u;
   // The back buffer still shows the frame before last. Choose the cheapest
   // way to make it equal `next`: keep it and draw differing glyphs, or first
   // copy the front buffer shifted up by `shift` rows (0 = aligned; >0 serves
   // scrolling), leaving the bottom `shift` rows as the back already had them.
   // Cells of an unknown buffer always count as different.
+  // A copied pointer footprint is dirty even when its glyph matches.
+  const bool back_known = known_[back];
+  auto matches = [&](unsigned cell, int shift) {
+    if (shift >= 0 && cell / 40 + (unsigned)shift < 30) {
+      const unsigned src = cell + (unsigned)shift * 40;
+      return contents_[front_][src] == next[cell] && !drawn_pointer_[front_].covers(src);
+    }
+    return back_known && contents_[back][cell] == next[cell] && !drawn_pointer_[back].covers(cell);
+  };
   auto cost_of = [&](int shift) {
     unsigned cost = shift < 0 ? 0 : kCopyCost;
-    for (unsigned i = 0; i < 1200; ++i) {
-      const unsigned row = i / 40;
-      bool same;
-      if (shift >= 0 && row + (unsigned)shift < 30)
-        same = contents_[front_][i + (unsigned)shift * 40] == next[i];
-      else
-        same = known_[back] && contents_[back][i] == next[i];
-      cost += !same;
-    }
+    for (unsigned i = 0; i < 1200; ++i) cost += !matches(i, shift);
     return cost;
   };
   int plan = -1;
@@ -219,35 +317,20 @@ bool NanoGpu::terminal_present(const char grid[40][60], int scroll) {
       const unsigned cost = cost_of(shift);
       if (cost < best) { best = cost; plan = shift; }
     }
-  char *base = base_;
-  bool *base_known = base_known_;
-  for (unsigned i = 0; i < 1200; ++i) {
-    const unsigned row = i / 40;
-    if (plan >= 0 && row + (unsigned)plan < 30) {
-      base[i] = contents_[front_][i + (unsigned)plan * 40]; base_known[i] = true;
-    } else {
-      base[i] = contents_[back][i]; base_known[i] = known_[back];
-    }
-  }
   // The back is invalid from here until this frame is fully drawn.
   known_[back] = false;
   if (plan >= 0 && !copy(back, 0, (uint32_t)plan * 16, 0, 0, 640, (30u - (uint32_t)plan) * 16, false))
     return false;
   for (unsigned i = 0; i < 1200; ++i) {
-    if (base_known[i] && base[i] == next[i]) continue;
+    if (matches(i, plan)) continue;
     const unsigned glyph = (uint8_t)next[i] - 32u;
     if (!copy(back, (glyph % 16) * 16, (glyph / 16) * 16,
               (i % 40) * 16, (i / 40) * 16, 16, 16, true)) return false;
   }
+  if (!draw_pointer(back)) return false;
+  drawn_pointer_[back] = pointer_;
   memcpy(contents_[back], next, sizeof(next_)); known_[back] = true;
-  if (!fence()) return false;
-  uint8_t payload[8]; uint32_t sequence;
-  const uint32_t token = sequence_;
-  put32(payload, back); put32(payload + 4, token);
-  if (!send(7, payload, sizeof(payload), sequence) ||
-      !reply(7, sequence, token, nullptr, 0)) return false;
-  front_ = back; ++presents_;
-  return true;
+  return fence(sequence_) && present(back, sequence_);
 }
 
 bool NanoGpu::read_memory(uint32_t address, uint32_t length, uint8_t *out) {

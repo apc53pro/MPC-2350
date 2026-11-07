@@ -29,38 +29,31 @@ enum NativeSerialCommand
   NARM_SERIAL_CLOSE, NARM_SERIAL_HELP, NARM_SERIAL_CAPTURE_TEST, NARM_SERIAL_INVALID
 };
 
-class NativeSerialCommandParser
+inline NativeSerialCommand narm_serial_command(const char *line)
 {
-public:
-  NativeSerialCommand feed(uint8_t byte)
+  if (!line) return NARM_SERIAL_NONE;
+  const auto upper = [](char ch) {
+    return ch >= 'a' && ch <= 'z' ? (char)(ch - 'a' + 'A') : ch;
+  };
+  const char prefix[] = "NARM";
+  for (unsigned i = 0; i < 4; ++i)
   {
-    if (byte == '\r' || byte == '\n')
-    {
-      if (discarding_) { reset(); return NARM_SERIAL_INVALID; }
-      if (!used_) return NARM_SERIAL_NONE;
-      line_[used_] = 0;
-      NativeSerialCommand command = NARM_SERIAL_INVALID;
-      if (!strcmp(line_, "NARM DIAG")) command = NARM_SERIAL_DIAG;
-      else if (!strcmp(line_, "NARM FOCUS")) command = NARM_SERIAL_FOCUS;
-      else if (!strcmp(line_, "NARM CLOSE")) command = NARM_SERIAL_CLOSE;
-      else if (!strcmp(line_, "NARM HELP")) command = NARM_SERIAL_HELP;
-      else if (!strcmp(line_, "NARM CAPTURE TEST")) command = NARM_SERIAL_CAPTURE_TEST;
-      reset();
-      return command;
-    }
-    if (discarding_) return NARM_SERIAL_NONE;
-    if (byte < 32u || byte > 126u || used_ == sizeof(line_) - 1u)
-      discarding_ = true;
-    else
-      line_[used_++] = byte >= 'a' && byte <= 'z' ? byte - 'a' + 'A' : byte;
-    return NARM_SERIAL_NONE;
+    if (upper(line[i]) != prefix[i]) return NARM_SERIAL_NONE;
   }
-
-private:
-  char line_[32] = {};
-  uint8_t used_ = 0u;
-  bool discarding_ = false;
-  void reset() { used_ = 0u; discarding_ = false; }
-};
+  if (line[4] != 0 && line[4] != ' ') return NARM_SERIAL_NONE;
+  char command[32] = {};
+  for (unsigned i = 0; line[i]; ++i)
+  {
+    if (i == sizeof(command) - 1u || line[i] < 32 || line[i] > 126)
+      return NARM_SERIAL_INVALID;
+    command[i] = upper(line[i]);
+  }
+  if (!strcmp(command, "NARM DIAG")) return NARM_SERIAL_DIAG;
+  if (!strcmp(command, "NARM FOCUS")) return NARM_SERIAL_FOCUS;
+  if (!strcmp(command, "NARM CLOSE")) return NARM_SERIAL_CLOSE;
+  if (!strcmp(command, "NARM HELP")) return NARM_SERIAL_HELP;
+  if (!strcmp(command, "NARM CAPTURE TEST")) return NARM_SERIAL_CAPTURE_TEST;
+  return NARM_SERIAL_INVALID;
+}
 
 #endif

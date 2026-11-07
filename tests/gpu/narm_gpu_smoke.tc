@@ -1,0 +1,77 @@
+#include "narm.tch"
+
+unsigned char query[64];
+unsigned char stamp[512];
+unsigned char readback[2];
+unsigned char pass[32];
+unsigned char tile_chunk[800];
+unsigned words[14];
+
+void put_u32(unsigned char *dst, unsigned value) {
+    dst[0] = value;
+    dst[1] = value >> 8;
+    dst[2] = value >> 16;
+    dst[3] = value >> 24;
+}
+
+int main(void) {
+    unsigned base = NARM_GPU_USER_HEAP;
+    words[0] = (unsigned)query;
+    if (narm_gpu_submit(NARM_GPU_GET_CAPS, words, 1) != 0 ||
+        query[0] != 0 || query[1] != 2 || query[2] != 8 || query[3] != 32) return 1;
+    if (narm_gpu_submit(NARM_GPU_GET_STATUS, words, 1) != 0) return 2;
+    int back = narm_gpu_submit(NARM_GPU_BACK_TARGET, words, 0);
+    if (back < 0 || back > 1) return 3;
+
+    // Empty tile lists. The GPU clears both attachments of the pass.
+    for (unsigned i = 0; i < 3; ++i) {
+        words[0] = base + 32 + i * 800;
+        words[1] = (unsigned)tile_chunk;
+        words[2] = 800;
+        if (narm_gpu_submit(NARM_GPU_WRITE_HEAP, words, 3) != 0) return 4;
+    }
+    put_u32(pass, 0x3153504e);
+    put_u32(pass + 4, back);
+    put_u32(pass + 8, 3);
+    put_u32(pass + 12, 0x001f);
+    put_u32(pass + 16, 0xffffff);
+    put_u32(pass + 20, base + 32);
+    put_u32(pass + 24, 300);
+    words[0] = base;
+    words[1] = (unsigned)pass;
+    words[2] = 32;
+    if (narm_gpu_submit(NARM_GPU_WRITE_HEAP, words, 3) != 0 ||
+        narm_gpu_submit(NARM_GPU_SUBMIT_PASS, words, 1) != 0) return 5;
+
+    // Upload and copy a 16×16 red RGB565 stamp over the blue clear.
+    for (unsigned i = 1; i < 512; i += 2) stamp[i] = 0xf8;
+    words[0] = base + 2432;
+    words[1] = (unsigned)stamp;
+    words[2] = 512;
+    if (narm_gpu_submit(NARM_GPU_WRITE_HEAP, words, 3) != 0) return 6;
+    for (unsigned j = 0; j < 14; ++j) words[j] = 0;
+    words[0] = 1;
+    words[2] = back;
+    words[5] = 312;
+    words[6] = 232;
+    words[7] = 16;
+    words[8] = 16;
+    words[9] = base + 2432;
+    words[10] = 16;
+    words[11] = 16;
+    words[12] = 32;
+    if (narm_gpu_submit(NARM_GPU_COPY_RECT, words, 14) != 0) return 7;
+    words[0] = 1;
+    if (narm_gpu_submit(NARM_GPU_FENCE, words, 1) != 0) return 8;
+    words[0] = (back == 0 ? 0 : 0x96000) + (232 * 640 + 312) * 2;
+    words[1] = 2;
+    words[2] = (unsigned)readback;
+    if (narm_gpu_submit(NARM_GPU_READ_MEMORY, words, 3) != 0 ||
+        readback[0] != 0 || readback[1] != 0xf8) return 9;
+    words[0] = back;
+    words[1] = 2;
+    if (narm_gpu_submit(NARM_GPU_PRESENT, words, 2) != 0) return 10;
+    if (narm_gpu_submit(NARM_GPU_BACK_TARGET, words, 0) != (back ^ 1)) return 11;
+    narm_sleep_ms(3000);
+    return 0;
+}
