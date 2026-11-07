@@ -180,6 +180,16 @@ Both diagnostics submit no packet and refuse while the client is online;
 `GPU_PROBE`, `GPU_SWAPTEST` and `GPU_LATCHTEST` refuse while a `GPU_HOLD` or
 `GPU_DRIVE` hold is active.
 
+**Result, 2026-11-07:** with the open-flow `nano-gpu.fs`, `GPU_LATCHTEST` gave
+`0 0 0 0; edges=4 1 1 1`. `GPU_DRIVE 55` and `2A` delivered every data bit,
+HIGH and LOW, to its Tang pin. A pin-identical bus-echo image echoed every
+address, and the unchanged GPU RTL built with Gowin EDA reached `READY` with
+`GPU_LATCHTEST: 2 8 20 2` and correct capability and status reads. This
+firmware, the wiring and the RTL are therefore working. The fault is in the
+open-source FPGA implementation of the full GPU design; the Nano-20K-GPU control
+guide records the evidence. With the Gowin build, the first terminal present
+then failed with `read timeout`; that cause is still open.
+
 The map remains **D5: GPIO23 / Core P3.9 → Tang J5.5 / FPGA pin 42** and
 **D6: GPIO24 / Core P3.12 → Tang J5.6 / FPGA pin 41**. The driver still indexes
 data as `GPIO18 + bit_index`; the local RP address echo cannot verify the Tang
