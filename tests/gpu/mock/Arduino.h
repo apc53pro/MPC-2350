@@ -42,8 +42,8 @@ inline void advance_system_ticks(unsigned ticks) {
   sub_us_ticks += ticks;
   const unsigned ticks_per_microsecond = ticks_per_us();
   if (sub_us_ticks >= ticks_per_microsecond) {
-    ++now;
-    sub_us_ticks -= ticks_per_microsecond;
+    now += sub_us_ticks / ticks_per_microsecond;
+    sub_us_ticks %= ticks_per_microsecond;
   }
 }
 

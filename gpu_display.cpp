@@ -17,13 +17,12 @@ constexpr unsigned kAbort = 35, kReset = 36, kAddress = 37, kRead = 38;
 constexpr unsigned kReady = 39, kValid = 40;
 constexpr uint32_t kTimeoutUs = 250000;
 constexpr uint32_t kConfigurationWaitMs = 1000;
-// Keep the manual reset and offline measurements on microsecond timing.
-constexpr uint32_t kClockPhaseUs = 2;
-constexpr uint32_t kHostClockHz = 25000000;
-constexpr uint32_t kHostClockDivider = 15;
-static_assert((kHostClockDivider * 256) % gpu_bus_clock_cycles == 0,
-              "HCLK divider must be exact");
-constexpr uint32_t kPioDivider256 = (kHostClockDivider * 256) / gpu_bus_clock_cycles;
+// Edit this one value to set the GPU HCLK burst rate in Hz.
+constexpr uint32_t kHostClockHz = 250000;
+static_assert(kHostClockHz > 0 && kHostClockHz <= 25000000,
+              "GPU HCLK must be between 1 Hz and 25 MHz");
+// GPIO-only reset and diagnostic pulses use whole microseconds per phase.
+constexpr uint32_t kDiagnosticPhaseUs = (500000u + kHostClockHz - 1) / kHostClockHz;
 constexpr uint64_t kIdlePins = (1ull << kWrite) | (1ull << kAddress) | (1ull << kRead);
 constexpr uint64_t kControlPins = kIdlePins | (1ull << kClock);
 constexpr uint64_t kBusPins = kControlPins | (0xffull << kData);
@@ -57,8 +56,8 @@ uint8_t read_data_pins() {
 void service() {
   if ((++service_counter & 31u) == 0) { usb_storage_poll(); audio_core0_poll(); }
 }
-void low() { digitalWrite(kClock, LOW); delayMicroseconds(kClockPhaseUs); }
-void high() { digitalWrite(kClock, HIGH); delayMicroseconds(kClockPhaseUs); }
+void low() { digitalWrite(kClock, LOW); delayMicroseconds(kDiagnosticPhaseUs); }
+void high() { digitalWrite(kClock, HIGH); delayMicroseconds(kDiagnosticPhaseUs); }
 void release_data() {
   for (unsigned bit = 0; bit < 8; ++bit) pinMode(kData + bit, INPUT);
 }
@@ -74,8 +73,9 @@ void release_bus() {
   if (pio_active) {
     pio_sm_set_enabled(kPio, (uint)pio_sm, false);
     pio_active = false;
-    // A timeout can interrupt a high phase. Finish its minimum width.
-    if (digitalRead(kClock) == HIGH) delayMicroseconds(kClockPhaseUs);
+    // A timeout can interrupt a high phase. Allow a full target period.
+    if (digitalRead(kClock) == HIGH)
+      delayMicroseconds((1000000u + kHostClockHz - 1) / kHostClockHz);
   }
   // Preload the SIO latches before switching away from PIO. Raise the
   // strobes first so an interrupted transfer cannot cause contention.
@@ -114,10 +114,20 @@ bool claim_pio() {
   return true;
 }
 
+constexpr uint32_t pio_divider_for_hclk(uint32_t system_hz, uint32_t host_hz) {
+  // Round the burst period up to whole system ticks before deriving the
+  // 16.8 divider so fractional pulse widths cannot exceed the target rate.
+  const uint64_t ticks = ((uint64_t)system_hz + host_hz - 1) / host_hz;
+  if (ticks < gpu_bus_clock_cycles) return 256; // Minimum SM divider is 1.
+  const uint64_t divider = (ticks * 256 + gpu_bus_clock_cycles - 1) / gpu_bus_clock_cycles;
+  return divider <= 0xffffffu ? (uint32_t)divider : 0;
+}
+
 bool enable_pio() {
   if (pio_active) return true;
-  if (clock_get_hz(clk_sys) > kHostClockHz * kHostClockDivider) {
-    Serial.println("GPU PIO: clk_sys too high for the /15 HCLK divider.");
+  const uint32_t divider = pio_divider_for_hclk(clock_get_hz(clk_sys), kHostClockHz);
+  if (!divider) {
+    Serial.println("GPU PIO: HCLK target is below the divider range.");
     return false;
   }
   if (pio_sm < 0 && !claim_pio()) {
@@ -133,8 +143,7 @@ bool enable_pio() {
   sm_config_set_in_pin_count(&config, kValid - kData + 1);
   sm_config_set_in_shift(&config, false, false, 32);
   sm_config_set_jmp_pin(&config, kReady);
-  // 12 state-machine cycles at a 1.25 divider give 15 clk_sys ticks.
-  sm_config_set_clkdiv_int_frac8(&config, kPioDivider256 >> 8, (uint8_t)kPioDivider256);
+  sm_config_set_clkdiv_int_frac8(&config, divider >> 8, (uint8_t)divider);
   const uint sm = (uint)pio_sm;
   if (pio_sm_init(kPio, sm, pio_offset, &config) != 0) {
     Serial.println("GPU PIO: state machine configuration failed.");
@@ -315,6 +324,7 @@ void gpu_display_diagnostics() {
   Serial.print("NANO GPU: "); Serial.print(gpu.ready() ? "READY" : "OFFLINE");
   Serial.print("; "); Serial.print(gpu.error());
   Serial.print("; presents="); Serial.print(gpu.presents());
+  Serial.print("; hclk_target_hz="); Serial.print(kHostClockHz);
   Serial.print("; reply_wait_ms="); Serial.print(gpu.last_reply_wait_ms());
   Serial.print("/"); Serial.print(gpu.max_reply_wait_ms());
   Serial.print("; RESET_N="); Serial.print(digitalRead(kReset));
@@ -422,7 +432,7 @@ void gpu_display_drive(uint8_t byte) {
   release_bus();
   write_data(byte);
   digitalWrite(kAddress, LOW); digitalWrite(kWrite, LOW);
-  delayMicroseconds(kClockPhaseUs);
+  delayMicroseconds(kDiagnosticPhaseUs);
   drive_held = true;
   Serial.print("GPU DRIVE: address phase held with 0x"); Serial.print(byte, HEX);
   Serial.println("; HCLK LOW, no clock edge; use GPU_RELEASE to end.");
@@ -448,7 +458,7 @@ void gpu_display_hold() {
   // the pads to SIO for the manual read hold.
   release_bus();
   digitalWrite(kWrite, HIGH); digitalWrite(kRead, HIGH); release_data(); low();
-  digitalWrite(kAddress, HIGH); digitalWrite(kRead, LOW); delayMicroseconds(kClockPhaseUs);
+  digitalWrite(kAddress, HIGH); digitalWrite(kRead, LOW); delayMicroseconds(kDiagnosticPhaseUs);
   const uint32_t start = micros();
   bool valid;
   for (;;) {

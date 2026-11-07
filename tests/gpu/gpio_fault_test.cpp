@@ -28,6 +28,12 @@ void audio_core0_poll() {}
 #include "../../gpu_display.cpp"
 void gpu_ui_prepare_terminal(NanoGpu &) {}
 
+static_assert(pio_divider_for_hclk(375000000, 250000) == 125 * 256);
+static_assert(pio_divider_for_hclk(375000000, 1000000) == 31 * 256 + 64);
+static_assert(pio_divider_for_hclk(375000000, 25000000) == 320);
+static_assert(pio_divider_for_hclk(375000000, 24000000) == 342);
+static_assert(pio_divider_for_hclk(375000000, 100) == 0);
+
 void reset_fixture(bool ready, bool valid) {
   mock_pio2 = {};
   pio_sm = -1; pio_active = false; selected_address = -1;
@@ -145,7 +151,7 @@ int main() {
     assert(read_at(64, &received));
     assert(received == byte);
   }
-  assert(mock_gpio::min_clock_period_ticks == 15);
+  assert(mock_gpio::min_clock_period_ticks >= 15);
   assert(mock_gpio::min_clock_phase_ticks >= 6);
   assert(mock_gpio::min_write_setup_ticks >= 7 && mock_gpio::min_write_setup_ticks != UINT64_MAX);
   assert(mock_gpio::min_read_setup_ticks >= 8 && mock_gpio::min_read_setup_ticks != UINT64_MAX);
@@ -329,17 +335,20 @@ int main() {
   assert(!gpu_display_begin()); // RESET also ends a drive hold.
   assert(!drive_held && mock_gpio::level[17] && mock_gpio::level[37]);
   for (unsigned pin = 18; pin < 26; ++pin) assert(!mock_gpio::output[pin]);
-  // Isolate each retry loop and verify its 40 ns HCLK period.
+  // Isolate both retry loops and verify the configured HCLK period.
+  const uint32_t divider = pio_divider_for_hclk(clock_get_hz(clk_sys), kHostClockHz);
+  const uint32_t period = divider * gpu_bus_clock_cycles / 256;
   assert(select(0));
+  assert(mock_pio2.config.divider == divider);
   mock_gpio::last_rise_ticks = mock_gpio::min_clock_period_ticks = UINT64_MAX;
   mock_gpio::write_wait_edges = 4;
   assert(write_byte(nullptr, 0xa5));
-  assert(mock_gpio::min_clock_period_ticks == 15);
+  assert(mock_gpio::min_clock_period_ticks >= period && mock_gpio::min_clock_period_ticks <= period + 1);
   assert(select(1));
   mock_gpio::last_rise_ticks = mock_gpio::min_clock_period_ticks = UINT64_MAX;
   uint8_t flags;
   assert(read_at(1, &flags) && read_edges == 4);
-  assert(mock_gpio::min_clock_period_ticks == 15);
+  assert(mock_gpio::min_clock_period_ticks >= period && mock_gpio::min_clock_period_ticks <= period + 1);
   std::cout << "PASS PIO transport and GPIO diagnostics: 256 write/read byte patterns, WREADY retry, PIO allocation failure, configuration startup wait, reset pulse, timeouts, "
                "startup fault and malformed reply leave reset HIGH and data released; "
                "startup diagnostics, address echo, capability probe, held reads, idle handshake check, "

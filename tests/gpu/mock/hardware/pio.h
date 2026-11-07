@@ -88,7 +88,7 @@ inline int pio_sm_init(PIO pio, unsigned sm, unsigned pc, const pio_sm_config *c
   assert(config->out_base == 18 && config->out_count == 8 && config->out_right);
   assert(config->in_base == 18 && config->in_count == 23 && !config->in_right);
   assert(config->set_base == 37 && config->set_count == 2 && config->jmp_pin == 39);
-  assert(config->divider == 320); // 1.25 x 12 PIO cycles = 15 clk_sys ticks.
+  assert(config->divider >= 256 && config->divider <= 0xffffffu);
   pio->config = *config; pio->pc = pc; pio->enabled = false; pio->pending = false;
   pio->x = pio->y = pio->isr = pio->osr = pio->fractional_ticks = 0; pio->rx.clear();
   return 0;

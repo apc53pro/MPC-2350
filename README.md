@@ -18,8 +18,10 @@ the general terminal allocation arena is 64 KiB and contains no graphics partiti
 transfers in both directions. PIO clocks HCLK, drives the bus strobes and
 data direction, and samples WREADY before a write edge and RVALID with the
 read byte. Read and write retries take 12 state-machine cycles per HCLK
-period, giving a **25 MHz burst clock** at the standard 375 MHz system
-clock. HCLK pauses between byte transactions. Core 0 encodes packets and
+period. Set `kHostClockHz` in `gpu_display.cpp` to the desired burst rate
+in Hz. It defaults to **250 kHz**. The driver computes the PIO divider
+from the RP system clock and rounds to a rate at or below the target.
+HCLK pauses between byte transactions. Core 0 encodes packets and
 exchanges commands and completion words through the PIO FIFOs with a 250 ms
 byte deadline. PS/2 remains on PIO1.
 `nano_gpu.cpp` checks
@@ -301,8 +303,9 @@ configuration to finish and issue `GPU_RESET` (or restart the RP).
 An entirely `FF` startup snapshot is reported as `all-ones startup readback`,
 not a decoded GPU fault. Use `GPU_PROBE` and check the data wiring before
 interpreting fault fields from that invalid snapshot.
-The earlier GPIO firmware was confirmed on hardware. The 25 MHz HCLK
-configuration requires an on-board run with this firmware.
+The earlier GPIO firmware was confirmed on hardware. The 25 MHz setting
+failed on the user's wired setup. `GPU_STATUS` prints the requested
+setting as `hclk_target_hz=`.
 
 ## Host checks
 
