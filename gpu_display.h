@@ -7,6 +7,8 @@ class NanoGpu;
 // The initialized board client is owned by Core 0.
 NanoGpu &gpu_display_client();
 bool gpu_display_begin();
+bool gpu_display_link_status(uint8_t out[64]);
+bool gpu_display_abort();
 void gpu_display_present();
 void gpu_display_diagnostics();
 void gpu_display_probe();

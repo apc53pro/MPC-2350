@@ -184,6 +184,27 @@ int main() {
     assert(gpu.copy_rect(copy));
     grid[0][23] = 'Y';
     assert(gpu.terminal_present(grid, 23)); verify(bus, gpu, grid, 23);
+    // An accepted asynchronous present leaves the host free while the GPU
+    // waits for vertical blank. It cannot send a duplicate or change ownership
+    // until it consumes the matching completion.
+    const auto before_async = gpu.presents();
+    const auto async_target = gpu.back_target();
+    assert(gpu.try_present(async_target, 102) == NanoGpu::FrameReady);
+    const auto async_writes = bus.writes;
+    assert(gpu.present_pending() && gpu.back_target() == async_target);
+    assert(gpu.try_present(async_target, 103) == NanoGpu::FrameBusy);
+    assert(bus.writes == async_writes && gpu.presents() == before_async);
+    const auto start = bus.model.system_statistics().core_cycles;
+    NanoGpu::FrameResult frame;
+    do {
+      for (unsigned i = 0; i < 512; ++i) bus.model.tick();
+      frame = gpu.frame_ready();
+      bus.check(start);
+    } while (frame == NanoGpu::FrameBusy);
+    assert(frame == NanoGpu::FrameReady && !gpu.present_pending());
+    assert(gpu.back_target() == (async_target ^ 1u) && bus.model.front_id() == (int)async_target);
+    assert(gpu.presents() == before_async + 1);
+    assert(gpu.get_status(bank) && bank[36] == 102);
     const auto &host = bus.model.host_statistics();
     assert(!host.setup_violations && !host.hold_violations &&
            !host.unstable_writes && !host.protocol_faults);
@@ -193,6 +214,11 @@ int main() {
     assert(!gpu.terminal_present(grid, 30) && !gpu.ready());
     assert(gpu.presents() == presents);
     assert(!gpu.terminal_present(grid, 30));
+    bus.write_timeout = false;
+    bus.model.abort();
+    assert(gpu.can_resume() && gpu.resume_after_abort());
+    assert(gpu.ready() && gpu.last_sequence() == 0 && gpu.back_target() == (bus.model.front_id() ^ 1u));
+    assert(gpu.get_status(bank) && bank[2] == 2 && gpu.last_sequence() == 1);
     for (unsigned mode = 0; mode < 2; ++mode) {
       Bus bad; bad.boot(); NanoGpu client;
       bad.read_timeout = mode == 0; bad.corrupt_reply = mode == 1;
@@ -214,6 +240,6 @@ int main() {
                  "edits across swaps, scroll, glyph fallback, packet readback, latched failures, "
                  "status-polled reply deadline and fault stop, per-buffer glyph tracking "
                  "(zero-copy text cursor toggle), one-copy line scroll, mouse pointer, "
-                 "GPU commands, and terminal restore.\n";
+                 "GPU commands, asynchronous presentation, abort recovery, and terminal restore.\n";
   } catch (const std::exception &e) { std::cerr << e.what() << '\n'; return 1; }
 }

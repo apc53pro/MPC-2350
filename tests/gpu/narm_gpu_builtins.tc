@@ -1,0 +1,43 @@
+#include "narm.tch"
+
+unsigned char bytes[320];
+struct NarmGpuCopy copy;
+struct NarmGpuPrimitive primitive;
+unsigned raw_words[2];
+unsigned calls;
+
+unsigned next(unsigned value) {
+    calls++;
+    return value;
+}
+
+int main(void) {
+    narm_gpu_get_caps(bytes);
+    narm_gpu_get_status(bytes);
+    narm_gpu_write_heap(NARM_GPU_USER_HEAP, bytes, 24);
+    narm_gpu_submit_pass(NARM_GPU_USER_HEAP);
+    copy.target = 1;
+    copy.source_x = -13;
+    copy.height = 7;
+    narm_gpu_copy_rect(&copy);
+    narm_gpu_fence(21);
+    narm_gpu_present(1, 22);
+    narm_gpu_read_memory(0, 32, bytes);
+    narm_gpu_back_target();
+    narm_gpu_encode_pass(bytes, next(1), next(7), next(0x1234), next(0xffffff),
+                         next(NARM_GPU_USER_HEAP + 32));
+    narm_gpu_encode_tile(bytes, NARM_GPU_USER_HEAP + 2432, 5);
+    primitive.edges[3] = 1;
+    primitive.planes[41] = 0xdeadbeef;
+    narm_gpu_encode_primitive(bytes, &primitive);
+    narm_gpu_link_status(bytes);
+    narm_gpu_abort();
+    narm_gpu_reset();
+    if (narm_gpu_frame_ready() != 0) return 1;
+    if (narm_gpu_frame_ready() != 1 || narm_gpu_try_present(0, 23) != 1) return 2;
+    raw_words[0] = 1;
+    raw_words[1] = 24;
+    // Nest the raw call to exercise argument spills at a larger frame offset.
+    return (5 + (6 + (7 + (8 + narm_gpu_submit(NARM_GPU_PRESENT, raw_words, 2))))) - 26 +
+           (int)calls - 5;
+}

@@ -47,9 +47,10 @@ the same GPU session and the current writable back buffer. Focus and mode
 notifications appear as terminal messages. NARM apps control their own
 graphics and can draw a pointer using PS/2 mouse input.
 
-[NARM GPU interface 1.0](NARM_GPU.md) exposes capability and status queries, heap uploads,
-render passes, rectangle copies, fences, presentation and memory readback.
-Use the new interface when building applications that previously used VGA.
+[NARM GPU interface 1.1](NARM_GPU.md) exposes the GPU through named NARMCC
+built-ins for record encoding, drawing, readback, and recovery. Keep realtime
+NARM loops running while the GPU works. Check `narm_gpu_frame_ready()` once
+per iteration and queue a completed frame with `narm_gpu_try_present()`.
 Application allocations start at `0x280000`. The firmware reserves the
 lower heap area for terminal assets. Programs share the application heap
 and must manage allocation and content across focus changes.

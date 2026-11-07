@@ -20,11 +20,18 @@ public:
   void terminal_pointer(int32_t x, int32_t y, bool visible);
   bool get_caps(uint8_t *out);
   bool get_status(uint8_t *out);
+  bool can_resume() const { return font_ready_; }
+  bool resume_after_abort();
   bool write_heap(uint32_t address, const uint8_t *data, uint32_t count);
   bool submit_pass(uint32_t address);
   bool copy_rect(const uint32_t words[14]);
   bool fence(uint32_t token);
   bool present(uint32_t target, uint32_t token);
+  // One check, with no wait for execution or vertical blank.
+  enum FrameResult { FrameDeviceError = -1, FrameArguments = -2, FrameBusy = 0, FrameReady = 1 };
+  FrameResult frame_ready();
+  FrameResult try_present(uint32_t target, uint32_t token);
+  bool present_pending() const { return pending_present_.sequence != 0; }
   bool read_memory(uint32_t address, uint32_t length, uint8_t *out);
   uint32_t back_target() const { return front_ ^ 1u; }
   static constexpr uint32_t kUserHeap = 0x280000u;
@@ -48,8 +55,12 @@ private:
   uint32_t sequence_ = 1, epoch_ = 0, front_ = 0, presents_ = 0;
   uint16_t awaited_opcode_ = 0;
   uint32_t awaited_sequence_ = 0, last_wait_ms_ = 0, max_wait_ms_ = 0;
+  struct PendingPresent {
+    uint32_t sequence = 0, target = 0, token = 0, started_ms = 0;
+  } pending_present_;
   bool await_reply();
   bool online_ = false;
+  bool font_ready_ = false;
   const char *error_ = "not initialized";
   // Characters each colour buffer currently shows (metadata, not pixels).
   // A buffer is unknown until a frame has been drawn into it this session.
@@ -78,6 +89,8 @@ private:
   bool send(uint16_t opcode, const uint8_t *payload, uint32_t count, uint32_t &sequence);
   bool reply(uint16_t opcode, uint32_t sequence, uint32_t token,
              uint8_t *extra, uint32_t count);
+  bool consume_reply(uint16_t opcode, uint32_t sequence, uint32_t token,
+                     uint8_t *extra, uint32_t count);
   bool upload(uint32_t address, const uint8_t *data, uint32_t count);
   bool draw_pointer(uint32_t target);
   bool query(uint16_t opcode, uint8_t *out);

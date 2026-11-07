@@ -11,6 +11,7 @@
 #include "audio_runtime.h"
 #include "file_io_runtime.h"
 #include "gpu_display.h"
+#include "native_gpu_records.h"
 #include "nano_gpu.h"
 #include "system_overlay.h"
 #include "terminal.h"
@@ -680,7 +681,7 @@ bool native_owns_gpu(NativeContextV1 *context)
 #include "native_gpu_api_impl.h"
 
 const NativeGpuApiV1 native_gpu_api = {
-  sizeof(NativeGpuApiV1), 1u, 0u, native_gpu_submit
+  sizeof(NativeGpuApiV1), 1u, 1u, native_gpu_submit
 };
 
 int32_t api_invoke(NativeContextV1 *context,

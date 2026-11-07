@@ -8,7 +8,7 @@
 static const uint16_t NARM_ABI_MAJOR = 1;
 static const uint16_t NARM_ABI_MINOR = 0;
 static const uint16_t NARM_API_MAJOR = 1;
-static const uint16_t NARM_API_MINOR = 18;
+static const uint16_t NARM_API_MINOR = 19;
 static const uint16_t NARM_AUDIO_ALLOCATION_API_MINOR = 15;
 
 enum NativeControlFlag : uint32_t
@@ -161,7 +161,15 @@ enum NativeGpuCommandV1 : uint32_t
   NARM_GPU_FENCE = 0x0006,
   NARM_GPU_PRESENT = 0x0007,
   NARM_GPU_READ_MEMORY = 0x0008,
-  NARM_GPU_BACK_TARGET = 0x0100
+  NARM_GPU_BACK_TARGET = 0x0100,
+  NARM_GPU_ENCODE_PASS = 0x0101,
+  NARM_GPU_ENCODE_TILE = 0x0102,
+  NARM_GPU_ENCODE_PRIMITIVE = 0x0103,
+  NARM_GPU_LINK_STATUS = 0x0104,
+  NARM_GPU_ABORT = 0x0105,
+  NARM_GPU_RESET = 0x0106,
+  NARM_GPU_FRAME_READY = 0x0107,
+  NARM_GPU_TRY_PRESENT = 0x0108
 };
 
 struct NativeContextV1;

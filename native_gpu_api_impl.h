@@ -22,7 +22,53 @@ int32_t native_gpu_submit(NativeContextV1 *context, uint32_t command,
 
   native_fault_checkpoint(NARM_PHASE_VIDEO | command);
   NanoGpu &gpu = gpu_display_client();
+  if (command == NARM_GPU_ENCODE_PASS || command == NARM_GPU_ENCODE_TILE ||
+      command == NARM_GPU_ENCODE_PRIMITIVE || command == NARM_GPU_LINK_STATUS) {
+    const uint32_t words = command == NARM_GPU_ENCODE_PASS ? 6u :
+                           command == NARM_GPU_ENCODE_TILE ? 3u :
+                           command == NARM_GPU_ENCODE_PRIMITIVE ? 2u : 1u;
+    const uint32_t bytes = command == NARM_GPU_ENCODE_PASS ? 32u :
+                           command == NARM_GPU_ENCODE_TILE ? 8u :
+                           command == NARM_GPU_ENCODE_PRIMITIVE ? 320u : 64u;
+    if (arg_words != words) return NARM_SERVICE_ERR_ARGUMENTS;
+    auto *out = reinterpret_cast<uint8_t *>((uintptr_t)args[0]);
+    if (!native_pointer_valid(context, out, bytes, 1u)) return NARM_SERVICE_ERR_ARGUMENTS;
+    if (command == NARM_GPU_LINK_STATUS)
+      return gpu_display_link_status(out) ? NARM_SERVICE_OK : NARM_SERVICE_ERR_DEVICE;
+    bool encoded;
+    if (command == NARM_GPU_ENCODE_PASS) {
+      encoded = native_gpu_encode_pass(out, args[1], args[2], args[3], args[4], args[5]);
+    } else if (command == NARM_GPU_ENCODE_TILE) {
+      encoded = native_gpu_encode_tile(out, args[1], args[2]);
+    } else {
+      const auto *input = reinterpret_cast<const NativeGpuPrimitiveInput *>((uintptr_t)args[1]);
+      if (!native_pointer_valid(context, input, sizeof(*input), alignof(NativeGpuPrimitiveInput)))
+        return NARM_SERVICE_ERR_ARGUMENTS;
+      encoded = native_gpu_encode_primitive(out, *input);
+    }
+    return encoded ? NARM_SERVICE_OK : NARM_SERVICE_ERR_ARGUMENTS;
+  }
+  if (command == NARM_GPU_ABORT || command == NARM_GPU_RESET) {
+    if (arg_words != 0) return NARM_SERVICE_ERR_ARGUMENTS;
+    const bool ok = command == NARM_GPU_ABORT ? gpu_display_abort() : gpu_display_begin();
+    return ok ? NARM_SERVICE_OK : NARM_SERVICE_ERR_DEVICE;
+  }
+  if (command == NARM_GPU_FRAME_READY || command == NARM_GPU_TRY_PRESENT) {
+    const bool try_present = command == NARM_GPU_TRY_PRESENT;
+    if (arg_words != (try_present ? 2u : 0u) || (try_present && args[0] > 1u))
+      return NARM_SERVICE_ERR_ARGUMENTS;
+    const auto frame = try_present ? gpu.try_present(args[0], args[1]) : gpu.frame_ready();
+    if (frame == NanoGpu::FrameDeviceError) return NARM_SERVICE_ERR_DEVICE;
+    if (frame == NanoGpu::FrameArguments) return NARM_SERVICE_ERR_ARGUMENTS;
+    return frame;
+  }
   if (!gpu.ready()) return NARM_SERVICE_ERR_DEVICE;
+  // An async present owns the reply stream until its completion is consumed.
+  if (gpu.present_pending()) {
+    const auto frame = gpu.frame_ready();
+    if (frame == NanoGpu::FrameDeviceError) return NARM_SERVICE_ERR_DEVICE;
+    if (frame != NanoGpu::FrameReady) return NARM_SERVICE_ERR_BUSY;
+  }
   const auto result = [&gpu](bool success) -> int32_t {
     if (success) return NARM_SERVICE_OK;
     return gpu.ready() ? NARM_SERVICE_ERR_ARGUMENTS : NARM_SERVICE_ERR_DEVICE;

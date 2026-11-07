@@ -66,9 +66,14 @@ bool NanoGpu::await_reply() {
 
 bool NanoGpu::reply(uint16_t opcode, uint32_t sequence, uint32_t token,
                     uint8_t *extra, uint32_t count) {
-  uint8_t header[16], common[12];
   awaited_opcode_ = opcode; awaited_sequence_ = sequence;
   if (!await_reply()) return false;
+  return consume_reply(opcode, sequence, token, extra, count);
+}
+
+bool NanoGpu::consume_reply(uint16_t opcode, uint32_t sequence, uint32_t token,
+                            uint8_t *extra, uint32_t count) {
+  uint8_t header[16], common[12];
   if (!read_bytes(header, sizeof(header))) return false;
   if (get32(header) != 0x5550474eu || header[4] != 0 || header[5] != 2 ||
       (uint16_t)(header[6] | ((uint16_t)header[7] << 8)) != (opcode | 0x8000u) ||
@@ -115,6 +120,8 @@ bool NanoGpu::upload(uint32_t address, const uint8_t *data, uint32_t count) {
 
 bool NanoGpu::begin(NanoGpuTransport transport, const uint16_t font[128][16]) {
   bus_ = transport; online_ = false; known_[0] = known_[1] = false;
+  font_ready_ = false;
+  pending_present_ = {};
   pointer_uploaded_ = false;
   sequence_ = 1; epoch_ = 0; front_ = 0; presents_ = 0;
   error_ = "not ready";
@@ -162,9 +169,38 @@ bool NanoGpu::begin(NanoGpuTransport transport, const uint16_t font[128][16]) {
       if (!upload(kHeap + y * 512, row, sizeof(row_))) return false;
     }
     if (!wait_fence(sequence_)) return false;
+    font_ready_ = true;
     online_ = true; error_ = "none"; return true;
   }
   return fail("GPU initialization timeout");
+}
+
+bool NanoGpu::resume_after_abort() {
+  if (!font_ready_) return false;
+  online_ = false;
+  const uint32_t start = bus_.now_ms(bus_.user);
+  uint8_t status[64] = {};
+  do {
+    for (unsigned i = 1; i < 64; ++i)
+      if (!bus_.read_register(bus_.user, (uint8_t)i, status + i))
+        return fail("GPU abort status timeout");
+    const uint32_t epoch = get32(status + 2);
+    if (epoch && epoch != epoch_ && (status[1] & 0x99u) == 1u &&
+        !get32(status + 32) && !status[56] && status[14] <= 1) {
+      sequence_ = 1;
+      epoch_ = epoch;
+      front_ = status[14];
+      known_[0] = known_[1] = false;
+      pointer_uploaded_ = false;
+      awaited_opcode_ = 0;
+      awaited_sequence_ = 0;
+      pending_present_ = {};
+      online_ = true;
+      error_ = "none";
+      return true;
+    }
+  } while ((uint32_t)(bus_.now_ms(bus_.user) - start) < kReplyDeadlineMs);
+  return fail("GPU abort recovery timeout");
 }
 
 bool NanoGpu::copy(uint32_t target, uint32_t source_x, uint32_t source_y,
@@ -232,6 +268,68 @@ bool NanoGpu::copy_rect(const uint32_t words[14]) {
 }
 
 bool NanoGpu::fence(uint32_t token) { return online_ && wait_fence(token); }
+
+NanoGpu::FrameResult NanoGpu::frame_ready() {
+  if (!online_) return FrameDeviceError;
+  uint8_t flags;
+  if (!bus_.read_register(bus_.user, 1, &flags)) {
+    fail("frame status timeout");
+    return FrameDeviceError;
+  }
+  if (flags & 0x88u) {
+    fail("GPU fault while checking frame");
+    return FrameDeviceError;
+  }
+  // Check the completed sequence as well as busy. A packet can still be
+  // crossing from HCLK into the core when the snapshot reports idle.
+  if ((flags & 0xefu) == 1u) {
+    uint8_t completed[4];
+    for (unsigned i = 0; i < sizeof(completed); ++i) {
+      if (!bus_.read_register(bus_.user, (uint8_t)(6u + i), completed + i)) {
+        fail("frame sequence timeout");
+        return FrameDeviceError;
+      }
+    }
+    if (get32(completed) == last_sequence()) {
+      if (!present_pending()) {
+        if (!(flags & 0x10u)) return FrameReady;
+        fail("unexpected GPU reply");
+        return FrameDeviceError;
+      }
+      if (flags & 0x10u) {
+        // RTL retires PRESENT only after the entire reply enters the FIFO.
+        if (!consume_reply(7, pending_present_.sequence, pending_present_.token, nullptr, 0))
+          return FrameDeviceError;
+        front_ = pending_present_.target;
+        ++presents_;
+        last_wait_ms_ = bus_.now_ms(bus_.user) - pending_present_.started_ms;
+        if (last_wait_ms_ > max_wait_ms_) max_wait_ms_ = last_wait_ms_;
+        pending_present_ = {};
+        return FrameReady;
+      }
+    }
+  }
+  if (present_pending() && bus_.now_ms(bus_.user) - pending_present_.started_ms > kReplyDeadlineMs) {
+    fail("async present timeout");
+    return FrameDeviceError;
+  }
+  return FrameBusy;
+}
+
+NanoGpu::FrameResult NanoGpu::try_present(uint32_t target, uint32_t token) {
+  const FrameResult ready = frame_ready();
+  if (ready != FrameReady) return ready;
+  if (target != back_target()) return FrameArguments;
+  uint8_t payload[8];
+  put32(payload, target);
+  put32(payload + 4, token);
+  uint32_t sequence;
+  if (!send(7, payload, sizeof(payload), sequence)) return FrameDeviceError;
+  awaited_opcode_ = 7;
+  awaited_sequence_ = sequence;
+  pending_present_ = {sequence, target, token, bus_.now_ms(bus_.user)};
+  return FrameReady;
+}
 
 bool NanoGpu::present(uint32_t target, uint32_t token) {
   if (!online_ || target != back_target()) return false;

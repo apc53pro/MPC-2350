@@ -261,6 +261,7 @@ bool gpu_display_begin() {
 
 void gpu_display_present() {
   if (!gpu.ready()) return;
+  if (gpu.present_pending() && gpu.frame_ready() != NanoGpu::FrameReady) return;
   gpu_ui_prepare_terminal(gpu);
   if (!gpu.terminal_present(gridBuffer_char, char_grid_buffer_V_draw_offset)) {
     release_bus(); gpu_display_diagnostics(); gpu_display_regs();
@@ -268,6 +269,17 @@ void gpu_display_present() {
 }
 
 NanoGpu &gpu_display_client() { return gpu; }
+
+bool gpu_display_abort() {
+  if (!gpu.can_resume()) return false;
+  release_bus();
+  digitalWrite(kAbort, HIGH);
+  for (unsigned i = 0; i < 4; ++i) { high(); low(); }
+  digitalWrite(kAbort, LOW);
+  if (gpu.resume_after_abort()) return true;
+  release_bus();
+  return false;
+}
 
 namespace {
 uint32_t le32(const uint8_t *p) {
@@ -299,6 +311,10 @@ void print_status_snapshot(const char *label, const uint8_t s[64]) {
   Serial.print("; present="); Serial.print(le32(s + 36));
   Serial.print("; link_fault="); Serial.println(s[56]);
 }
+}
+
+bool gpu_display_link_status(uint8_t out[64]) {
+  return !read_held && !drive_held && read_status_snapshot(out);
 }
 
 void gpu_display_regs() {

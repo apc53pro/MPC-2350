@@ -23,7 +23,47 @@
  
      Program& program_;
      unsigned optimizationLevel_ = 0;
-@@ -4312,19 +4311,7 @@
+@@ -4291,6 +4290,39 @@
+         return callee ? callee->returnType : indirectSignature->returnType;
+     }
+ 
++    struct GpuBuiltin {
++        const char* name;
++        uint32_t command;
++        unsigned argc;
++        unsigned pointerMask;
++        unsigned directWords;
++    };
++
++    static const GpuBuiltin* gpuBuiltin(const std::string& name) {
++        static constexpr GpuBuiltin builtins[] = {
++            {"narm_gpu_get_caps",         0x0001, 1, 1, 0},
++            {"narm_gpu_get_status",       0x0002, 1, 1, 0},
++            {"narm_gpu_write_heap",       0x0003, 3, 2, 0},
++            {"narm_gpu_submit_pass",      0x0004, 1, 0, 0},
++            {"narm_gpu_copy_rect",        0x0005, 1, 1, 14},
++            {"narm_gpu_fence",            0x0006, 1, 0, 0},
++            {"narm_gpu_present",          0x0007, 2, 0, 0},
++            {"narm_gpu_read_memory",      0x0008, 3, 4, 0},
++            {"narm_gpu_back_target",      0x0100, 0, 0, 0},
++            {"narm_gpu_encode_pass",      0x0101, 6, 1, 0},
++            {"narm_gpu_encode_tile",      0x0102, 3, 1, 0},
++            {"narm_gpu_encode_primitive", 0x0103, 2, 3, 0},
++            {"narm_gpu_link_status",      0x0104, 1, 1, 0},
++            {"narm_gpu_abort",            0x0105, 0, 0, 0},
++            {"narm_gpu_reset",            0x0106, 0, 0, 0},
++            {"narm_gpu_frame_ready",      0x0107, 0, 0, 0},
++            {"narm_gpu_try_present",      0x0108, 2, 0, 0},
++        };
++        for (const auto& builtin : builtins)
++            if (name == builtin.name) return &builtin;
++        return nullptr;
++    }
++
+     static bool isBuiltin(const std::string& name) {
+         static const std::unordered_set<std::string> names = {
+             "sqrt", "narm_sqrt",
+@@ -4312,24 +4344,12 @@
              "narm_file_delete", "narm_file_rename", "narm_file_size",
              "narm_file_read", "narm_file_write", "narm_dir_make",
              "narm_dir_delete", "narm_dir_entry",
@@ -44,7 +84,13 @@
              "narm_key_down", "narm_ps2_key_down", "narm_next_key_event", "vmByteAddress",
              "narm_mouse_get_state", "narm_mouse_poll_event", "narm_mouse_read_motion",
              "narm_mouse_set_cursor_visible", "narm_mouse_set_relative_mode", "narm_mouse_dropped_events"
-@@ -4627,35 +4614,35 @@
+         };
+-        return names.count(name) != 0;
++        return names.count(name) != 0 || gpuBuiltin(name) != nullptr;
+     }
+ 
+     void requireArity(Expr* expression, size_t expected) {
+@@ -4627,35 +4647,35 @@
              return emitAudioSubmit(expression, depth, 0x0008u, {}, 15);
          if (name == "narm_audio_deallocate_voice")
              return emitAudioSubmit(expression, depth, 0x0009u,
@@ -93,7 +139,7 @@
          if (name == "narm_audio_active") {
              requireArity(expression, 1);
              return emitAudioDirect(expression, depth, 16, BaseType::I32);
-@@ -4669,139 +4656,47 @@
+@@ -4669,139 +4689,48 @@
              return emitAudioDirect(expression, depth, 24, BaseType::U32);
          }
          if (name == "narm_storage_mount")
@@ -251,10 +297,11 @@
 +                                   BuiltinArgKind::Pointer, BuiltinArgKind::Pointer,
 +                                   BuiltinArgKind::U32});
 +        if (name == "narm_gpu_submit") return emitGpuSubmit(expression, depth);
++        if (const auto* builtin = gpuBuiltin(name)) return emitGpuSubmit(expression, depth, builtin);
          if (name == "narm_key_down") { requireArity(expression, 1); return emitKeyboardKeyDown(expression, depth); }
          if (name == "narm_ps2_key_down") { requireArity(expression, 2); return emitKeyboardPs2KeyDown(expression, depth); }
          if (name == "narm_next_key_event") { requireArity(expression, 4); return emitKeyboardNextEvent(expression, depth); }
-@@ -4893,29 +4788,33 @@
+@@ -4893,29 +4822,43 @@
          return {BaseType::F32, 0};
      }
  
@@ -263,15 +310,16 @@
 -        apiMinor_ = std::max<uint16_t>(apiMinor_, 5);
 -        imports_.insert({kVideoInterface, 1});
 -        uint32_t base = spillOffset(depth);
-+    NType emitGpuSubmit(Expr* expression, unsigned depth) {
-+        requireArity(expression, 3);
++    NType emitGpuSubmit(Expr* expression, unsigned depth, const GpuBuiltin* builtin = nullptr) {
++        requireArity(expression, builtin ? builtin->argc : 3);
 +        capabilitiesLow_ |= kGpuCapability;
-+        apiMinor_ = std::max<uint16_t>(apiMinor_, 18);
++        apiMinor_ = std::max<uint16_t>(apiMinor_, builtin ? 19 : 18);
 +        imports_.insert({kGpuInterface, 1});
 +        const uint32_t base = spillOffset(depth);
++        const unsigned pointerMask = builtin ? builtin->pointerMask : 2u;
          for (size_t i = 0; i < expression->args.size(); ++i) {
 -            emitDeclaredBuiltinArgument(expression,i,depth+8u+static_cast<unsigned>(i));
-+            const NType expected = {BaseType::U32, static_cast<uint8_t>(i == 1u)};
++            const NType expected = {BaseType::U32, static_cast<uint8_t>((pointerMask >> i) & 1u)};
 +            emitConvertedExpression(expression->args[i].get(), expected,
 +                                    depth + 8u + static_cast<unsigned>(i));
              storeFrame(0, base + static_cast<uint32_t>(i) * 4u);
@@ -290,9 +338,18 @@
 +        out_.load(4, 0, 8); // NativeGpuApiV1::submit
          out_.movReg(0, 10);
 -        if (!expression->args.empty()) addressFrame(1, base);
-+        loadFrame(1, base);
-+        loadFrame(2, base + 4u);
-+        loadFrame(3, base + 8u);
++        if (builtin) {
++            out_.movImm(1, builtin->command);
++            if (builtin->directWords) loadFrame(2, base);
++            else if (builtin->argc) addressFrame(2, base);
++            else out_.movImm(2, 0);
++            out_.movImm(3, builtin->directWords ? builtin->directWords : builtin->argc);
++        } else {
++            addressFrame(2, base);
++            out_.load(1, 2, 0);
++            out_.load(3, 2, 8);
++            out_.load(2, 2, 4);
++        }
          out_.blx(4);
          out_.branch(done);
          out_.label(failed);
@@ -301,7 +358,7 @@
          out_.label(done);
          return {BaseType::I32, 0};
      }
-@@ -4951,7 +4850,7 @@
+@@ -4951,7 +4894,7 @@
  
      NType emitAudioSubmit(Expr* expression, unsigned depth,
                            uint32_t command,
@@ -310,7 +367,7 @@
                            uint16_t requiredMinor = 6) {
          requireArity(expression, kinds.size());
          capabilitiesLow_ |= kAudioCapability;
-@@ -4961,7 +4860,7 @@
+@@ -4961,7 +4904,7 @@
          for (size_t i = 0; i < expression->args.size(); ++i) {
              NType actual = emitExpression(expression->args[i].get(),
                                            depth + 8u + static_cast<unsigned>(i));
@@ -319,7 +376,7 @@
              storeFrame(0, base + static_cast<uint32_t>(i) * 4u);
          }
          const std::string failed = newLabel("audio_missing");
-@@ -4986,7 +4885,7 @@
+@@ -4986,7 +4929,7 @@
  
      NType emitFileSubmit(Expr* expression, unsigned depth,
                           uint32_t command,
@@ -328,7 +385,7 @@
          requireArity(expression, kinds.size());
          capabilitiesLow_ |= kFileCapability;
          apiMinor_ = std::max<uint16_t>(apiMinor_, 7);
-@@ -4995,7 +4894,7 @@
+@@ -4995,7 +4938,7 @@
          for (size_t i = 0; i < expression->args.size(); ++i) {
              NType actual = emitExpression(expression->args[i].get(),
                                            depth + 8u + static_cast<unsigned>(i));
@@ -337,7 +394,7 @@
              storeFrame(0, base + static_cast<uint32_t>(i) * 4u);
          }
          const std::string failed = newLabel("file_missing");
-@@ -5018,86 +4917,12 @@
+@@ -5018,86 +4961,12 @@
          return {BaseType::I32, 0};
      }
  
@@ -427,7 +484,7 @@
      }
  
      NType emitKeyboardKeyDown(Expr* expression, unsigned depth) {
-@@ -5448,7 +5273,7 @@
+@@ -5448,7 +5317,7 @@
          if (options.name.empty()) options.name = baseNameNoExt(input);
          defines["__NARM__"] = "1";
          defines["__NARM_API_MAJOR__"] = "1";
