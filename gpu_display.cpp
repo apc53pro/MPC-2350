@@ -17,10 +17,13 @@ constexpr unsigned kAbort = 35, kReset = 36, kAddress = 37, kRead = 38;
 constexpr unsigned kReady = 39, kValid = 40;
 constexpr uint32_t kTimeoutUs = 250000;
 constexpr uint32_t kConfigurationWaitMs = 1000;
-// Four PIO cycles per minimum phase. The same delay is used for manual
-// reset and the offline electrical diagnostics.
+// Keep the manual reset and offline measurements on microsecond timing.
 constexpr uint32_t kClockPhaseUs = 2;
-constexpr uint32_t kPioClockHz = 4000000 / kClockPhaseUs;
+constexpr uint32_t kHostClockHz = 25000000;
+constexpr uint32_t kHostClockDivider = 15;
+static_assert((kHostClockDivider * 256) % gpu_bus_clock_cycles == 0,
+              "HCLK divider must be exact");
+constexpr uint32_t kPioDivider256 = (kHostClockDivider * 256) / gpu_bus_clock_cycles;
 constexpr uint64_t kIdlePins = (1ull << kWrite) | (1ull << kAddress) | (1ull << kRead);
 constexpr uint64_t kControlPins = kIdlePins | (1ull << kClock);
 constexpr uint64_t kBusPins = kControlPins | (0xffull << kData);
@@ -113,6 +116,10 @@ bool claim_pio() {
 
 bool enable_pio() {
   if (pio_active) return true;
+  if (clock_get_hz(clk_sys) > kHostClockHz * kHostClockDivider) {
+    Serial.println("GPU PIO: clk_sys too high for the /15 HCLK divider.");
+    return false;
+  }
   if (pio_sm < 0 && !claim_pio()) {
     Serial.println("GPU PIO: PIO2 unavailable.");
     return false;
@@ -126,8 +133,8 @@ bool enable_pio() {
   sm_config_set_in_pin_count(&config, kValid - kData + 1);
   sm_config_set_in_shift(&config, false, false, 32);
   sm_config_set_jmp_pin(&config, kReady);
-  const uint32_t divider = (uint32_t)(((uint64_t)clock_get_hz(clk_sys) * 256 + kPioClockHz - 1) / kPioClockHz);
-  sm_config_set_clkdiv_int_frac8(&config, divider >> 8, (uint8_t)divider);
+  // 12 state-machine cycles at a 1.25 divider give 15 clk_sys ticks.
+  sm_config_set_clkdiv_int_frac8(&config, kPioDivider256 >> 8, (uint8_t)kPioDivider256);
   const uint sm = (uint)pio_sm;
   if (pio_sm_init(kPio, sm, pio_offset, &config) != 0) {
     Serial.println("GPU PIO: state machine configuration failed.");

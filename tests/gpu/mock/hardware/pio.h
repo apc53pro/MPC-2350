@@ -24,7 +24,7 @@ struct pio_sm_config {
 // Execute the checked-in PIO instruction words against the same pin/FPGA
 // model used by the GPIO diagnostics. This covers only this program's ops.
 struct MockPio {
-  unsigned base{}, pc{}, offset{}, length{}, half_us{};
+  unsigned base{}, pc{}, offset{}, length{}, fractional_ticks{};
   bool enabled{}, claimed[4]{}, pending{};
   uint16_t instructions[32]{};
   uint32_t tx{}, x{}, y{}, isr{}, osr{};
@@ -88,18 +88,21 @@ inline int pio_sm_init(PIO pio, unsigned sm, unsigned pc, const pio_sm_config *c
   assert(config->out_base == 18 && config->out_count == 8 && config->out_right);
   assert(config->in_base == 18 && config->in_count == 23 && !config->in_right);
   assert(config->set_base == 37 && config->set_count == 2 && config->jmp_pin == 39);
-  assert(config->divider == 187 * 256 + 128); // 375 MHz / 187.5 = 2 MHz.
+  assert(config->divider == 320); // 1.25 x 12 PIO cycles = 15 clk_sys ticks.
   pio->config = *config; pio->pc = pc; pio->enabled = false; pio->pending = false;
-  pio->x = pio->y = pio->isr = pio->osr = pio->half_us = 0; pio->rx.clear();
+  pio->x = pio->y = pio->isr = pio->osr = pio->fractional_ticks = 0; pio->rx.clear();
   return 0;
 }
 inline void pio_sm_set_enabled(PIO pio, unsigned sm, bool enabled) { assert(sm == 0); pio->enabled = enabled; }
 inline void pio_gpio_init(PIO, unsigned pin) { gpio_set_function(pin, GPIO_FUNC_PIO2); }
 
 inline void pio_mock_write_pins(uint64_t mask, uint64_t value, bool dirs) {
-  for (unsigned pin = 0; pin < __GPIOCNT; ++pin) {
-    if (!(mask & (1ull << pin))) continue;
-    (dirs ? mock_gpio::pio_output[pin] : mock_gpio::pio_level[pin]) = (value & (1ull << pin)) != 0;
+  for (; mask; mask &= mask - 1) {
+    const unsigned pin = (unsigned)__builtin_ctzll(mask);
+    const bool next = (value & (1ull << pin)) != 0;
+    bool &current = dirs ? mock_gpio::pio_output[pin] : mock_gpio::pio_level[pin];
+    if (current == next) continue;
+    current = next;
     if (mock_gpio::pio_mux[pin]) mock_gpio::update_pin(pin);
   }
 }
@@ -194,9 +197,10 @@ inline void pio_mock_step(PIO pio) {
       break;
     default: assert(false);
   }
-  const unsigned cycles = 1 + ((word >> 8) & 7) + pio->half_us;
-  mock_gpio::now += cycles / 2;
-  pio->half_us = cycles % 2;
+  const unsigned cycles = 1 + ((word >> 8) & 7);
+  const unsigned ticks = cycles * c.divider + pio->fractional_ticks;
+  mock_gpio::advance_system_ticks(ticks / 256);
+  pio->fractional_ticks = ticks % 256;
   pio->pc = pc;
 }
 

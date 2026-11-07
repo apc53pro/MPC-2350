@@ -48,10 +48,12 @@ void reset_fixture(bool ready, bool valid) {
   mock_gpio::latch_first_only = false; mock_gpio::latched_since_reset = false;
   mock_gpio::latch_and = 0xff; mock_gpio::latch_or = 0;
   mock_gpio::now = 0; mock_gpio::reset_clock_edges = 0;
+  mock_gpio::sub_us_ticks = 0;
   mock_gpio::first_clock_us = UINT32_MAX; mock_gpio::configuration_ready_us = 0;
-  mock_gpio::last_clock_edge_us = UINT32_MAX; mock_gpio::min_clock_phase_us = UINT32_MAX;
-  mock_gpio::write_assert_us = 0; mock_gpio::read_assert_us = 0;
-  mock_gpio::min_write_setup_us = UINT32_MAX; mock_gpio::min_read_setup_us = UINT32_MAX;
+  mock_gpio::last_clock_edge_ticks = mock_gpio::min_clock_phase_ticks = UINT64_MAX;
+  mock_gpio::last_rise_ticks = mock_gpio::min_clock_period_ticks = UINT64_MAX;
+  mock_gpio::write_assert_ticks = mock_gpio::read_assert_ticks = 0;
+  mock_gpio::min_write_setup_ticks = mock_gpio::min_read_setup_ticks = UINT64_MAX;
   mock_gpio::reset_writes.clear(); Serial.text.clear();
 }
 
@@ -68,9 +70,10 @@ void check_failure_state() {
   for (unsigned pin : {16u, 17u, 35u, 36u, 37u, 38u}) assert(mock_gpio::drive[pin] == 12);
   assert(mock_gpio::reset_clock_edges == 32);
   assert(mock_gpio::first_clock_us >= 1000000);
-  assert(mock_gpio::min_clock_phase_us >= kClockPhaseUs); // HCLK never exceeds 250 kHz.
-  assert(mock_gpio::min_write_setup_us >= kClockPhaseUs);
-  assert(mock_gpio::min_read_setup_us >= kClockPhaseUs);
+  assert(mock_gpio::min_clock_period_ticks >= 15); // 25 MHz at 375 MHz clk_sys.
+  assert(mock_gpio::min_clock_phase_ticks >= 6);
+  assert(mock_gpio::min_write_setup_ticks >= 7);
+  assert(mock_gpio::min_read_setup_ticks >= 8);
   assert(mock_gpio::reset_writes.front() == false);
   bool released = false;
   for (bool level : mock_gpio::reset_writes) {
@@ -95,7 +98,7 @@ int main() {
   assert(!gpu_display_begin()); check_failure_state(); // RVALID timeout.
   assert(mock_gpio::now >= 1250000);
   reset_fixture(true, true);
-  mock_gpio::configuration_ready_us = 100000; // FPGA takes 800 ms to configure.
+  mock_gpio::configuration_ready_us = 800000; // FPGA takes 800 ms to configure.
   mock_gpio::status[1] = 9; mock_gpio::status[2] = 1;
   mock_gpio::status[32] = 8; mock_gpio::status[56] = 2;
   assert(!gpu_display_begin()); check_failure_state(); // GPU startup fault.
@@ -142,9 +145,10 @@ int main() {
     assert(read_at(64, &received));
     assert(received == byte);
   }
-  assert(mock_gpio::min_clock_phase_us >= kClockPhaseUs);
-  assert(mock_gpio::min_write_setup_us >= kClockPhaseUs && mock_gpio::min_write_setup_us != UINT32_MAX);
-  assert(mock_gpio::min_read_setup_us >= kClockPhaseUs && mock_gpio::min_read_setup_us != UINT32_MAX);
+  assert(mock_gpio::min_clock_period_ticks == 15);
+  assert(mock_gpio::min_clock_phase_ticks >= 6);
+  assert(mock_gpio::min_write_setup_ticks >= 7 && mock_gpio::min_write_setup_ticks != UINT64_MAX);
+  assert(mock_gpio::min_read_setup_ticks >= 8 && mock_gpio::min_read_setup_ticks != UINT64_MAX);
   const uint8_t previous_packet_byte = mock_gpio::last_data_write;
   mock_gpio::status[65] = 2;
   unsigned edges = mock_gpio::clock_rises;
@@ -325,8 +329,19 @@ int main() {
   assert(!gpu_display_begin()); // RESET also ends a drive hold.
   assert(!drive_held && mock_gpio::level[17] && mock_gpio::level[37]);
   for (unsigned pin = 18; pin < 26; ++pin) assert(!mock_gpio::output[pin]);
+  // Isolate each retry loop and verify its 40 ns HCLK period.
+  assert(select(0));
+  mock_gpio::last_rise_ticks = mock_gpio::min_clock_period_ticks = UINT64_MAX;
+  mock_gpio::write_wait_edges = 4;
+  assert(write_byte(nullptr, 0xa5));
+  assert(mock_gpio::min_clock_period_ticks == 15);
+  assert(select(1));
+  mock_gpio::last_rise_ticks = mock_gpio::min_clock_period_ticks = UINT64_MAX;
+  uint8_t flags;
+  assert(read_at(1, &flags) && read_edges == 4);
+  assert(mock_gpio::min_clock_period_ticks == 15);
   std::cout << "PASS PIO transport and GPIO diagnostics: 256 write/read byte patterns, WREADY retry, PIO allocation failure, configuration startup wait, reset pulse, timeouts, "
                "startup fault and malformed reply leave reset HIGH and data released; "
                "startup diagnostics, address echo, capability probe, held reads, idle handshake check, "
-               "release/reset transitions, D5/D6 swap and RVALID edge-count signatures, address-latch tests, edge-free drive holds and clock/setup phase minima verified.\n";
+               "release/reset transitions, D5/D6 swap and RVALID edge-count signatures, address-latch tests, edge-free drive holds and read/write HCLK periods verified.\n";
 }

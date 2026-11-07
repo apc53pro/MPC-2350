@@ -17,9 +17,11 @@ the general terminal allocation arena is 64 KiB and contains no graphics partiti
 `gpu_display.cpp` uses one PIO2 state machine with GPIO base 16 for byte
 transfers in both directions. PIO clocks HCLK, drives the bus strobes and
 data direction, and samples WREADY before a write edge and RVALID with the
-read byte. The state machine runs at up to 2 MHz, with four cycles per
-minimum phase. Core 0 encodes packets and exchanges commands and completion
-words through the PIO FIFOs with a 250 ms byte deadline. PS/2 remains on PIO1.
+read byte. Read and write retries take 12 state-machine cycles per HCLK
+period, giving a **25 MHz burst clock** at the standard 375 MHz system
+clock. HCLK pauses between byte transactions. Core 0 encodes packets and
+exchanges commands and completion words through the PIO FIFOs with a 250 ms
+byte deadline. PS/2 remains on PIO1.
 `nano_gpu.cpp` checks
 the N20K-SYS-0.2 capabilities and replies, uploads the font once as a 64 KiB
 RGB565 heap texture, and uses GPU `COPY_RECT`, `FENCE` and `PRESENT` commands.
@@ -299,8 +301,8 @@ configuration to finish and issue `GPU_RESET` (or restart the RP).
 An entirely `FF` startup snapshot is reported as `all-ones startup readback`,
 not a decoded GPU fault. Use `GPU_PROBE` and check the data wiring before
 interpreting fault fields from that invalid snapshot.
-The earlier GPIO firmware was confirmed on hardware. The PIO path and NARM
-GPU API require an on-board run with this firmware.
+The earlier GPIO firmware was confirmed on hardware. The 25 MHz HCLK
+configuration requires an on-board run with this firmware.
 
 ## Host checks
 

@@ -21,6 +21,7 @@
 #define gpu_bus_write_data_shift 1
 #define gpu_bus_write_dirs_shift 9
 #define gpu_bus_write_address_shift 17
+#define gpu_bus_clock_cycles 12
 
 static const uint16_t gpu_bus_program_instructions[] = {
             //     .wrap_target
@@ -31,26 +32,26 @@ static const uint16_t gpu_bus_program_instructions[] = {
     0xb0c0, //  4: mov    isr, pins       side 2
     0x9020, //  5: push   block           side 2
     0xb04b, //  6: mov    y, ~null        side 2
-    0xbb42, //  7: nop                    side 3 [3]
+    0xbd42, //  7: nop                    side 3 [5]
     0xb8c0, //  8: mov    isr, pins       side 3
-    0xb8e6, //  9: mov    osr, isr        side 3
-    0x7876, // 10: out    null, 22        side 3
-    0x7821, // 11: out    x, 1            side 3
-    0x182f, // 12: jmp    !x, 15          side 3
-    0x5858, // 13: in     y, 24           side 3
-    0x181b, // 14: jmp    27              side 3
-    0x1387, // 15: jmp    y--, 7          side 2 [3]
+    0xb0e6, //  9: mov    osr, isr        side 2
+    0x7076, // 10: out    null, 22        side 2
+    0x7021, // 11: out    x, 1            side 2
+    0x102f, // 12: jmp    !x, 15          side 2
+    0x5058, // 13: in     y, 24           side 2
+    0x101b, // 14: jmp    27              side 2
+    0x1087, // 15: jmp    y--, 7          side 2
     0x1007, // 16: jmp    7               side 2
     0x7008, // 17: out    pins, 8         side 2
     0x7088, // 18: out    pindirs, 8      side 2
     0x7021, // 19: out    x, 1            side 2
     0x1036, // 20: jmp    !x, 22          side 2
     0xf002, // 21: set    pins, 2         side 2
-    0xa342, // 22: nop                    side 0 [3]
+    0xa442, // 22: nop                    side 0 [4]
     0x00d9, // 23: jmp    pin, 25         side 0
-    0x0b16, // 24: jmp    22              side 1 [3]
+    0x0d16, // 24: jmp    22              side 1 [5]
     0xa0c0, // 25: mov    isr, pins       side 0
-    0xab42, // 26: nop                    side 1 [3]
+    0xad42, // 26: nop                    side 1 [5]
     0xf303, // 27: set    pins, 3         side 2 [3]
     0xb0e3, // 28: mov    osr, null       side 2
     0x7088, // 29: out    pindirs, 8      side 2
