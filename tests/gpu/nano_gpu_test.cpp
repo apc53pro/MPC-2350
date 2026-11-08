@@ -14,6 +14,8 @@ struct Bus {
   nano_gpu::hw::SystemModel model;
   unsigned writes = 0;
   bool write_timeout = false, read_timeout = false, corrupt_reply = false;
+  bool expect_reply_stream = false;
+  uint8_t last_read_address = 0;
   // Reply-wait fault injection on status register 1: hide "reply available"
   // (with a clock that jumps 1 s per call) or report a transport fault.
   bool hide_reply = false, fake_fault = false;
@@ -47,6 +49,11 @@ struct Bus {
   }
   bool read(uint8_t address, uint8_t *byte) {
     if (!address && read_timeout) return false;
+    if (!address && expect_reply_stream) {
+      assert(last_read_address == 1);
+      expect_reply_stream = false;
+    }
+    last_read_address = address;
     align();
     const auto start = model.system_statistics().core_cycles;
     nano_gpu::hw::HostPins pins; pins.read = true; pins.register_address = address;
@@ -190,6 +197,7 @@ int main() {
     const auto before_async = gpu.presents();
     const auto async_target = gpu.back_target();
     assert(gpu.try_present(async_target, 102) == NanoGpu::FrameReady);
+    bus.expect_reply_stream = true;
     const auto async_writes = bus.writes;
     assert(gpu.present_pending() && gpu.back_target() == async_target);
     assert(gpu.try_present(async_target, 103) == NanoGpu::FrameBusy);
@@ -202,6 +210,7 @@ int main() {
       bus.check(start);
     } while (frame == NanoGpu::FrameBusy);
     assert(frame == NanoGpu::FrameReady && !gpu.present_pending());
+    assert(!bus.expect_reply_stream);
     assert(gpu.back_target() == (async_target ^ 1u) && bus.model.front_id() == (int)async_target);
     assert(gpu.presents() == before_async + 1);
     assert(gpu.get_status(bank) && bank[36] == 102);

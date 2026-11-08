@@ -280,6 +280,26 @@ NanoGpu::FrameResult NanoGpu::frame_ready() {
     fail("GPU fault while checking frame");
     return FrameDeviceError;
   }
+  if (present_pending()) {
+    // PRESENT owns the reply stream. Use the same register-1-to-stream read
+    // order as blocking present. The checked reply identifies the swap and
+    // is emitted only after vertical blank.
+    if (flags & 0x10u) {
+      if (!consume_reply(7, pending_present_.sequence, pending_present_.token, nullptr, 0))
+        return FrameDeviceError;
+      front_ = pending_present_.target;
+      ++presents_;
+      last_wait_ms_ = bus_.now_ms(bus_.user) - pending_present_.started_ms;
+      if (last_wait_ms_ > max_wait_ms_) max_wait_ms_ = last_wait_ms_;
+      pending_present_ = {};
+      return FrameReady;
+    }
+    if (bus_.now_ms(bus_.user) - pending_present_.started_ms > kReplyDeadlineMs) {
+      fail("async present timeout");
+      return FrameDeviceError;
+    }
+    return FrameBusy;
+  }
   // Check the completed sequence as well as busy. A packet can still be
   // crossing from HCLK into the core when the snapshot reports idle.
   if ((flags & 0xefu) == 1u) {
@@ -291,27 +311,10 @@ NanoGpu::FrameResult NanoGpu::frame_ready() {
       }
     }
     if (get32(completed) == last_sequence()) {
-      if (!present_pending()) {
-        if (!(flags & 0x10u)) return FrameReady;
-        fail("unexpected GPU reply");
-        return FrameDeviceError;
-      }
-      if (flags & 0x10u) {
-        // RTL retires PRESENT only after the entire reply enters the FIFO.
-        if (!consume_reply(7, pending_present_.sequence, pending_present_.token, nullptr, 0))
-          return FrameDeviceError;
-        front_ = pending_present_.target;
-        ++presents_;
-        last_wait_ms_ = bus_.now_ms(bus_.user) - pending_present_.started_ms;
-        if (last_wait_ms_ > max_wait_ms_) max_wait_ms_ = last_wait_ms_;
-        pending_present_ = {};
-        return FrameReady;
-      }
+      if (!(flags & 0x10u)) return FrameReady;
+      fail("unexpected GPU reply");
+      return FrameDeviceError;
     }
-  }
-  if (present_pending() && bus_.now_ms(bus_.user) - pending_present_.started_ms > kReplyDeadlineMs) {
-    fail("async present timeout");
-    return FrameDeviceError;
   }
   return FrameBusy;
 }

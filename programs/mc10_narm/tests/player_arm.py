@@ -6,7 +6,7 @@ The normal host suite can run without it; use test_player.py --arm-compiler.
 import math,struct,subprocess
 from pathlib import Path
 
-def execute(path):
+def execute(path,setup=None):
  from unicorn import Uc,UC_ARCH_ARM,UC_MODE_THUMB,UC_HOOK_CODE
  from unicorn.arm_const import UC_ARM_REG_R0,UC_ARM_REG_R9,UC_ARM_REG_R10,UC_ARM_REG_SP,UC_ARM_REG_LR,UC_ARM_REG_PC,UC_ARM_REG_FPEXC
  image=path.read_bytes();u32=lambda o:struct.unpack_from('<I',image,o)[0]
@@ -28,6 +28,7 @@ def execute(path):
  if 0x12 in imports:
   from native_numeric_probe import install
   install(uc,ctx)
+ if setup is not None:setup(uc,ctx)
  uc.reg_write(UC_ARM_REG_SP,stack+0xf000);uc.reg_write(UC_ARM_REG_LR,stop|1);uc.reg_write(UC_ARM_REG_FPEXC,1<<30)
  uc.hook_add(UC_HOOK_CODE,lambda u,a,s,d:u.emu_stop(),begin=stop,end=stop)
  uc.emu_start((text+u32(0x18))|1,stop,count=100000000)

@@ -6,6 +6,12 @@
  */
 #include "narm.tch"
 
+// Wait for a swap only when the next batch actually needs the GPU.
+void mm_wait_present();
+#define GD_BEFORE_IO mm_wait_present
+#include "narm_gpu_draw.tch"
+#include "narm_gpu_triangle.tch"
+
 unsigned narm_mmbasic_legacy_key(unsigned scan_code)
 {
     unsigned code = scan_code & 0xffu;

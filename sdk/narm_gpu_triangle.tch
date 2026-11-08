@@ -1,0 +1,78 @@
+#ifndef NARM_GPU_TRIANGLE_TCH
+#define NARM_GPU_TRIANGLE_TCH
+
+void gd_put_i64(uint *dst, long long value) {
+    unsigned long long bits = (unsigned long long)value;
+    dst[0] = (uint)bits;
+    dst[1] = (uint)(bits >> 32);
+}
+
+long long gd_div_nearest(long long n, long long d) {
+    long long q = n / d;
+    long long r = n % d;
+    if (r < 0) r = -r;
+    if (r * 2 > d || (r * 2 == d && (q & 1))) q += n < 0 ? -1 : 1;
+    return q;
+}
+
+void gd_plane(uint *p, int a, int b, int c, int dx1, int dy1, int dx2, int dy2,
+              int sx, int sy, int area) {
+    long long nx = (long long)(b - a) * dy2 - (long long)(c - a) * dy1;
+    long long ny = (long long)dx1 * (c - a) - (long long)dx2 * (b - a);
+    gd_put_i64(p, (long long)a * 65536 + gd_div_nearest((nx * sx + ny * sy) * 65536, area));
+    gd_put_i64(p + 2, gd_div_nearest(nx * 1048576, area));
+    gd_put_i64(p + 4, gd_div_nearest(ny * 1048576, area));
+}
+
+// Integer viewport pixels, bounded to keep Q4 edges and Q16 planes exact.
+// The depth path accepts 16-bit codes within the GPU's D24 range.
+void gpu_draw_triangle(int x0, int y0, uint z0, uint c0,
+                       int x1, int y1, uint z1, uint c1,
+                       int x2, int y2, uint z2, uint c2, int gouraud_depth) {
+    int min_x = gd_min(x0, gd_min(x1, x2)), max_x = gd_max(x0, gd_max(x1, x2));
+    int min_y = gd_min(y0, gd_min(y1, y2)), max_y = gd_max(y0, gd_max(y1, y2));
+    if (min_x < -1024 || min_y < -1024 || max_x > 1024 || max_y > 1024) return;
+    int left = gd_max(0, min_x), top = gd_max(0, min_y);
+    int right = gd_min(640, max_x), bottom = gd_min(480, max_y);
+    int area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
+    if (!area) return;
+    if (area < 0) {
+        int t = x1; x1 = x2; x2 = t; t = y1; y1 = y2; y2 = t;
+        uint u = z1; z1 = z2; z2 = u; u = c1; c1 = c2; c2 = u;
+        area = -area;
+    }
+    if (gouraud_depth && (z0 > 65535 || z1 > 65535 || z2 > 65535)) return;
+    uint *r = gd_record(left, top, right, bottom,
+                        gouraud_depth ? 0x70000u : 0x10000u,
+                        gouraud_depth ? 1 : 0, gouraud_depth ? 0 : c0);
+    if (!r) return;
+    if (gouraud_depth) gdDepthUsed = 1;
+    gd_rect_bounds(r, left, top, right, bottom);
+    int xs[3], ys[3];
+    xs[0] = x0 * 16; xs[1] = x1 * 16; xs[2] = x2 * 16;
+    ys[0] = y0 * 16; ys[1] = y1 * 16; ys[2] = y2 * 16;
+    for (int i = 0; i < 3; ++i) {
+        int j = (i + 1) % 3;
+        int dx = xs[j] - xs[i], dy = ys[j] - ys[i];
+        r[20 + i * 2] = (uint)xs[i]; r[21 + i * 2] = (uint)ys[i];
+        uint *edge = &r[26 + i * 4];
+        edge[0] = (uint)-dy;
+        edge[1] = (uint)dx;
+        edge[2] = (uint)(dy * xs[i] - dx * ys[i]);
+        edge[3] = dy < 0 || (dy == 0 && dx > 0);
+    }
+    if (!gouraud_depth) return;
+    int dx1 = xs[1] - xs[0], dy1 = ys[1] - ys[0];
+    int dx2 = xs[2] - xs[0], dy2 = ys[2] - ys[0];
+    int sx = left * 16 + 8 - xs[0], sy = top * 16 + 8 - ys[0];
+    area *= 256;
+    gd_plane(&r[38], (int)z0, (int)z1, (int)z2, dx1, dy1, dx2, dy2, sx, sy, area);
+    for (uint i = 0; i < 3; ++i) {
+        uint shift = i * 8;
+        gd_plane(&r[44 + i * 6], (int)((c0 >> shift) & 255),
+                 (int)((c1 >> shift) & 255), (int)((c2 >> shift) & 255),
+                 dx1, dy1, dx2, dy2, sx, sy, area);
+    }
+}
+
+#endif

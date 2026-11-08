@@ -1,0 +1,670 @@
+#ifndef NARM_GPU_DRAW_TCH
+#define NARM_GPU_DRAW_TCH
+
+#include "narm_gpu.tch"
+
+// Include after the GPU-enabled narm.tch. These arrays contain explicitly
+// indexed little-endian protocol words on the NARM target.
+#define GD_TABLE 0x280020u
+#define GD_LISTS 0x281000u
+#define GD_RECORDS 0x2a0000u
+#define GD_ASSETS 0x2f0000u
+#define GD_POINTER_BG 0x7fff00u
+#define GD_POINTER_ASSET 0x7fff80u
+#ifndef GD_MASK_CACHE_ENTRIES
+#define GD_MASK_CACHE_ENTRIES 1024u
+#endif
+#define GD_MASK_SLOT_BYTES 1024u
+#ifndef GD_MAX_RECORDS
+#define GD_MAX_RECORDS 512u
+#endif
+#ifndef GD_MAX_REFS
+#define GD_MAX_REFS 8192u
+#endif
+
+uint gdRecords[GD_MAX_RECORDS * 80];
+uint gdBounds[GD_MAX_RECORDS * 4];
+// One extra slot per tile for a SKIP marker reference.
+uint gdLists[GD_MAX_REFS + 300];
+uint gdTileCount[300];
+uint gdTileFill[300];
+// One bit per bounding-box tile reference, in binning order: whether the
+// record can cover a pixel center there. The fill pass reuses the count
+// pass's results instead of testing every tile twice.
+uint gdHits[(GD_MAX_REFS + 31) / 32];
+uint gdStatPasses, gdStatRecords, gdStatRefs;
+// Dirty tiles: per physical color buffer, the tiles that may differ from its
+// clear color (300 bits each). A clearing pass into a known buffer uses SKIP
+// and touches only tiles drawn now or drawn there before.
+uint gdDrawn[20];
+uint gdDrawnColor[2];
+int gdDrawnKnown[2];
+uint gdDrawnNow[10];
+// Color tiles that can differ from the other physical buffer. After a swap,
+// an incremental frame only needs to copy this damage from the new front.
+uint gdChanged[10];
+uint gdDamage[10];
+uint gdNowColor;
+int gdNowKnown;
+// A record that draws nothing (empty scissor). It makes SKIP clear a stale tile.
+#define GD_MARKER 0x2e0000u
+uint gdMarker[80];
+int gdMarkerResident;
+// Depth across the passes of one frame: a pass followed by more passes keeps
+// depth only when it has depth-tested records; the final pass discards it.
+int gdDepthUsed;
+int gdDepthStored;
+int gdFinalFlush;
+uint gdPresentToken;
+uint gdTable[600];
+uint gdCount;
+uint gdRefCount;
+uint gdPass[8];
+uint gdArgs[14];
+uint gdToken;
+uint gdClearColor;
+int gdClear = 1;
+int gdBack = -1;
+int gdFault;
+uint gdAssetChunk[236];
+struct GdMaskAsset {
+    uint shape;
+    uint color;
+    uint age;
+    uint mask[5];
+};
+struct GdMaskAsset gdMaskAssets[GD_MASK_CACHE_ENTRIES];
+uint gdMaskClock;
+int gdPointerResident;
+int gdPointerSaved, gdPointerX, gdPointerY;
+uint gdPointerBg[27];
+uint gdPointerUploadedBg[27];
+int gdPointerBgResident;
+uint gdPointerPixels[27];
+uint gdPointerWidths[9] = {1, 2, 3, 4, 5, 6, 6, 5, 2};
+
+int gd_min(int a, int b) { return a < b ? a : b; }
+int gd_max(int a, int b) { return a > b ? a : b; }
+
+uint gpu_rgb332(uint c) {
+    return ((c >> 5) & 7u) * 255u / 7u |
+           (((c >> 2) & 7u) * 255u / 7u << 8) |
+           ((c & 3u) * 255u / 3u << 16);
+}
+
+uint gpu_rgb565(uint rgb) {
+    return ((rgb & 0xf8u) << 8) | ((rgb & 0xfc00u) >> 5) | ((rgb & 0xf80000u) >> 19);
+}
+
+int gd_call(uint command, uint words) {
+    if (gdFault) return 0;
+    if (narm_gpu_submit(command, gdArgs, words) < 0) {
+        gdFault = 1;
+        return 0;
+    }
+    return 1;
+}
+
+int gd_upload(uint address, const void *data, uint bytes) {
+    uint src = (uint)data;
+    while (bytes != 0u) {
+        uint count = bytes > 944u ? 944u : bytes;
+        gdArgs[0] = address;
+        gdArgs[1] = src;
+        gdArgs[2] = count;
+        if (!gd_call(NARM_GPU_WRITE_HEAP, 3)) return 0;
+        address += count;
+        src += count;
+        bytes -= count;
+    }
+    return 1;
+}
+
+void gd_fence() {
+    gdArgs[0] = ++gdToken;
+    gd_call(NARM_GPU_FENCE, 1);
+}
+
+void gd_mark_rect(int x0, int y0, int x1, int y1) {
+    // Exclusive pixel bounds; marks every tile they touch as dirty.
+    x0 = gd_max(0, x0); y0 = gd_max(0, y0);
+    x1 = gd_min(640, x1); y1 = gd_min(480, y1);
+    if (x0 >= x1 || y0 >= y1) return;
+    for (int ty = y0 / 32; ty <= (y1 - 1) / 32; ++ty)
+        for (int tx = x0 / 32; tx <= (x1 - 1) / 32; ++tx) {
+            uint t = (uint)(ty * 20 + tx);
+            uint bit = 1u << (t & 31u);
+            gdDrawnNow[t >> 5] |= bit;
+            gdChanged[t >> 5] |= bit;
+        }
+}
+
+// The frame in gdBack is complete: record what that buffer now contains.
+void gd_frame_done() {
+    uint b = (uint)gdBack;
+    for (uint i = 0; i < 10; ++i) {
+        gdDrawn[b * 10 + i] = gdDrawnNow[i];
+        gdDamage[i] = gdChanged[i];
+    }
+    gdDrawnKnown[b] = gdNowKnown;
+    gdDrawnColor[b] = gdNowColor;
+    gdDepthStored = 0;
+}
+
+void gd_copy(uint kind, uint source, uint base, uint w, uint h, uint pitch,
+             int x, int y, uint width, uint height) {
+    gdArgs[0] = kind;
+    gdArgs[1] = source;
+    gdArgs[2] = (uint)gdBack;
+    gdArgs[3] = 0; gdArgs[4] = 0;
+    gdArgs[5] = (uint)x; gdArgs[6] = (uint)y;
+    gdArgs[7] = width; gdArgs[8] = height;
+    gdArgs[9] = base; gdArgs[10] = w; gdArgs[11] = h;
+    gdArgs[12] = pitch; gdArgs[13] = 0;
+    gd_call(NARM_GPU_COPY_RECT, 14);
+    // Image copies change the back buffer outside any pass.
+    if (kind == 1) gd_mark_rect(x, y, x + (int)width, y + (int)height);
+}
+
+int gd_tile_damaged(int x, int y) {
+    uint t = (uint)(y * 20 + x);
+    return (gdDamage[t >> 5] & (1u << (t & 31u))) != 0;
+}
+
+void gd_copy_damage(uint front) {
+    // Combine contiguous runs into rectangles, including full-frame damage.
+    for (int y = 0; y < 15; ++y) {
+        for (int x = 0; x < 20;) {
+            if (!gd_tile_damaged(x, y)) { ++x; continue; }
+            int right = x + 1;
+            while (right < 20 && gd_tile_damaged(right, y)) ++right;
+            int bottom = y + 1;
+            while (bottom < 15) {
+                int col = x;
+                while (col < right && gd_tile_damaged(col, bottom)) ++col;
+                if (col != right) break;
+                for (col = x; col < right; ++col) {
+                    uint t = (uint)(bottom * 20 + col);
+                    gdDamage[t >> 5] &= ~(1u << (t & 31u));
+                }
+                ++bottom;
+            }
+            gdArgs[0] = 0;
+            gdArgs[1] = front;
+            gdArgs[2] = (uint)gdBack;
+            gdArgs[3] = (uint)x * 32u;
+            gdArgs[4] = (uint)y * 32u;
+            gdArgs[5] = gdArgs[3];
+            gdArgs[6] = gdArgs[4];
+            gdArgs[7] = (uint)(right - x) * 32u;
+            gdArgs[8] = (uint)(bottom - y) * 32u;
+            for (uint i = 9; i < 14; ++i) gdArgs[i] = 0;
+            if (!gd_call(NARM_GPU_COPY_RECT, 14)) return;
+            x = right;
+        }
+    }
+}
+
+void gd_invalidate_buffers() {
+    gdDrawnKnown[0] = 0;
+    gdDrawnKnown[1] = 0;
+    for (uint i = 0; i < 10; ++i) gdDamage[i] = 0xffffffffu;
+}
+
+int gd_restore_pointer() {
+    int changed = !gdPointerBgResident;
+    for (uint i = 0; i < 27; ++i)
+        if (gdPointerBg[i] != gdPointerUploadedBg[i]) changed = 1;
+    if (changed) {
+        if (!gd_upload(GD_POINTER_BG, gdPointerBg, 108)) return 0;
+        for (uint i = 0; i < 27; ++i) gdPointerUploadedBg[i] = gdPointerBg[i];
+        gdPointerBgResident = 1;
+    }
+    gd_copy(1, 0, GD_POINTER_BG, 6, 9, 12, gdPointerX, gdPointerY, 6, 9);
+    return !gdFault;
+}
+
+// The app heap can be overwritten while another NARM program has focus.
+void gpu_draw_invalidate_assets() {
+    for (uint i = 0; i < GD_MASK_CACHE_ENTRIES; ++i) gdMaskAssets[i].shape = 0;
+    gdMaskClock = 0;
+    gdPointerResident = 0;
+    gdPointerBgResident = 0;
+    gdPointerSaved = 0;
+    gdCount = 0;
+    gdRefCount = 0;
+    gdBack = -1;
+    gdClear = 1;
+    gdFault = 0;
+    gd_invalidate_buffers();
+    gdMarkerResident = 0;
+    gdDepthUsed = 0;
+    gdDepthStored = 0;
+    gdPresentToken = 0;
+}
+
+int gd_begin() {
+    if (gdFault) return 0;
+    if (gdBack >= 0) return 1;
+#ifdef GD_BEFORE_IO
+    GD_BEFORE_IO();
+    if (gdFault) return 0;
+#endif
+    gdBack = narm_gpu_submit(NARM_GPU_BACK_TARGET, gdArgs, 0);
+    if (gdBack < 0) {
+        gdFault = 1;
+        return 0;
+    }
+    uint front = (uint)(gdBack ^ 1);
+    if (!gdClear) {
+        for (uint i = 0; i < 10; ++i) {
+            gdDrawnNow[i] = gdDrawn[front * 10 + i];
+            gdChanged[i] = 0;
+        }
+        gdNowKnown = gdDrawnKnown[front];
+        gdNowColor = gdDrawnColor[front];
+        gd_copy_damage(front);
+        if (gdPointerSaved && !gd_restore_pointer()) return 0;
+    } else {
+        int sameBase = gdDrawnKnown[front] && gdDrawnColor[front] == gdClearColor;
+        for (uint i = 0; i < 10; ++i) {
+            gdDrawnNow[i] = 0;
+            gdChanged[i] = sameBase ? gdDrawn[front * 10 + i] : 0xffffffffu;
+        }
+        gdNowKnown = 1;
+        gdNowColor = gdClearColor;
+    }
+    gdPointerSaved = 0;
+    return !gdFault;
+}
+
+// Exact triangle/tile overlap. The GPU walks every pixel of a record's
+// bounds in every listed tile, and seeds its planes by stepping from the
+// bounds corner, so a long thin triangle listed in every tile of its
+// bounding box costs far more GPU time than its pixels. A sample is inside
+// when each edge value A*(16x+8) + B*(16y+8) + C is positive (or zero with
+// its tie bit). Each edge's largest value over the tile's pixel centers is
+// at one corner; when it is negative no center of that tile can be inside.
+// Other record kinds always cover their clipped bounds.
+int gd_tile_hit(const uint *r, uint tx, uint ty) {
+    if ((r[0] & 0xffu) != 0u) return 1;
+    int x0 = gd_max((int)r[8], (int)(tx * 32u));
+    int y0 = gd_max((int)r[9], (int)(ty * 32u));
+    int x1 = gd_min((int)r[10], (int)(tx * 32u + 32u)) - 1;
+    int y1 = gd_min((int)r[11], (int)(ty * 32u + 32u)) - 1;
+    if (x0 > x1 || y0 > y1) return 0;
+    long long cx0 = x0 * 16 + 8, cx1 = x1 * 16 + 8;
+    long long cy0 = y0 * 16 + 8, cy1 = y1 * 16 + 8;
+    for (uint e = 0; e < 3; ++e) {
+        long long a = (int)r[26 + e * 4], b = (int)r[27 + e * 4];
+        long long v = (long long)(int)r[28 + e * 4] +
+                      a * (a > 0 ? cx1 : cx0) + b * (b > 0 ? cy1 : cy0);
+        if (v < 0) return 0;
+    }
+    return 1;
+}
+
+void gpu_draw_flush() {
+    if ((!gdCount && !gdClear) || !gd_begin()) return;
+    uint back = (uint)gdBack;
+    // A pass followed by more passes of this frame keeps depth only when it
+    // has depth-tested records; otherwise depth is cleared and DISCARDed and
+    // never reaches SDRAM.
+    int storeDepth = gdDepthUsed && !gdFinalFlush;
+    // SKIP (bit3): a clearing pass into a buffer whose dirty tiles are known
+    // touches only tiles drawn now plus tiles that were dirty there. Kept
+    // depth would leave stale depth in untouched tiles, so it never SKIPs.
+    int skip = gdClear && gdDrawnKnown[back] && gdDrawnColor[back] == gdClearColor && !storeDepth;
+    // Bin by each record's tile range, keeping only tiles it can cover: work
+    // grows with references, not 300x.
+    for (uint t = 0; t < 300; ++t) gdTileCount[t] = 0;
+    uint ref = 0;
+    for (uint i = 0; i < gdCount; ++i) {
+        uint b = i * 4;
+        const uint *r = &gdRecords[i * 80];
+        for (uint ty = gdBounds[b + 1]; ty <= gdBounds[b + 3]; ++ty)
+            for (uint tx = gdBounds[b]; tx <= gdBounds[b + 2]; ++tx) {
+                uint bit = 1u << (ref & 31u);
+                if (gd_tile_hit(r, tx, ty)) {
+                    gdHits[ref >> 5] |= bit;
+                    ++gdTileCount[ty * 20 + tx];
+                } else {
+                    gdHits[ref >> 5] &= ~bit;
+                }
+                ++ref;
+            }
+    }
+    if (skip)
+        for (uint t = 0; t < 300; ++t)
+            if (!gdTileCount[t] && (gdDrawn[back * 10 + (t >> 5)] & (1u << (t & 31u)))) gdTileCount[t] = 1;
+    uint used = 0;
+    for (uint t = 0; t < 300; ++t) {
+        gdTable[t * 2] = gdTileCount[t] ? GD_LISTS + used * 4 : 0;
+        gdTable[t * 2 + 1] = gdTileCount[t];
+        gdTileFill[t] = used;
+        used += gdTileCount[t];
+    }
+    ref = 0;
+    for (uint i = 0; i < gdCount; ++i) {
+        uint b = i * 4;
+        for (uint ty = gdBounds[b + 1]; ty <= gdBounds[b + 3]; ++ty)
+            for (uint tx = gdBounds[b]; tx <= gdBounds[b + 2]; ++tx) {
+                uint hit = gdHits[ref >> 5] & (1u << (ref & 31u));
+                ++ref;
+                if (!hit) continue;
+                uint t = ty * 20 + tx;
+                gdLists[gdTileFill[t]++] = GD_RECORDS + i * 320;
+                uint bit = 1u << (t & 31u);
+                gdDrawnNow[t >> 5] |= bit;
+                gdChanged[t >> 5] |= bit;
+            }
+    }
+    if (skip) {
+        for (uint t = 0; t < 300; ++t)
+            if (gdTileCount[t] && gdTileFill[t] == (gdTable[t * 2] - GD_LISTS) / 4)
+                gdLists[gdTileFill[t]++] = GD_MARKER;
+        if (!gdMarkerResident) {
+            for (uint i = 0; i < 80; ++i) gdMarker[i] = 0;
+            gdMarker[0] = 0x10001u | 0x100u; // Rect, color write; scissor and bounds empty.
+            if (!gd_upload(GD_MARKER, gdMarker, 320)) return;
+            gdMarkerResident = 1;
+        }
+    }
+    // Running totals for profiling builds; the SDK never resets them.
+    ++gdStatPasses;
+    gdStatRecords += gdCount;
+    gdStatRefs += used;
+    gdPass[0] = 0x3153504eu;
+    gdPass[1] = back;
+    gdPass[2] = (gdClear ? 1u : 0u) | (gdDepthStored ? 0u : 2u) |
+                (storeDepth ? 0u : 4u) | (skip ? 8u : 0u);
+    gdPass[3] = gdClear ? gdClearColor : 0;
+    gdPass[4] = 0xffffffu;
+    gdPass[5] = GD_TABLE;
+    gdPass[6] = 300;
+    gdPass[7] = 0;
+    if (!gd_upload(GD_RECORDS, gdRecords, gdCount * 320) ||
+        !gd_upload(GD_LISTS, gdLists, used * 4) ||
+        !gd_upload(GD_TABLE, gdTable, 2400) ||
+        !gd_upload(NARM_GPU_USER_HEAP, gdPass, 32)) return;
+    gdArgs[0] = NARM_GPU_USER_HEAP;
+    // No fence: the GPU executes commands in order, so later uploads cannot
+    // overwrite this pass's records, lists or textures before it finishes.
+    gd_call(NARM_GPU_SUBMIT_PASS, 1);
+    if (storeDepth) gdDepthStored = 1;
+    gdCount = 0;
+    gdRefCount = 0;
+    gdClear = 0;
+    gdDepthUsed = 0;
+}
+
+void gpu_draw_clear(uint rgb) {
+    // Discard CPU-staged work and forget any partial drawing into the back.
+    gdCount = 0;
+    gdRefCount = 0;
+    gdClearColor = gpu_rgb565(rgb);
+    gdClear = 1;
+    if (gdFault || gdBack >= 0) gd_invalidate_buffers();
+    gdFault = 0;
+    gdBack = -1;
+    gdDepthUsed = 0;
+    gdDepthStored = 0;
+    gdPresentToken = 0;
+}
+
+// Submit the frame's last pass; it discards depth.
+void gd_flush_final() {
+    gdFinalFlush = 1;
+    gpu_draw_flush();
+    gdFinalFlush = 0;
+}
+
+// Blocking presentation: waits for the swap at vertical blank.
+int gpu_draw_present() {
+    gd_flush_final();
+    if (!gdFault && gdBack < 0) return 1;
+    gdArgs[0] = (uint)gdBack;
+    gdArgs[1] = ++gdToken;
+    int ok = gd_call(NARM_GPU_PRESENT, 2);
+    if (ok) gd_frame_done();
+    gdBack = -1;
+    return ok;
+}
+
+// Nonblocking frame loop (NARM_GPU.md): call gpu_draw_ready() and continue
+// only on 1 before drawing a frame; draw; gpu_draw_submit(); then call
+// gpu_draw_try_present() on later iterations until it returns 1. While a
+// presentation is pending, no other GPU call may be made. Negative = fault.
+int gpu_draw_ready() {
+    if (gdFault) return -1;
+    int r = narm_gpu_frame_ready();
+    if (r < 0) gdFault = 1;
+    return r;
+}
+
+int gpu_draw_submit() {
+    gd_flush_final();
+    return gdFault ? -1 : 1;
+}
+
+int gpu_draw_try_present() {
+    if (gdFault) return -1;
+    if (gdBack < 0) return 1;
+    if (!gdPresentToken) gdPresentToken = ++gdToken;
+    int r = narm_gpu_try_present((uint)gdBack, gdPresentToken);
+    if (r < 0) { gdFault = 1; return -1; }
+    if (r == 0) return 0;
+    gd_frame_done();
+    gdBack = -1;
+    gdPresentToken = 0;
+    return 1;
+}
+
+int gd_draw_pointer(int x, int y) {
+    if (x >= 0 && x < 640 && y >= 0 && y < 480) {
+        // Read a small clean patch so the next back-buffer copy can erase
+        // this cursor without redrawing the application scene.
+        int w = gd_min(6, 640 - x), h = gd_min(9, 480 - y);
+        for (int row = 0; row < h; ++row) {
+            gdArgs[0] = (uint)gdBack * 0x96000u + (uint)((y + row) * 640 + x) * 2;
+            gdArgs[1] = (uint)(w * 2);
+            gdArgs[2] = (uint)&gdPointerBg[row * 3];
+            if (!gd_call(NARM_GPU_READ_MEMORY, 3)) return 0;
+        }
+        if (!gdPointerResident) {
+            for (int i = 0; i < 27; ++i) gdPointerPixels[i] = 0;
+            for (uint row = 2; row <= 6; ++row) {
+                uint fill = row == 6 ? 3 : row;
+                for (uint col = 1; col < fill; ++col) {
+                    uint pixel = row * 6 + col;
+                    gdPointerPixels[pixel / 2] |= 0xffffu << ((pixel & 1u) * 16);
+                }
+            }
+            if (!gd_upload(GD_POINTER_ASSET, gdPointerPixels, 108)) return 0;
+            gdPointerResident = 1;
+        }
+        gdArgs[0] = 1; gdArgs[1] = 0; gdArgs[2] = (uint)gdBack; gdArgs[3] = 0;
+        gdArgs[5] = (uint)x; gdArgs[8] = 1;
+        gdArgs[9] = GD_POINTER_ASSET; gdArgs[10] = 6; gdArgs[11] = 9; gdArgs[12] = 12; gdArgs[13] = 0;
+        for (uint row = 0; row < (uint)h; ++row) {
+            gdArgs[4] = row; gdArgs[6] = (uint)y + row; gdArgs[7] = gdPointerWidths[row];
+            if (!gd_call(NARM_GPU_COPY_RECT, 14)) return 0;
+        }
+        gd_mark_rect(x, y, x + w, y + h);
+        gdPointerX = x; gdPointerY = y;
+        gdPointerSaved = 1;
+    }
+    return !gdFault;
+}
+
+int gpu_draw_present_pointer(int x, int y, int visible) {
+    if (!gd_begin()) return 0;
+    gd_flush_final();
+    if (visible && !gd_draw_pointer(x, y)) return 0;
+    return gpu_draw_present();
+}
+
+uint *gd_record(int x0, int y0, int x1, int y1, uint flags, uint mode, uint rgb) {
+    if (gdFault || x0 >= x1 || y0 >= y1) return 0;
+    uint tx0 = (uint)x0 / 32, ty0 = (uint)y0 / 32;
+    uint tx1 = (uint)(x1 - 1) / 32, ty1 = (uint)(y1 - 1) / 32;
+    uint refs = (tx1 - tx0 + 1) * (ty1 - ty0 + 1);
+    if (gdCount == GD_MAX_RECORDS || gdRefCount + refs > GD_MAX_REFS)
+        gpu_draw_flush();
+    if (gdFault) return 0;
+    uint b = gdCount * 4;
+    gdBounds[b] = tx0; gdBounds[b + 1] = ty0;
+    gdBounds[b + 2] = tx1; gdBounds[b + 3] = ty1;
+    uint *r = &gdRecords[gdCount * 80];
+    ++gdCount;
+    gdRefCount += refs;
+    for (uint i = 0; i < 80; ++i) r[i] = 0;
+    r[0] = flags | 0x100u;
+    r[1] = mode;
+    r[2] = rgb;
+    r[6] = 640;
+    r[7] = 480;
+    return r;
+}
+
+void gd_rect_bounds(uint *r, int x0, int y0, int x1, int y1) {
+    r[8] = (uint)x0; r[9] = (uint)y0; r[10] = (uint)x1; r[11] = (uint)y1;
+}
+
+// Inclusive application rectangle coordinates.
+void gpu_draw_rect(int x0, int y0, int x1, int y1, uint rgb) {
+    int left = gd_max(0, gd_min(x0, x1)), top = gd_max(0, gd_min(y0, y1));
+    int right = gd_min(639, gd_max(x0, x1)) + 1;
+    int bottom = gd_min(479, gd_max(y0, y1)) + 1;
+    uint *r = gd_record(left, top, right, bottom, 0x10001u, 0, rgb);
+    if (r) gd_rect_bounds(r, left, top, right, bottom);
+}
+
+int gd_outcode(int x, int y) {
+    return (x < 0 ? 1 : x > 639 ? 2 : 0) | (y < 0 ? 4 : y > 479 ? 8 : 0);
+}
+
+void gpu_draw_line(int x0, int y0, int x1, int y1, uint rgb) {
+    // Clip the global line once, then give its original sequence to all tiles.
+    for (int i = 0; i < 8; ++i) {
+        int a = gd_outcode(x0, y0), b = gd_outcode(x1, y1);
+        if (a & b) return;
+        if (!(a | b)) {
+            uint *r = gd_record(gd_min(x0, x1), gd_min(y0, y1),
+                                gd_max(x0, x1) + 1, gd_max(y0, y1) + 1, 0x10002u, 0, rgb);
+            if (r) {
+                r[17] = (uint)x0; r[18] = (uint)y0;
+                r[20] = (uint)x1; r[21] = (uint)y1;
+            }
+            return;
+        }
+        int mask = a ? a : b;
+        int x, y;
+        if (mask & 12) {
+            y = mask & 4 ? 0 : 479;
+            x = (int)((float)x0 + ((float)x1 - (float)x0) *
+                      ((float)y - (float)y0) / ((float)y1 - (float)y0));
+        } else {
+            x = mask & 1 ? 0 : 639;
+            y = (int)((float)y0 + ((float)y1 - (float)y0) *
+                      ((float)x - (float)x0) / ((float)x1 - (float)x0));
+        }
+        if (a) { x0 = x; y0 = y; }
+        else { x1 = x; y1 = y; }
+    }
+}
+
+// Cache exact glyph content, including size and RGB565 color. Text position
+// and draw-list flushes never change a resident sprite's address.
+uint gd_mask_asset(int width, int height, const uint *mask, uint words,
+                   int scale, uint color, uint tw, uint th) {
+    uint shape = ((uint)width << 16) | ((uint)height << 8) | (uint)scale;
+    uint hash = (shape ^ color) * 16777619u;
+    for (uint i = 0; i < words; ++i) hash = (hash ^ mask[i]) * 16777619u;
+    uint slot = hash % GD_MASK_CACHE_ENTRIES;
+    uint oldest = slot;
+    uint age = 0;
+    uint now = ++gdMaskClock;
+    for (uint i = 0; i < GD_MASK_CACHE_ENTRIES; ++i) {
+        struct GdMaskAsset *asset = &gdMaskAssets[slot];
+        if (!asset->shape) break;
+        if (asset->shape == shape && asset->color == color) {
+            uint j = 0;
+            while (j < words && asset->mask[j] == mask[j]) ++j;
+            if (j == words) {
+                asset->age = now;
+                return GD_ASSETS + slot * GD_MASK_SLOT_BYTES;
+            }
+        }
+        if (now - asset->age > age) { oldest = slot; age = now - asset->age; }
+        slot = (slot + 1) % GD_MASK_CACHE_ENTRIES;
+    }
+    if (gdMaskAssets[slot].shape) {
+        // Only capacity pressure can replace a texture. Fence all its users.
+        gpu_draw_flush();
+        if (gdFault) return 0;
+        slot = oldest;
+    }
+
+#ifdef GD_BEFORE_IO
+    GD_BEFORE_IO();
+    if (gdFault) return 0;
+#endif
+    uint address = GD_ASSETS + slot * GD_MASK_SLOT_BYTES;
+    int w = width * scale, h = height * scale;
+    uint used = 0, at = address;
+    for (uint row = 0; row < th; ++row) {
+        for (uint col = 0; col < tw; col += 2) {
+            uint word = 0;
+            for (uint p = 0; p < 2; ++p) {
+                uint value = 1; // RGB565 key outside the RGB332 palette.
+                if ((int)row < h && (int)(col + p) < w) {
+                    uint bit = (row / (uint)scale) * (uint)width + (col + p) / (uint)scale;
+                    if (mask[bit / 32] & (0x80000000u >> (bit % 32))) value = color;
+                }
+                word |= value << (16 * p);
+            }
+            gdAssetChunk[used++] = word;
+            if (used == 236) {
+                if (!gd_upload(at, gdAssetChunk, used * 4)) return 0;
+                at += used * 4;
+                used = 0;
+            }
+        }
+    }
+    if (!gd_upload(at, gdAssetChunk, used * 4)) return 0;
+    struct GdMaskAsset *asset = &gdMaskAssets[slot];
+    asset->shape = shape;
+    asset->color = color;
+    asset->age = now;
+    for (uint i = 0; i < words; ++i) asset->mask[i] = mask[i];
+    return address;
+}
+
+void gpu_draw_mask(int x, int y, int width, int height, const uint *mask,
+                   int scale, uint rgb) {
+    if (gdFault || width <= 0 || height <= 0 || width > 160 || height > 160 ||
+        width * height > 160 || scale <= 0 || scale > 16) return;
+    int w = width * scale, h = height * scale;
+    int left = gd_max(0, x), top = gd_max(0, y);
+    int right = gd_min(640, x + w), bottom = gd_min(480, y + h);
+    if (left >= right || top >= bottom) return;
+    uint words = ((uint)(width * height) + 31) / 32;
+    uint usedBits = 0;
+    for (uint i = 0; i < words; ++i) usedBits |= mask[i];
+    if (!usedBits) return;
+    uint tw = 2, th = 1;
+    while ((int)tw < w) tw *= 2;
+    while ((int)th < h) th *= 2;
+    if (tw * th * 2 > GD_MASK_SLOT_BYTES) return;
+    uint address = gd_mask_asset(width, height, mask, words, scale, gpu_rgb565(rgb), tw, th);
+    if (!address) return;
+    uint *r = gd_record(left, top, right, bottom, 0x90003u, 0x40002u, 0);
+    if (!r) return;
+    gd_rect_bounds(r, left, top, right, bottom);
+    r[3] = 1;
+    r[12] = address; r[13] = tw; r[14] = th; r[15] = tw * 2;
+    r[17] = (uint)(left - x); r[18] = (uint)(top - y);
+}
+
+#endif

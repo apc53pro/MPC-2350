@@ -551,9 +551,7 @@ uint glyphBits[2];
 uint fontTable[512];
 
 #ifdef __NARM__
-/* Matches vga_4bit_color in the MPC-2350 video driver. Nearest-colour lookup
-   is computed from expanded RGB332 components, preserving black and white. */
-uint8 graphicsVgaPalette[256] = {
+uint8 mmMode3Map[256] = {
     1, 10, 2, 12, 1, 10, 2, 12, 1, 10, 2, 12, 3, 10, 10, 12,
     3, 10, 10, 12, 3, 3, 10, 12, 9, 9, 15, 11, 9, 9, 11, 11,
     1, 6, 2, 12, 1, 10, 2, 12, 1, 10, 2, 12, 3, 10, 10, 12,
@@ -571,92 +569,136 @@ uint8 graphicsVgaPalette[256] = {
     4, 4, 13, 13, 4, 4, 13, 13, 7, 7, 13, 13, 7, 7, 15, 13,
     7, 7, 15, 0, 7, 7, 0, 0, 8, 8, 0, 0, 8, 8, 0, 0
 };
+uint8 mmMode3Palette[16] = {255,0,2,16,224,128,97,236,252,28,9,159,7,227,73,146};
 
-void mm_clear(uint color)
+uint mm_rgb(uint color)
 {
-    if (graphicsMode == 3) narm_clear(graphicsVgaPalette[color & 255u]);
-    else narm_half_clear(color);
+    color &= 255u;
+    return gpu_rgb332(graphicsMode == 3 ? mmMode3Palette[mmMode3Map[color]] : color);
+}
+
+int mm_scale() { return graphicsMode == 3 ? 1 : 2; }
+
+void mm_clear(uint color) { gpu_draw_clear(mm_rgb(color)); }
+
+void mm_fill_rect(int x0, int y0, int x1, int y1, uint color)
+{
+    int s = mm_scale();
+    gpu_draw_rect(gd_min(x0, x1) * s, gd_min(y0, y1) * s,
+                  gd_max(x0, x1) * s + s - 1, gd_max(y0, y1) * s + s - 1, mm_rgb(color));
 }
 
 void mm_pixel(uint index, uint color)
 {
-    if (graphicsMode == 3) narm_pixel((int)(index % 640u), (int)(index / 640u), graphicsVgaPalette[color & 255u]);
-    else narm_half_pixel(index, color);
-}
-
-void mm_fill_rect(int x0, int y0, int x1, int y1, uint color)
-{
-    if (graphicsMode == 3) narm_fill_rect(x0, y0, x1, y1, graphicsVgaPalette[color & 255u]);
-    else narm_half_fill_rect(x0, y0, x1, y1, color);
+    if (index >= (uint)(SCREEN_W * SCREEN_H)) return;
+    int x = (int)(index % (uint)SCREEN_W), y = (int)(index / (uint)SCREEN_W);
+    mm_fill_rect(x, y, x, y, color);
 }
 
 void mm_line(int x0, int y0, int x1, int y1, uint color)
 {
-    if (graphicsMode == 3) narm_line(x0, y0, x1, y1, graphicsVgaPalette[color & 255u]);
-    else narm_half_line(x0, y0, x1, y1, color);
+    int s = mm_scale();
+    if (x0 == x1 || y0 == y1) { mm_fill_rect(x0, y0, x1, y1, color); return; }
+    gpu_draw_line(x0 * s, y0 * s, x1 * s, y1 * s, mm_rgb(color));
 }
 
 void mm_glyph(int x, int y, int w, int h, const uint *glyph, uint color)
 {
-    if (graphicsMode == 3) narm_vga4_glyph(x, y, w, h, glyph, graphicsVgaPalette[color & 255u]);
-    else narm_half_glyph(x, y, w, h, glyph, color);
+    int s = mm_scale();
+    gpu_draw_mask(x * s, y * s, w, h, glyph, s, mm_rgb(color));
+}
+
+struct NarmMouseState mmPointer;
+int mmDrawnPointerX = -1, mmDrawnPointerY = -1;
+#define MM_SWAP_CURSOR 1
+#define MM_SWAP_QUEUE 2
+#define MM_SWAP_REPLY 3
+int mmSwapStage;
+uint mmSwapArgs[2];
+uint mmSwapStarted;
+uint mmServiceMs = 0xffffffffu;
+int bcHasPresent;
+
+int mm_pointer_visible()
+{
+    return (mmPointer.flags & (NARM_MOUSE_CONNECTED | NARM_MOUSE_FOCUSED | NARM_MOUSE_CURSOR_VISIBLE)) ==
+           (NARM_MOUSE_CONNECTED | NARM_MOUSE_FOCUSED | NARM_MOUSE_CURSOR_VISIBLE);
+}
+
+void mm_poll_present()
+{
+    int result;
+    if (!mmSwapStage) return;
+    if (millis() - mmSwapStarted > 10000u) {
+        gdFault = 1;
+        mmSwapStage = 0;
+        return;
+    }
+    if (mmSwapStage == MM_SWAP_CURSOR) {
+        // BASIC can build another draw list while the submitted pass renders.
+        result = narm_gpu_submit(NARM_GPU_FRAME_READY, mmSwapArgs, 0);
+        if (result == 0) return;
+        if (result > 0) {
+            gdBack = (int)mmSwapArgs[0];
+            if (gd_draw_pointer(mmDrawnPointerX, mmDrawnPointerY)) gd_frame_done();
+            gdBack = -1;
+            mmSwapStage = MM_SWAP_QUEUE;
+        } else gdFault = 1;
+    }
+    if (gdFault) { mmSwapStage = 0; return; }
+    if (mmSwapStage == MM_SWAP_QUEUE) {
+        result = narm_gpu_submit(NARM_GPU_TRY_PRESENT, mmSwapArgs, 2);
+        if (result > 0) mmSwapStage = MM_SWAP_REPLY;
+    } else if (mmSwapStage == MM_SWAP_REPLY) {
+        result = narm_gpu_submit(NARM_GPU_FRAME_READY, mmSwapArgs, 0);
+        if (result > 0) mmSwapStage = 0;
+    } else return;
+    if (result < 0) { gdFault = 1; mmSwapStage = 0; }
+}
+
+void mm_wait_present()
+{
+    while (mmSwapStage) {
+        if (!narm_has_focus()) { gdFault = 1; mmSwapStage = 0; return; }
+        mm_poll_present();
+    }
 }
 
 void mm_present()
 {
-    if (graphicsMode == 3) narm_present();
-    else narm_half_present();
+    if (!narm_has_focus()) return;
+    mm_wait_present();
+    if (gdFault) return;
+    narm_mouse_get_state(&mmPointer);
+    int visible = mm_pointer_visible();
+    int x = visible ? mmPointer.x : -1;
+    int y = visible ? mmPointer.y : -1;
+    int cursorChanged = x != mmDrawnPointerX || y != mmDrawnPointerY;
+    if (!gdCount && !gdClear && gdBack < 0 && !cursorChanged) {
+        screenDirty = 0;
+        return;
+    }
+    if (!gd_begin()) return;
+    gd_flush_final();
+    if (gdFault) return;
+
+    mmDrawnPointerX = x;
+    mmDrawnPointerY = y;
+    mmSwapArgs[0] = (uint)gdBack;
+    mmSwapArgs[1] = ++gdToken;
+    mmSwapStarted = millis();
+    mmSwapStage = visible ? MM_SWAP_CURSOR : MM_SWAP_QUEUE;
+    if (!visible) gd_frame_done();
+    gdBack = -1;
+    screenDirty = 0;
+    mm_poll_present();
 }
 
 void mm_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2, uint color)
 {
-    int t;
-    int y;
-    int lastY;
-    int left;
-    int right;
-    float longStep;
-    float shortStep;
-    float longX;
-    float shortX;
-    if (graphicsMode != 3) {
-        narm_half_fill_triangle(x0, y0, x1, y1, x2, y2, color);
-        return;
-    }
-    /* The full-resolution service provides spans. Sort and clip the scan
-       range before interpolating, so triangles outside the screen are cheap. */
-    if (y0 > y1) { t = x0; x0 = x1; x1 = t; t = y0; y0 = y1; y1 = t; }
-    if (y1 > y2) { t = x1; x1 = x2; x2 = t; t = y1; y1 = y2; y2 = t; }
-    if (y0 > y1) { t = x0; x0 = x1; x1 = t; t = y0; y0 = y1; y1 = t; }
-    if (y2 < 0 || y0 >= SCREEN_H) return;
-    if (y0 == y2) {
-        left = x0; right = x0;
-        if (x1 < left) left = x1;
-        if (x2 < left) left = x2;
-        if (x1 > right) right = x1;
-        if (x2 > right) right = x2;
-        mm_fill_rect(left, y0, right, y0, color);
-        return;
-    }
-    longStep = ((float)x2 - (float)x0) / ((float)y2 - (float)y0);
-    y = y0;
-    if (y < 0) y = 0;
-    lastY = y2;
-    if (lastY >= SCREEN_H) lastY = SCREEN_H - 1;
-    while (y <= lastY) {
-        longX = (float)x0 + ((float)y - (float)y0) * longStep;
-        if (y < y1) {
-            shortStep = ((float)x1 - (float)x0) / ((float)y1 - (float)y0);
-            shortX = (float)x0 + ((float)y - (float)y0) * shortStep;
-        } else if (y2 != y1) {
-            shortStep = ((float)x2 - (float)x1) / ((float)y2 - (float)y1);
-            shortX = (float)x1 + ((float)y - (float)y1) * shortStep;
-        } else shortX = (float)x1;
-        left = (int)longX;
-        right = (int)shortX;
-        mm_fill_rect(left, y, right, y, color);
-        y = y + 1;
-    }
+    int s = mm_scale();
+    gpu_draw_triangle(x0 * s, y0 * s, 0, mm_rgb(color), x1 * s, y1 * s, 0, 0,
+                      x2 * s, y2 * s, 0, 0, 0);
 }
 
 int graphics_rgb(int red, int green, int blue)
@@ -704,7 +746,7 @@ void graphics_set_mode(int mode)
 #define mm_line drawLine
 #define mm_fill_triangle fillTri
 #define mm_glyph putFont
-#define mm_present present
+void mm_present() { present(); screenDirty = 0; }
 #endif
 
 void fillRectClip(int x0, int y0, int x1, int y1, uint color)
@@ -968,6 +1010,10 @@ void pollNarmSystemEvents()
             mouseMotionValid = 0;
         }
         if (systemEvent == NARM_EVENT_FOCUS_GAINED) {
+            mmSwapStage = 0;
+            mmDrawnPointerX = -1;
+            mmDrawnPointerY = -1;
+            gpu_draw_invalidate_assets();
             if (fsEditorActive != 0) fsNeedRedraw = 1;
             else redrawConsole();
         }
@@ -976,15 +1022,30 @@ void pollNarmSystemEvents()
 }
 #endif
 
+#ifdef __NARM__
+void mm_service_screen(int allowDraw)
+{
+    uint now = millis();
+    if (now == mmServiceMs) return;
+    mmServiceMs = now;
+    pollNarmSystemEvents();
+    if (!narm_has_focus()) return;
+    mm_poll_present();
+    if (!allowDraw || mmSwapStage || gdFault) return;
+    narm_mouse_get_state(&mmPointer);
+    int visible = mm_pointer_visible();
+    if (screenDirty || mmDrawnPointerX != (visible ? mmPointer.x : -1) ||
+        mmDrawnPointerY != (visible ? mmPointer.y : -1)) mm_present();
+}
+#endif
+
 void flushScreen()
 {
 #ifdef __NARM__
-    pollNarmSystemEvents();
+    mm_service_screen(1);
+#else
+    if (screenDirty) mm_present();
 #endif
-    if (screenDirty != 0) {
-        mm_present();
-        screenDirty = 0;
-    }
 }
 
 void scrollConsole()
@@ -7979,7 +8040,6 @@ void exec_present_stmt()
     file_require_statement_end();
     if (running == 0) return;
     mm_present();
-    screenDirty = 0;
 }
 
 void exec_delay_stmt(int kwLen)
@@ -8000,6 +8060,9 @@ void exec_delay_stmt(int kwLen)
     target = (uint)ms;
     start = millis();
     while ((uint)(millis() - start) < target) {
+#ifdef __NARM__
+        mm_service_screen(1);
+#endif
     }
 }
 
@@ -9664,6 +9727,9 @@ void bc_tokenize_line(int lineIdx)
                     if (q >= len || bc_source_char(base + q) != '(') tok = 0;
                 }
             }
+#ifdef __NARM__
+            if (tok == B_PRESENT) bcHasPresent = 1;
+#endif
             if (tok != 0) { if (tok == B_REM) break; bc_emit(tok); atStatementStart = 0; if (tok == B_INKEY || tok == B_LEFT || tok == B_RIGHT || tok == B_MID || tok == B_CHR || tok == B_STRFUNC || tok == B_CWD) { if (p < len) { if (bc_source_char(base + p) == '$') p = p + 1; } } continue; }
             idx = find_or_create_var_from_ident();
             if (running == 0) return;
@@ -9709,6 +9775,9 @@ int bc_build_program()
     i = 0;
     while (i < lineCount) { bcSourceTextBytes = bcSourceTextBytes + lineLen[i]; i = i + 1; }
 
+#ifdef __NARM__
+    bcHasPresent = 0;
+#endif
     bcSourceFromProg = 0;
     bcLen = 0;
     bcByteLen = 0;
@@ -11134,14 +11203,18 @@ void bc_exec_other_statement(int t)
         v = bc_eval_expr();
         if (v > 0) {
 #ifdef __NARM__
-            pollNarmSystemEvents();
+            mm_service_screen(!bcHasPresent);
 #endif
             inputNow = millis();
-            while ((int)(millis() - inputNow) < v) { }
+            while ((int)(millis() - inputNow) < v) {
+#ifdef __NARM__
+                mm_service_screen(!bcHasPresent);
+#endif
+            }
         }
         return;
     }
-    if (t == B_PRESENT) { bcPc = bcPc + 1; mm_present(); screenDirty = 0; return; }
+    if (t == B_PRESENT) { bcPc = bcPc + 1; mm_present(); return; }
     if (t == B_INPUT) { bcPc = bcPc + 1; bc_exec_input(); return; }
     if (t == B_OPEN) { bcPc = bcPc + 1; bc_exec_open(); return; }
     if (t == B_CLOSE) { bcPc = bcPc + 1; bc_exec_close(); return; }
@@ -11240,17 +11313,21 @@ void bc_run_program()
         }
         if (bcFlow != 0) { bcPc = bcNextPc; atLineStart = 1; } else bcNextPc = bcPc;
 #ifdef __NARM__
-        /* Present output immediately. Pure computation still checks the
-           system queue regularly, without a firmware call on every line. */
+        /* Keep the display queue moving during BASIC execution. Programs
+           with PRESENT choose their own frame boundaries. */
         linesSincePoll = linesSincePoll + 1;
-        if (screenDirty != 0 || bcRunning == 0 || linesSincePoll >= 32) {
-            flushScreen();
+        if (linesSincePoll >= 32) {
+            mm_service_screen(!bcHasPresent);
             linesSincePoll = 0;
         }
 #else
         flushScreen();
 #endif
     }
+#ifdef __NARM__
+    // Queue the last output before control returns to the editor or REPL.
+    if (screenDirty) mm_present();
+#endif
     bcRunLinePc = -1;
     running = oldRunning;
 }
@@ -13824,8 +13901,12 @@ void fs_editor_loop()
             fsNeedRedraw = 0;
         }
 
-        if (redrawMode != 0) flushScreen();
-        else if (screenDirty != 0) flushScreen();
+#ifdef __NARM__
+        // Finish queued swaps and follow the pointer during idle editor loops.
+        flushScreen();
+#else
+        if (redrawMode != 0 || screenDirty != 0) flushScreen();
+#endif
     }
 }
 
