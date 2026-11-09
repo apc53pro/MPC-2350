@@ -1,8 +1,8 @@
 # NARM MMBASIC v91 colour modes
 
-Use the rebuilt `mmbasic.narm` with MPC-2350 firmware that includes the updated
-asynchronous PRESENT reply handling. Both BASIC display modes render into the
-GPU's RGB565 buffers through NARM API 1.18.
+Use the rebuilt `mmbasic.narm` with the MPC-2350 Nano GPU firmware and the SKIP
+FPGA image. Both BASIC display modes render into the GPU's RGB565 buffers
+through NARM API 1.18.
 
 | Command | Logical resolution | Colour depth | Console / editor |
 | --- | --- | --- | --- |
@@ -58,14 +58,18 @@ The 16 exact RGB332 palette values are `255, 0, 2, 16, 224, 128, 97, 236, 252, 2
 
 If a stored program contains `PRESENT`, use one after drawing each complete
 frame. The interpreter groups drawing across BASIC lines and can execute
-subsequent statements while the GPU renders or waits for vertical blank. It
-waits when the next frame needs GPU access and the previous swap is still
-pending. `PAUSE` services the queued swap during the delay.
+subsequent statements while the GPU renders. It finishes the swap with
+blocking PRESENT once rendering completes or the next frame needs GPU
+access. The swap waits for vertical blank. `PAUSE` services the queued frame
+during the delay.
 
 Programs without `PRESENT` update automatically as the display becomes
 available. Incremental frames copy the tiles that can differ between the
 two buffers. A clear-and-redraw frame uses SKIP after both buffers have been
-initialized to the same clear color. Glyphs remain resident in VRAM.
+initialized to the same clear color. Glyphs remain resident in VRAM. The
+editor paints each background once and caches rasterized source strips in
+VRAM by their displayed text, glyph bits, colors and scale. Scrolling a
+resident row to another screen position reuses its strip.
 
 ## Test demo
 

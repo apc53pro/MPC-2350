@@ -610,14 +610,12 @@ void mm_glyph(int x, int y, int w, int h, const uint *glyph, uint color)
 
 struct NarmMouseState mmPointer;
 int mmDrawnPointerX = -1, mmDrawnPointerY = -1;
-#define MM_SWAP_CURSOR 1
-#define MM_SWAP_QUEUE 2
-#define MM_SWAP_REPLY 3
-int mmSwapStage;
+int mmSwapPending;
 uint mmSwapArgs[2];
 uint mmSwapStarted;
 uint mmServiceMs = 0xffffffffu;
 int bcHasPresent;
+void mm_invalidate_source_rows();
 
 int mm_pointer_visible()
 {
@@ -625,43 +623,31 @@ int mm_pointer_visible()
            (NARM_MOUSE_CONNECTED | NARM_MOUSE_FOCUSED | NARM_MOUSE_CURSOR_VISIBLE);
 }
 
-void mm_poll_present()
+void mm_finish_present(int wait)
 {
-    int result;
-    if (!mmSwapStage) return;
-    if (millis() - mmSwapStarted > 10000u) {
-        gdFault = 1;
-        mmSwapStage = 0;
-        return;
+    if (!mmSwapPending) return;
+    if (!wait && !gdFault) {
+        int ready = narm_gpu_submit(NARM_GPU_FRAME_READY, mmSwapArgs, 0);
+        if (ready == 0 && millis() - mmSwapStarted <= 10000u) return;
+        if (ready <= 0) gdFault = 1;
     }
-    if (mmSwapStage == MM_SWAP_CURSOR) {
-        // BASIC can build another draw list while the submitted pass renders.
-        result = narm_gpu_submit(NARM_GPU_FRAME_READY, mmSwapArgs, 0);
-        if (result == 0) return;
-        if (result > 0) {
-            gdBack = (int)mmSwapArgs[0];
-            if (gd_draw_pointer(mmDrawnPointerX, mmDrawnPointerY)) gd_frame_done();
-            gdBack = -1;
-            mmSwapStage = MM_SWAP_QUEUE;
-        } else gdFault = 1;
-    }
-    if (gdFault) { mmSwapStage = 0; return; }
-    if (mmSwapStage == MM_SWAP_QUEUE) {
-        result = narm_gpu_submit(NARM_GPU_TRY_PRESENT, mmSwapArgs, 2);
-        if (result > 0) mmSwapStage = MM_SWAP_REPLY;
-    } else if (mmSwapStage == MM_SWAP_REPLY) {
-        result = narm_gpu_submit(NARM_GPU_FRAME_READY, mmSwapArgs, 0);
-        if (result > 0) mmSwapStage = 0;
-    } else return;
-    if (result < 0) { gdFault = 1; mmSwapStage = 0; }
+    mmSwapPending = 0;
+    if (gdFault) return;
+
+    // The render pass is already queued. A blocking swap uses the working
+    // board reply path. In the wait case the GPU orders it after the pass.
+    gdBack = (int)mmSwapArgs[0];
+    if (mmDrawnPointerX >= 0) gd_draw_pointer(mmDrawnPointerX, mmDrawnPointerY);
+    gdArgs[0] = mmSwapArgs[0];
+    gdArgs[1] = mmSwapArgs[1];
+    if (gd_call(NARM_GPU_PRESENT, 2)) gd_frame_done();
+    gdBack = -1;
 }
 
 void mm_wait_present()
 {
-    while (mmSwapStage) {
-        if (!narm_has_focus()) { gdFault = 1; mmSwapStage = 0; return; }
-        mm_poll_present();
-    }
+    if (mmSwapPending && !narm_has_focus()) gdFault = 1;
+    mm_finish_present(1);
 }
 
 void mm_present()
@@ -687,11 +673,9 @@ void mm_present()
     mmSwapArgs[0] = (uint)gdBack;
     mmSwapArgs[1] = ++gdToken;
     mmSwapStarted = millis();
-    mmSwapStage = visible ? MM_SWAP_CURSOR : MM_SWAP_QUEUE;
-    if (!visible) gd_frame_done();
+    mmSwapPending = 1;
     gdBack = -1;
     screenDirty = 0;
-    mm_poll_present();
 }
 
 void mm_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2, uint color)
@@ -1010,10 +994,11 @@ void pollNarmSystemEvents()
             mouseMotionValid = 0;
         }
         if (systemEvent == NARM_EVENT_FOCUS_GAINED) {
-            mmSwapStage = 0;
+            mmSwapPending = 0;
             mmDrawnPointerX = -1;
             mmDrawnPointerY = -1;
             gpu_draw_invalidate_assets();
+            mm_invalidate_source_rows();
             if (fsEditorActive != 0) fsNeedRedraw = 1;
             else redrawConsole();
         }
@@ -1030,8 +1015,8 @@ void mm_service_screen(int allowDraw)
     mmServiceMs = now;
     pollNarmSystemEvents();
     if (!narm_has_focus()) return;
-    mm_poll_present();
-    if (!allowDraw || mmSwapStage || gdFault) return;
+    mm_finish_present(0);
+    if (!allowDraw || mmSwapPending || gdFault) return;
     narm_mouse_get_state(&mmPointer);
     int visible = mm_pointer_visible();
     if (screenDirty || mmDrawnPointerX != (visible ? mmPointer.x : -1) ||
@@ -11792,7 +11777,7 @@ void process_env_line()
 
 /* Editor layout in character rows. Source text starts at row 2 so the upper
    divider has its own pixel line and does not overlap the first source row. */
-void fs_draw_cell(int x, int y, char ch, uint fg, uint bg, int cursor)
+void fs_paint_cell(int x, int y, char ch, uint fg, uint bg, int paintBackground)
 {
     int px;
     int py;
@@ -11818,14 +11803,14 @@ void fs_draw_cell(int x, int y, char ch, uint fg, uint bg, int cursor)
     gy = py;
     if (y == 0) { gx = px + 1; gy = py + 1; }
     if (y == CON_ROWS - 1) { gx = px + 1; gy = py; }
-    if (cursor != 0) {
-        fillRectClip(px, py, px + FONT_W - 1, py + FONT_H - 1, fg);
-        if (ch != 32) drawGlyph(gx, gy, ch, bg);
-    } else {
-        fillRectClip(px, py, px + FONT_W - 1, py + FONT_H - 1, bg);
-        if (ch != 32) drawGlyph(gx, gy, ch, fg);
-    }
+    if (paintBackground) fillRectClip(px, py, px + FONT_W - 1, py + FONT_H - 1, bg);
+    if (ch != 32) drawGlyph(gx, gy, ch, fg);
     screenDirty = 1;
+}
+
+void fs_draw_cell(int x, int y, char ch, uint fg, uint bg, int cursor)
+{
+    fs_paint_cell(x, y, ch, cursor ? bg : fg, cursor ? fg : bg, 1);
 }
 
 int fs_cache_index(int x, int row)
@@ -11870,19 +11855,158 @@ void fs_cache_clear_row(int row)
     }
 }
 
-void fs_draw_source_cell_cached(int x, int row, char ch, uint fg)
+#ifdef __NARM__
+// Editor source strips occupy 0x400000 through 0x7bffff. The slot can hold
+// a 640x14 RGB565 strip. Only the used pixels are uploaded.
+#define MM_SOURCE_ROWS 120u
+#define MM_SOURCE_CELLS 106u
+#define MM_SOURCE_BASE 0x400000u
+#define MM_SOURCE_STRIDE 32768u
+struct MmSourceCell {
+    uint bits0;
+    uint bits1;
+    uint color;
+};
+struct MmSourceRow {
+    uint age;
+    uint hash;
+    uint count;
+    uint scale;
+    uint bg;
+    struct MmSourceCell cells[MM_SOURCE_CELLS];
+};
+struct MmSourceCell mmRowCells[MM_SOURCE_CELLS];
+struct MmSourceRow mmRowCache[MM_SOURCE_ROWS];
+uint16 mmRowPixels[640];
+uint mmRowAge;
+uint mmRowCount;
+
+void mm_invalidate_source_rows()
 {
-    fs_cache_set(x, row, fg);
-    fs_draw_cell(x, row, ch, fg, ED_BG, 0);
+    for (uint i = 0; i < MM_SOURCE_ROWS; ++i) mmRowCache[i].count = 0;
+    mmRowAge = 0;
 }
 
-void fs_draw_text_at(int x, int y, char s[], int len, uint fg, uint bg)
+int mm_upload_source_row(uint addr, uint count, uint scale, uint bg)
+{
+    uint width = count * 6u * scale;
+    uint bytes = (width * 2u + 3u) & ~3u;
+    for (uint y = 0; y < 7u; ++y) {
+        uint p = 0;
+        for (uint i = 0; i < count; ++i) {
+            struct MmSourceCell *cell = &mmRowCells[i];
+            for (uint x = 0; x < 5u; ++x) {
+                uint bit = y * 5u + x;
+                uint bits = bit < 32u ? cell->bits0 : cell->bits1;
+                uint pixel = bits & (0x80000000u >> (bit & 31u)) ? cell->color : bg;
+                mmRowPixels[p++] = (uint16)pixel;
+                if (scale == 2u) mmRowPixels[p++] = (uint16)pixel;
+            }
+            mmRowPixels[p++] = (uint16)bg;
+            if (scale == 2u) mmRowPixels[p++] = (uint16)bg;
+        }
+        if (width & 1u) mmRowPixels[p] = (uint16)bg;
+        for (uint sy = 0; sy < scale; ++sy) {
+            if (!gd_upload(addr, mmRowPixels, bytes)) return 0;
+            addr += bytes;
+        }
+    }
+    return 1;
+}
+
+void mm_draw_source_row(int row)
+{
+    if (!mmRowCount || gdFault) return;
+    // Submit the background once, before the first opaque strip copy.
+    gd_flush_final();
+    if (gdFault) return;
+    uint scale = (uint)mm_scale();
+    uint bg = gpu_rgb565(mm_rgb(ED_BG));
+    uint count = mmRowCount;
+    uint hash = (scale ^ bg) * 16777619u;
+    for (uint i = 0; i < count; ++i) {
+        hash = (hash ^ mmRowCells[i].bits0) * 16777619u;
+        hash = (hash ^ mmRowCells[i].bits1) * 16777619u;
+        hash = (hash ^ mmRowCells[i].color) * 16777619u;
+    }
+    uint slot = hash % MM_SOURCE_ROWS;
+    uint oldest = slot;
+    uint maxAge = 0;
+    uint age = ++mmRowAge;
+    int hit = 0;
+    for (uint n = 0; n < MM_SOURCE_ROWS; ++n) {
+        struct MmSourceRow *cached = &mmRowCache[slot];
+        if (!cached->count) break;
+        if (cached->hash == hash && cached->count == count &&
+            cached->scale == scale && cached->bg == bg) {
+            uint i = 0;
+            while (i < count && cached->cells[i].bits0 == mmRowCells[i].bits0 &&
+                   cached->cells[i].bits1 == mmRowCells[i].bits1 &&
+                   cached->cells[i].color == mmRowCells[i].color) ++i;
+            if (i == count) { hit = 1; break; }
+        }
+        if (age - cached->age > maxAge) { maxAge = age - cached->age; oldest = slot; }
+        slot = (slot + 1u) % MM_SOURCE_ROWS;
+    }
+    uint width = count * 6u * scale;
+    uint height = 7u * scale;
+    uint pitch = (width * 2u + 3u) & ~3u;
+    // COPY_RECT and uploads are ordered on the GPU. All earlier reads of an
+    // evicted slot complete before the replacement reaches VRAM.
+    if (!hit && mmRowCache[slot].count) slot = oldest;
+    uint addr = MM_SOURCE_BASE + slot * MM_SOURCE_STRIDE;
+    struct MmSourceRow *cached = &mmRowCache[slot];
+    if (!hit) {
+        if (!mm_upload_source_row(addr, count, scale, bg)) {
+            mm_invalidate_source_rows();
+            return;
+        }
+        cached->hash = hash;
+        cached->count = count;
+        cached->scale = scale;
+        cached->bg = bg;
+        for (uint i = 0; i < count; ++i) {
+            cached->cells[i].bits0 = mmRowCells[i].bits0;
+            cached->cells[i].bits1 = mmRowCells[i].bits1;
+            cached->cells[i].color = mmRowCells[i].color;
+        }
+    }
+    cached->age = age;
+    gd_copy(1, 0, addr, width, height, pitch, (int)scale, (row * 8 - 4) * (int)scale,
+            width, height);
+}
+#endif
+
+void fs_draw_source_cell_cached(int x, int row, char ch, uint fg, int rowSprite)
+{
+    fs_cache_set(x, row, fg);
+#ifdef __NARM__
+    if (rowSprite) {
+        uint glyph = ((uint)ch & 255u) * 2u;
+        struct MmSourceCell *cell = &mmRowCells[x];
+        cell->bits0 = fontTable[glyph];
+        cell->bits1 = fontTable[glyph + 1];
+        cell->color = 0;
+        if (ch != 32 && (cell->bits0 || cell->bits1)) {
+            cell->color = gpu_rgb565(mm_rgb(fg));
+            mmRowCount = (uint)x + 1u;
+        } else {
+            cell->bits0 = 0;
+            cell->bits1 = 0;
+        }
+        return;
+    }
+#endif
+    fs_paint_cell(x, row, ch, fg, ED_BG, 0);
+}
+
+void fs_draw_text_at(int x, int y, char s[], int len, uint fg)
 {
     int i;
     i = 0;
     while (i < len) {
         if (s[i] == 0) return;
-        fs_draw_cell(x + i, y, s[i], fg, bg, 0);
+        fs_paint_cell(x + i, y, s[i], fg, ED_BG, 0);
         i = i + 1;
     }
 }
@@ -11931,13 +12055,13 @@ void fs_clear_source_area()
 
 void fs_draw_status_text_char(int x, char c)
 {
-    fs_draw_cell(x, 0, c, ED_STATUS_TEXT, ED_BG, 0);
+    fs_paint_cell(x, 0, c, ED_STATUS_TEXT, ED_BG, 0);
 }
 
-void fs_draw_status_line()
+void fs_paint_status_line(int eraseRow)
 {
     int x;
-    fs_clear_row(0, ED_BG);
+    if (eraseRow) fs_clear_row(0, ED_BG);
     fs_draw_status_text_char(0,'M'); fs_draw_status_text_char(1,'M'); fs_draw_status_text_char(2,'B'); fs_draw_status_text_char(3,'A'); fs_draw_status_text_char(4,'S'); fs_draw_status_text_char(5,'I'); fs_draw_status_text_char(6,'C');
     fs_draw_status_text_char(8,'E'); fs_draw_status_text_char(9,'D'); fs_draw_status_text_char(10,'I'); fs_draw_status_text_char(11,'T'); fs_draw_status_text_char(12,'O'); fs_draw_status_text_char(13,'R');
     fs_draw_status_text_char(15,'L'); fs_draw_status_text_char(16,'N'); fs_draw_status_text_char(17,' ');
@@ -11959,18 +12083,20 @@ void fs_draw_status_line()
     while (g_j > 0) { g_j = g_j - 1; fs_draw_status_text_char(x, numTmp[g_j]); x = x + 1; }
 }
 
-void fs_draw_bottom_line()
+void fs_paint_bottom_line(int eraseRow)
 {
-    fs_clear_row(CON_ROWS - 1, ED_BG);
+    if (eraseRow) fs_clear_row(CON_ROWS - 1, ED_BG);
     fs_draw_text_at(0, CON_ROWS - 1, "F10 HELP F3 SAVEAS F4 LOAD F5 RUN F6 NEW F9 REPL",
-                    48, ED_STATUS_TEXT, ED_BG);
+                    48, ED_STATUS_TEXT);
     /* Keep the toolbar available while an action status is displayed. */
-    fillRectClip(36 * FONT_W, 0, 46 * FONT_W - 1, FONT_H - 1, ED_BG);
-    if (fsStatus == 1) fs_draw_text_at(36, 0, "SAVED", 5, ED_STATUS_TEXT, ED_BG);
-    if (fsStatus == 2) fs_draw_text_at(36, 0, "LOADED", 6, ED_STATUS_TEXT, ED_BG);
-    if (fsStatus == 3) fs_draw_text_at(36, 0, "NEW", 3, ED_STATUS_TEXT, ED_BG);
-    if (fsStatus == 4) fs_draw_text_at(36, 0, "OUT OF MEM", 10, ED_STATUS_TEXT, ED_BG);
+    if (eraseRow) fillRectClip(36 * FONT_W, 0, 46 * FONT_W - 1, FONT_H - 1, ED_BG);
+    if (fsStatus == 1) fs_draw_text_at(36, 0, "SAVED", 5, ED_STATUS_TEXT);
+    if (fsStatus == 2) fs_draw_text_at(36, 0, "LOADED", 6, ED_STATUS_TEXT);
+    if (fsStatus == 3) fs_draw_text_at(36, 0, "NEW", 3, ED_STATUS_TEXT);
+    if (fsStatus == 4) fs_draw_text_at(36, 0, "OUT OF MEM", 10, ED_STATUS_TEXT);
 }
+
+void fs_draw_bottom_line() { fs_paint_bottom_line(1); }
 
 void fs_draw_dividers()
 {
@@ -12270,7 +12396,7 @@ uint fs_fast_append_color(int line, int pos)
     return fs_fast_local_color(line, pos);
 }
 
-void fs_draw_source_line(int line, int row)
+void fs_draw_source_line(int line, int row, int eraseRow)
 {
     int base;
     int len;
@@ -12282,7 +12408,8 @@ void fs_draw_source_line(int line, int row)
     char c;
     uint color;
 
-    fs_clear_row(row, ED_BG);
+    if (eraseRow) fs_clear_row(row, ED_BG);
+    else fs_cache_clear_row(row);
     if (line < 0) return;
     if (line >= lineCount) return;
 
@@ -12291,20 +12418,23 @@ void fs_draw_source_line(int line, int row)
     j = 0;
     inString = 0;
     inComment = 0;
+#ifdef __NARM__
+    mmRowCount = 0;
+#endif
 
     while (j < len) {
         c = src_get(base + j);
         if (c == 34) {
-            if (j >= fsLeftCol) if (j < fsLeftCol + CON_COLS) fs_draw_source_cell_cached(j - fsLeftCol, row, c, ED_LIT);
+            if (j >= fsLeftCol) if (j < fsLeftCol + CON_COLS) fs_draw_source_cell_cached(j - fsLeftCol, row, c, ED_LIT, !eraseRow);
             inString = 1 - inString;
             j = j + 1;
         } else if (inString != 0) {
-            if (j >= fsLeftCol) if (j < fsLeftCol + CON_COLS) fs_draw_source_cell_cached(j - fsLeftCol, row, c, ED_LIT);
+            if (j >= fsLeftCol) if (j < fsLeftCol + CON_COLS) fs_draw_source_cell_cached(j - fsLeftCol, row, c, ED_LIT, !eraseRow);
             j = j + 1;
         } else if (c == 39) {
             inComment = 1;
             while (j < len) {
-                if (j >= fsLeftCol) if (j < fsLeftCol + CON_COLS) fs_draw_source_cell_cached(j - fsLeftCol, row, src_get(base + j), ED_COMMENT);
+                if (j >= fsLeftCol) if (j < fsLeftCol + CON_COLS) fs_draw_source_cell_cached(j - fsLeftCol, row, src_get(base + j), ED_COMMENT, !eraseRow);
                 j = j + 1;
             }
         } else if (is_digit(c) != 0) {
@@ -12313,7 +12443,7 @@ void fs_draw_source_line(int line, int row)
                 if (is_digit(c) == 0) {
                     if (c != '.') break;
                 }
-                if (j >= fsLeftCol) if (j < fsLeftCol + CON_COLS) fs_draw_source_cell_cached(j - fsLeftCol, row, c, ED_NUM);
+                if (j >= fsLeftCol) if (j < fsLeftCol + CON_COLS) fs_draw_source_cell_cached(j - fsLeftCol, row, c, ED_NUM, !eraseRow);
                 j = j + 1;
             }
         } else if (source_is_ident_start_char(c) != 0) {
@@ -12327,15 +12457,18 @@ void fs_draw_source_line(int line, int row)
             color = fs_token_color(base, wstart, wlen);
             g_i = wstart;
             while (g_i < j) {
-                if (g_i >= fsLeftCol) if (g_i < fsLeftCol + CON_COLS) fs_draw_source_cell_cached(g_i - fsLeftCol, row, src_get(base + g_i), color);
+                if (g_i >= fsLeftCol) if (g_i < fsLeftCol + CON_COLS) fs_draw_source_cell_cached(g_i - fsLeftCol, row, src_get(base + g_i), color, !eraseRow);
                 g_i = g_i + 1;
             }
         } else {
-            if (j >= fsLeftCol) if (j < fsLeftCol + CON_COLS) fs_draw_source_cell_cached(j - fsLeftCol, row, c, ED_TEXT);
+            if (j >= fsLeftCol) if (j < fsLeftCol + CON_COLS) fs_draw_source_cell_cached(j - fsLeftCol, row, c, ED_TEXT, !eraseRow);
             j = j + 1;
         }
     }
 
+#ifdef __NARM__
+    if (!eraseRow) mm_draw_source_row(row);
+#endif
     fsLineStateLen[line] = len;
     fsLineEndInString[line] = inString;
     fsLineEndComment[line] = inComment;
@@ -12369,24 +12502,25 @@ void fs_clamp_cursor()
     if (fsLeftCol < 0) fsLeftCol = 0;
 }
 
+void fs_paint_source_area()
+{
+    for (int row = 0; row < FS_VISIBLE_ROWS; ++row)
+        fs_draw_source_line(fsTopLine + row, row + FS_SOURCE_ROW, 0);
+    // Selection draws follow all strip copies so they stay above the text.
+    for (int row = 0; row < FS_VISIBLE_ROWS; ++row)
+        fs_overlay_selection_line(fsTopLine + row);
+}
+
 void fs_redraw_all()
 {
-    int row;
-    int line;
     int base;
     int ch;
     fs_clamp_cursor();
     mm_clear(ED_BG);
-    fs_draw_status_line();
-    row = 0;
-    while (row < FS_VISIBLE_ROWS) {
-        line = fsTopLine + row;
-        fs_draw_source_line(line, row + FS_SOURCE_ROW);
-        fs_overlay_selection_line(line);
-        row = row + 1;
-    }
-    fs_draw_bottom_line();
+    fs_paint_status_line(0);
+    fs_paint_bottom_line(0);
     fs_draw_dividers();
+    fs_paint_source_area();
     base = fs_line_base(fsCurLine);
     ch = 32;
     if (fsCurCol < lineLen[fsCurLine]) ch = src_get(base + fsCurCol);
@@ -13233,27 +13367,15 @@ void fs_redraw_one_source_line(int line)
     if (line < fsTopLine) return;
     if (line >= fsTopLine + FS_VISIBLE_ROWS) return;
     row = line - fsTopLine + FS_SOURCE_ROW;
-    fs_draw_source_line(line, row);
+    fs_draw_source_line(line, row, 1);
     fs_overlay_selection_line(line);
     fs_draw_cursor_for_line(line);
 }
 
 void fs_redraw_visible_from_line(int startLine, int oldStatus)
 {
-    int row;
-    int line;
-
     fs_clear_source_area();
-
-    startLine = fsTopLine;
-    row = 0;
-    if (row < 0) row = 0;
-    while (row < FS_VISIBLE_ROWS) {
-        line = fsTopLine + row;
-        fs_draw_source_line(line, row + FS_SOURCE_ROW);
-        fs_overlay_selection_line(line);
-        row = row + 1;
-    }
+    fs_paint_source_area();
     fs_draw_cursor_for_line(fsCurLine);
     if (oldStatus != fsStatus) fs_draw_bottom_line();
 }
@@ -13684,7 +13806,7 @@ void fs_redraw_mouse_selection(int oldLine)
         fs_redraw_one_source_line(line);
         line = line + 1;
     }
-    fs_draw_status_line();
+    fs_paint_status_line(1);
     fs_draw_bottom_line();
 }
 #endif

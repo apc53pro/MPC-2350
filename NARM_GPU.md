@@ -69,11 +69,13 @@ After hard reset, rebuild all application resources.
 
 ## Keep the NARM frame loop running
 
-**Strong recommendation for all NARM programs. Keep processing input and
-simulation while the GPU is busy. Poll once per application-loop iteration and
-submit a new presentation only when the GPU is available.** Avoid
-`narm_gpu_fence`, synchronous `narm_gpu_present`, and readiness spin loops in
-the realtime frame path.
+Keep processing input and preparing the next frame while the GPU renders.
+On the Tang Nano 20K board, finish swaps with blocking
+`narm_gpu_present(target, token)`. MMBasic submits its pass first, then
+finishes the swap at a later service point.
+
+The async sequence below is exercised by the software model. The board
+still reports intermittent failures with this sequence.
 
 1. Update input, simulation and CPU-side frame preparation each iteration.
 2. Call `narm_gpu_frame_ready()`. On 0, continue the application loop. On a

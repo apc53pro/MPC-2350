@@ -40,11 +40,12 @@ int main() {
     add_line("90 PRESENT");
     add_line("100 END");
     bc_run_program();
-    if (errFlag || gdFault || !bcHasPresent || !mmSwapStage) return 1;
+    if (errFlag || gdFault || !bcHasPresent || !mmSwapPending) return 1;
 
     // This edit is staged while the third frame is still in flight.
+    mm_finish_present(0);
     mm_fill_rect(49,49,49,49,3);
-    if (!mmSwapStage || gdCount != 1 || gdBack >= 0) return 2;
+    if (!mmSwapPending || gdCount != 1 || gdBack >= 0) return 2;
     mm_present();
     mm_wait_present();
 
@@ -57,6 +58,19 @@ int main() {
     bc_run_program();
     if (errFlag || bcHasPresent || screenDirty) return 3;
     mm_wait_present();
+
+    clear_program();
+    initFontTable();
+    add_line("PRINT 123");
+    add_line("PRINT 123");
+    fs_redraw_all();
+    mm_present();
+    mm_wait_present();
+    fsCurLine = 1;
+    fsTopLine = 1;
+    fs_redraw_all();
+    mm_present();
+    mm_wait_present();
     return gdFault;
 }
 """
@@ -66,11 +80,13 @@ class Gpu:
     def __init__(self):
         self.heap = bytearray(0x800000)
         self.back = 1
-        self.render_polls = self.swap_polls = 0
+        self.render_polls = 0
         self.clock = 0
         self.passes = []
         self.copies = []
         self.swaps = []
+        self.source_uploads = 0
+        self.source_uploads_at_swap = []
 
     def setup(self, cpu, ctx):
         core, gpu = ctx + 0x100, ctx + 0x200
@@ -98,27 +114,25 @@ class Gpu:
                 assert cmd == 0x101  # No attached mouse.
             else:
                 args = struct.unpack(f"<{count}I", uc.mem_read(ptr, count * 4)) if count else ()
-                if cmd in (0x107, 0x108):
+                if cmd == 0x107:
                     if self.render_polls:
                         self.render_polls -= 1
-                    elif self.swap_polls:
-                        self.swap_polls -= 1
-                        if not self.swap_polls:
-                            self.back ^= 1
-                            result = 1
                     else:
                         result = 1
-                        if cmd == 0x108:
-                            assert args[0] == self.back
-                            self.swaps.append(args)
-                            self.swap_polls = 2
                 else:
-                    assert not self.swap_polls
-                    if cmd == 0x100:
+                    if cmd == 7:
+                        assert args[0] == self.back
+                        self.swaps.append(args)
+                        self.source_uploads_at_swap.append(self.source_uploads)
+                        self.back ^= 1
+                        self.render_polls = 0
+                    elif cmd == 0x100:
                         result = self.back
                     elif cmd == 3:
                         dest, src, length = args
                         self.heap[dest:dest + length] = uc.mem_read(src, length)
+                        if 0x400000 <= dest < 0x7c0000:
+                            self.source_uploads += 1
                     elif cmd == 4:
                         _, target, flags, _, _, table, tiles, _ = struct.unpack_from(
                             "<8I", self.heap, args[0])
@@ -128,9 +142,12 @@ class Gpu:
                         self.passes.append((flags, {i: n for i, n in enumerate(refs) if n}))
                         self.render_polls = 2
                     else:
-                        assert cmd == 5 and args[0] == 0, (cmd, args)
-                        assert args[1] == self.back ^ 1 and args[2] == self.back
-                        self.copies.append(args[3:9])
+                        assert cmd == 5 and args[2] == self.back, (cmd, args)
+                        if args[0] == 0:
+                            assert args[1] == self.back ^ 1
+                            self.copies.append(args[3:9])
+                        else:
+                            assert args[0] == 1 and 0x400000 <= args[9] < 0x7c0000
             uc.reg_write(UC_ARM_REG_R0, result)
             uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
 
@@ -155,12 +172,14 @@ def main():
         gpu = Gpu()
         result = execute(binary, gpu.setup)
         assert result == 0, result
-        assert gpu.passes == [(7, {0: 40}), (6, {21: 1}), (6, {42: 1}), (6, {63: 1}),
-                              (15, {0: 1, 21: 1, 42: 1, 84: 1})]
-        assert gpu.swaps == [(1, 1), (0, 2), (1, 3), (0, 4), (1, 5)]
+        assert gpu.passes[:5] == [(7, {0: 40}), (6, {21: 1}), (6, {42: 1}), (6, {63: 1}),
+                                  (15, {0: 1, 21: 1, 42: 1, 84: 1})]
+        assert gpu.swaps == [(1, 1), (0, 2), (1, 3), (0, 4), (1, 5), (0, 6), (1, 7)]
+        assert gpu.source_uploads_at_swap == [0, 0, 0, 0, 0, 14, 14]
         assert gpu.copies == [(0, 0, 0, 0, 640, 480),
                               (32, 32, 32, 32, 32, 32), (64, 64, 64, 64, 32, 32)]
-    print("PASS MMBasic batches BASIC lines, stages drawing during a swap, and copies dirty tiles")
+    print("PASS MMBasic frame batching, CPU/GPU overlap, blocking swaps,"
+          " dirty tiles and editor row residency")
 
 
 if __name__ == "__main__":
