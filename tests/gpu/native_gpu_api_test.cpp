@@ -94,7 +94,9 @@ void verify_records()
   assert(!native_gpu_encode_tile(out, heap, 0));
   assert(native_gpu_encode_tile(out, 0, 0) && word(0) == 0 && word(1) == 0);
 
+  constexpr uint32_t untouched = 0xa5a5a5a5u;
   NativeGpuPrimitiveInput p{};
+  memset(out, 0xa5, sizeof(out));
   p.kind = 2;
   p.flags = 0x70000;
   p.depth_function = 1;
@@ -104,13 +106,14 @@ void verify_records()
   p.line_end[0] = 639; p.line_end[1] = 479;
   p.scissor[0] = -3; p.scissor[2] = 640; p.scissor[3] = 480;
   p.bounds[2] = 639; // Ignored for lines.
-  assert(native_gpu_encode_primitive(out, p));
-  assert(word(0) == 0x70102 && word(1) == 0x100 && word(2) == 0x123456);
+  assert(native_gpu_encode_primitive(out, sizeof(out), p));
+  assert(native_gpu_primitive_bytes(p.kind) == 88);
+  assert(word(0) == 0x70202 && word(1) == 0x100 && word(2) == 0x123456);
   assert(word(4) == 0xfffffffdu && word(10) == 0 && word(16) == 0xfedcba);
   assert(word(17) == 5 && word(18) == 17 && word(19) == 0 && word(20) == 639 && word(21) == 479);
-  for (unsigned i = 22; i < 80; ++i) assert(word(i) == 0);
+  for (unsigned i = 22; i < 80; ++i) assert(word(i) == untouched);
   p.line_end[0] = 640;
-  assert(!native_gpu_encode_primitive(out, p));
+  assert(!native_gpu_encode_primitive(out, sizeof(out), p));
 
   p.kind = 0;
   p.flags |= 0x80000;
@@ -122,14 +125,41 @@ void verify_records()
   p.vertices_q4[0] = -4;
   p.edges[0] = -100; p.edges[3] = 1;
   p.planes[0] = 0x01234567; p.planes[1] = 0xfedcba98; p.planes[41] = 0xdeadbeef;
-  assert(native_gpu_encode_primitive(out, p));
-  assert(word(0) == 0xf0100 && word(1) == 0x70104 && word(3) == 0xf81f);
+  assert(native_gpu_encode_primitive(out, sizeof(out), p));
+  assert(native_gpu_primitive_bytes(p.kind) == 320);
+  assert(word(0) == 0xf0200 && word(1) == 0x70104 && word(3) == 0xf81f);
   assert(word(12) == heap && word(13) == 16 && word(14) == 32 && word(15) == 64 && word(16) == 0);
   assert(word(20) == 0xfffffffcu && word(26) == 0xffffff9cu && word(29) == 1);
   assert(word(38) == 0x01234567 && word(39) == 0xfedcba98 && word(79) == 0xdeadbeef);
-  assert(!native_gpu_encode_primitive(reinterpret_cast<uint8_t *>(&p), p));
+  assert(!native_gpu_encode_primitive(reinterpret_cast<uint8_t *>(&p), sizeof(out), p));
   p.texture_pitch = 30;
-  assert(!native_gpu_encode_primitive(out, p));
+  assert(!native_gpu_encode_primitive(out, sizeof(out), p));
+
+  memset(out, 0xa5, sizeof(out));
+  p = {};
+  p.kind = 1;
+  p.flags = 0x10000u;
+  p.bounds[2] = 2; p.bounds[3] = 2;
+  assert(native_gpu_primitive_bytes(p.kind) == 80);
+  assert(native_gpu_encode_primitive(out, sizeof(out), p));
+  assert(word(0) == 0x10201 && word(10) == 2 && word(19) == 0);
+  for (unsigned i = 20; i < 80; ++i) assert(word(i) == untouched);
+
+  memset(out, 0xa5, sizeof(out));
+  p.kind = 3;
+  p.shade = 2;
+  p.texture_base = heap;
+  p.texture_width = 4; p.texture_height = 4; p.texture_pitch = 8;
+  p.origin[0] = 1; p.origin[1] = 2;
+  assert(native_gpu_primitive_bytes(p.kind) == 80);
+  assert(native_gpu_encode_primitive(out, sizeof(out), p));
+  assert(word(0) == 0x10203 && word(12) == heap);
+  assert(word(17) == 1 && word(18) == 2 && word(19) == 0);
+  assert(!native_gpu_encode_primitive(out, 79, p));
+  for (unsigned i = 20; i < 80; ++i) assert(word(i) == untouched);
+
+  p.kind = 4; // GPU-setup descriptors have a separate wire layout.
+  assert(!native_gpu_encode_primitive(out, sizeof(out), p));
 }
 
 int main()

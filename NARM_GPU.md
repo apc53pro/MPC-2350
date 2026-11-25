@@ -23,7 +23,7 @@ focused process with the GPU capability.
 | `narm_gpu_back_target` | none | Returns the writable physical color buffer ID, 0 or 1. |
 | `narm_gpu_encode_pass` | output pointer, target, flags, clear RGB565, clear D24, GPU table address | Encodes a 32-byte descriptor in CPU memory. |
 | `narm_gpu_encode_tile` | output pointer, GPU list address, reference count | Encodes an 8-byte tile entry in CPU memory. Use 0, 0 for an empty tile. |
-| `narm_gpu_encode_primitive` | output pointer, pointer to `NarmGpuPrimitive` | Encodes a 320-byte primitive in a separate CPU buffer. |
+| `narm_gpu_encode_primitive` | output pointer, pointer to `NarmGpuPrimitive` | Encodes a prepared primitive in a separate CPU buffer of the size listed below. |
 | `narm_gpu_link_status` | output pointer | Reads the 64-byte sideband bank, including link flags and fault codes, even after a packet fault. |
 | `narm_gpu_abort` | none | Quiesces the link and resumes with a new epoch while preserving scanout. |
 | `narm_gpu_reset` | none | Hard-resets GPU state and restores firmware terminal assets. |
@@ -44,8 +44,8 @@ and display attachments are shared among trusted foreground programs. On
 focus regain, query the current back target and restore any graphics data and
 attachment contents your program needs.
 
-The driver generates packet headers, sequence numbers and upload encoding,
-and checks reply headers, epochs, status and tokens. Use
+The N20K-SYS-0.3 driver generates packet headers, sequence numbers and upload
+encoding, and checks reply headers, epochs, status and tokens. Use
 [GPU_CONTROL.md](https://github.com/apc53pro/Nano-20K-GPU/blob/main/GPU_DOCUMENTATION/GPU_CONTROL.md)
 for capability and status layouts, pass and primitive records, tile lists,
 textures, and copy arguments. The firmware record builders serialize the pass,
@@ -57,6 +57,21 @@ to enable its RGB565 descriptor. For prepared triangles, supply Q4 vertices,
 three edges, and the seven signed 64-bit planes as low/high pairs. The
 application prepares geometry and bins it into ordered little-endian lists of
 GPU record addresses, then uploads its batches.
+
+| Primitive kind | Bytes to allocate and upload |
+| --- | ---: |
+| 0, prepared triangle | `NARM_GPU_TRIANGLE_BYTES` (320) |
+| 1, rectangle | `NARM_GPU_RECTANGLE_BYTES` (80) |
+| 2, line | `NARM_GPU_LINE_BYTES` (88) |
+| 3, sprite | `NARM_GPU_SPRITE_BYTES` (80) |
+| 4, GPU-setup triangle | `NARM_GPU_VERTEX_TRIANGLE_BYTES` (64) |
+
+`NARM_GPU_PRIMITIVE_BYTES` is the maximum size of any record. The native
+`NarmGpuPrimitive` builder handles kinds 0–3 and returns 0 on success.
+Serialize kind 4 using its separate vertex layout in the GPU control guide.
+All five kinds use record version 2, in bits 15:8 of word 0. Rebuild the
+firmware and any application packages that serialize GPU records before
+pairing them with an N20K-SYS-0.3 image.
 
 Use CLEAR to initialize a back buffer or LOAD to retain valid
 contents. Passes that never test depth should clear and DISCARD it (load

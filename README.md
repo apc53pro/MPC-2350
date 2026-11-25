@@ -25,7 +25,7 @@ HCLK pauses between byte transactions. Core 0 encodes packets and
 exchanges commands and completion words through the PIO FIFOs with a 250 ms
 byte deadline. PS/2 remains on PIO1.
 `nano_gpu.cpp` checks
-the N20K-SYS-0.2 capabilities and replies, uploads the font once as a 64 KiB
+the N20K-SYS-0.3 capabilities and replies, uploads the font once as a 64 KiB
 RGB565 heap texture, and uses GPU `COPY_RECT`, `FENCE` and `PRESENT` commands.
 Startup keeps GPU_RESET_N LOW and data released for **1000 ms** before clocking
 the reset/release sequence and reading status, allowing for flash configuration.
@@ -153,11 +153,11 @@ always reports as zero:
 | Wiring hypothesis | Expected HEX bytes |
 | --- | --- |
 | Correct D5/D6 order | `1 0 0` |
-| Pure D5/D6 interchange in both address and return data | `1 2 40` |
+| Pure D5/D6 interchange in both address and return data | `1 3 40` |
 
 For the interchange, `02` is unchanged, `21` reaches capability register `41`
-(`02`), and `23` reaches `43` (`20`), returned with bits 5/6 exchanged as `40`.
-`1 2 40` strongly supports this hypothesis under those assumptions but is not
+(`03`), and `23` reaches `43` (`20`), returned with bits 5/6 exchanged as `40`.
+`1 3 40` strongly supports this hypothesis under those assumptions but is not
 a unique fault diagnosis; `1 0 0` does not verify all bus lines. Under an
 interchange the raw flags also arrive with bits 5/6 exchanged.
 
@@ -204,8 +204,8 @@ address path without an FPGA change:
   GPU_RESET_N LOW, release, 64 idle edges) without the 1000 ms configuration
   wait or client startup. It then reads capability registers **`41 42 43 41`**,
   never `40` first, and prints
-  `GPU LATCHTEST: <4 HEX bytes>; edges=<4 decimal>; expected=2 8 20 2`.
-  `2 8 20 2` means these address writes reached the GPU. `2 2 2 2` means only
+  `GPU LATCHTEST: <4 HEX bytes>; edges=<4 decimal>; expected=3 8 20 3`.
+  `3 8 20 3` means these address writes reached the GPU. `3 3 3 3` means only
   the first address after reset was latched. `0 0 0 0` means the FPGA saw
   addresses other than those sent. These are host-model signatures, not unique
   diagnoses. A timeout names the register and releases the bus.
@@ -258,7 +258,7 @@ has not been confirmed. The diagnostic continues even if this idle check fails.
 The single idle rising edge sends no packet.
 
 It then freshly selects
-register `0x41`, whose expected byte is **`0x02`**, and holds **HCLK HIGH / RD_N
+register `0x41`, whose expected byte is **`0x03`**, and holds **HCLK HIGH / RD_N
 LOW**, with WR_N/ALE_N HIGH, reset HIGH and all RP data pins as inputs. The
 read remains held even if the byte is wrong or RVALID times out after 250 ms;
 an address-write/WREADY timeout releases the bus. `GPU HOLD` reports the result,

@@ -436,7 +436,8 @@ void gpu_display_latchtest() {
   for (unsigned i = 0; i < 4; ++i) { Serial.print(" "); Serial.print(values[i], HEX); }
   Serial.print("; edges=");
   for (unsigned i = 0; i < 4; ++i) { if (i) Serial.print(" "); Serial.print(edges[i]); }
-  Serial.println("; expected=2 8 20 2");
+  Serial.print("; expected="); Serial.print(NanoGpu::kProtocolMinor, HEX);
+  Serial.print(" 8 20 "); Serial.println(NanoGpu::kProtocolMinor, HEX);
   release_bus();
 }
 
@@ -486,7 +487,8 @@ void gpu_display_hold() {
   // Deliberately keep the read active, even for bad data or missing RVALID,
   // so a meter can measure stable control/data levels at both boards.
   read_held = true;
-  Serial.print("GPU HOLD: register=0x41; expected=0x02; ");
+  Serial.print("GPU HOLD: register=0x41; expected=0x0");
+  Serial.print(NanoGpu::kProtocolMinor, HEX); Serial.print("; ");
   Serial.println(valid ? "read held; use GPU_RELEASE to end." :
                          "RVALID timeout; read held; use GPU_RELEASE to end.");
   gpu_display_diagnostics();

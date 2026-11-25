@@ -18,7 +18,8 @@ int main(void) {
     unsigned base = NARM_GPU_USER_HEAP;
     words[0] = (unsigned)query;
     if (narm_gpu_submit(NARM_GPU_GET_CAPS, words, 1) != 0 ||
-        query[0] != 0 || query[1] != 2 || query[2] != 8 || query[3] != 32) return 1;
+        query[0] != NARM_GPU_PROTOCOL_MAJOR || query[1] != NARM_GPU_PROTOCOL_MINOR ||
+        query[2] != 8 || query[3] != 32) return 1;
     if (narm_gpu_submit(NARM_GPU_GET_STATUS, words, 1) != 0) return 2;
     int back = narm_gpu_submit(NARM_GPU_BACK_TARGET, words, 0);
     if (back < 0 || back > 1) return 3;

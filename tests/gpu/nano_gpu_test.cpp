@@ -165,7 +165,7 @@ int main() {
     // Exercise the same session a focused application uses. Present its
     // cleared back buffer, then let the terminal take the display again.
     uint8_t bank[64];
-    assert(gpu.get_caps(bank) && bank[1] == 2);
+    assert(gpu.get_caps(bank) && bank[1] == 3);
     assert(gpu.get_status(bank) && bank[14] == bus.model.front_id());
     const uint32_t heap = NanoGpu::kUserHeap, table = heap + 32;
     const uint32_t target = gpu.back_target();

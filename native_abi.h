@@ -149,7 +149,7 @@ enum NativeServiceResult : int32_t
   NARM_SERVICE_ERR_DEVICE = -5
 };
 
-// Commands 1 through 8 follow N20K-SYS-0.2. Arguments use native words;
+// Commands 1 through 8 follow N20K-SYS-0.3. Arguments use native words;
 // the driver builds wire packets and owns sequence numbers and replies.
 enum NativeGpuCommandV1 : uint32_t
 {

@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-// Serialized N20K-SYS-0.2 client. Call only from Core 0; callbacks are bounded
+// Serialized N20K-SYS-0.3 client. Call only from Core 0; callbacks are bounded
 // byte transfers on a freshly reset GPU. No CPU pixel framebuffer is used.
 struct NanoGpuTransport {
   void *user;
@@ -34,6 +34,7 @@ public:
   bool present_pending() const { return pending_present_.sequence != 0; }
   bool read_memory(uint32_t address, uint32_t length, uint8_t *out);
   uint32_t back_target() const { return front_ ^ 1u; }
+  static constexpr uint8_t kProtocolMajor = 0, kProtocolMinor = 3;
   static constexpr uint32_t kUserHeap = 0x280000u;
   bool ready() const { return online_; }
   const char *error() const { return error_; }

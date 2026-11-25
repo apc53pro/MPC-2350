@@ -34,7 +34,8 @@ bool NanoGpu::send(uint16_t opcode, const uint8_t *payload,
   if (count > 1024 || sequence_ == UINT32_MAX) return fail("packet limit");
   uint8_t header[16] = {};
   sequence = sequence_++;
-  put32(header, 0x5550474eu); header[5] = 2;
+  put32(header, 0x5550474eu);
+  header[4] = kProtocolMajor; header[5] = kProtocolMinor;
   put16(header + 6, opcode); put32(header + 8, count);
   put32(header + 12, sequence);
   for (uint8_t byte : header)
@@ -75,7 +76,8 @@ bool NanoGpu::consume_reply(uint16_t opcode, uint32_t sequence, uint32_t token,
                             uint8_t *extra, uint32_t count) {
   uint8_t header[16], common[12];
   if (!read_bytes(header, sizeof(header))) return false;
-  if (get32(header) != 0x5550474eu || header[4] != 0 || header[5] != 2 ||
+  if (get32(header) != 0x5550474eu || header[4] != kProtocolMajor ||
+      header[5] != kProtocolMinor ||
       (uint16_t)(header[6] | ((uint16_t)header[7] << 8)) != (opcode | 0x8000u) ||
       get32(header + 8) != 12 + count || get32(header + 12) != sequence)
     return fail("invalid reply header");
@@ -132,7 +134,7 @@ bool NanoGpu::begin(NanoGpuTransport transport, const uint16_t font[128][16]) {
   uint8_t caps[64];
   // These immutable sideband bytes do not depend on SDRAM initialization.
   // Check the bus fingerprint before interpreting any startup/fault status.
-  const uint8_t prefix[4] = {0, 2, 8, 32};
+  const uint8_t prefix[4] = {kProtocolMajor, kProtocolMinor, 8, 32};
   for (unsigned i = 0; i < 4; ++i) {
     uint8_t byte;
     if (!bus_.read_register(bus_.user, (uint8_t)(64 + i), &byte))
@@ -153,7 +155,8 @@ bool NanoGpu::begin(NanoGpuTransport transport, const uint16_t font[128][16]) {
     if (!epoch_ || front_ > 1) return fail("invalid boot state");
     uint32_t sequence;
     if (!send(1, nullptr, 0, sequence) || !reply(1, sequence, 0, caps, 64)) return false;
-    if (caps[0] != 0 || caps[1] != 2 || caps[2] != 8 || caps[3] != 32 ||
+    if (caps[0] != kProtocolMajor || caps[1] != kProtocolMinor ||
+        caps[2] != 8 || caps[3] != 32 ||
         get32(caps + 4) != kMemory || get32(caps + 8) != kHeap ||
         get32(caps + 12) != 1024 || get32(caps + 16) != 320 ||
         get32(caps + 52) != 640 || get32(caps + 56) != 480)

@@ -45,17 +45,34 @@ inline bool native_gpu_encode_pass(uint8_t *out, uint32_t target, uint32_t flags
   return true;
 }
 
-inline bool native_gpu_encode_primitive(uint8_t *out, const NativeGpuPrimitiveInput &p)
+// The native input covers prepared primitives. Applications serialize kind 4
+// GPU-setup vertices directly as 64-byte records.
+inline uint32_t native_gpu_primitive_bytes(uint32_t kind)
 {
+  switch (kind) {
+    case 0: return 320;
+    case 1:
+    case 3: return 80;
+    case 2: return 88;
+    default: return 0;
+  }
+}
+
+inline bool native_gpu_encode_primitive(uint8_t *out, uint32_t capacity,
+                                        const NativeGpuPrimitiveInput &p)
+{
+  const uint32_t kind = p.kind;
+  const uint32_t bytes = native_gpu_primitive_bytes(kind);
+  if (!bytes || bytes > capacity) return false;
   const auto output = reinterpret_cast<uintptr_t>(out);
   const auto input = reinterpret_cast<uintptr_t>(&p);
-  if (output <= input ? input - output < 320 : output - input < sizeof(p))
+  if (output <= input ? input - output < bytes : output - input < sizeof(p))
     return false;
   constexpr uint32_t color_write = 0x10000u, key_enable = 0x80000u;
-  if (p.kind > 3 || (p.flags & ~0xf0000u) || p.shade > 4 || p.depth_function > 2 ||
+  if ((p.flags & ~0xf0000u) || p.shade > 4 || p.depth_function > 2 ||
       p.addressing > 3 || p.rgb888 > 0xffffffu || p.key_rgb565 > 0xffffu ||
       (!(p.flags & key_enable) && p.key_rgb565) || p.depth > 0xffffffu) return false;
-  const bool triangle = p.kind == 0, line = p.kind == 2, sprite = p.kind == 3;
+  const bool triangle = kind == 0, line = kind == 2, sprite = kind == 3;
   const bool textured = p.shade >= 2;
   const bool has_texture = p.texture_base != 0;
   if ((!triangle && !sprite && (p.shade || (p.flags & key_enable))) ||
@@ -86,8 +103,8 @@ inline bool native_gpu_encode_primitive(uint8_t *out, const NativeGpuPrimitiveIn
                             h + p.origin[1] > p.texture_height))) return false;
   }
 
-  memset(out, 0, 320);
-  native_gpu_put_word(out, 0, p.kind | 0x100u | p.flags);
+  memset(out, 0, bytes);
+  native_gpu_put_word(out, 0, kind | 0x200u | p.flags);
   native_gpu_put_word(out, 1, p.shade | (p.depth_function << 8) | (p.addressing << 16) |
                             (has_texture ? 0x40000u : 0u));
   native_gpu_put_word(out, 2, p.rgb888);
